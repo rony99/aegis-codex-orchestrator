@@ -212,6 +212,8 @@ TODO:
 - 新增 `observe` 命令
 - 基于现有 run 的 `session-log` 产出 `lessons.md`
 - 已完成: 在主循环增加可配置的自动 observer 触发（`run --observe`）
+- 新增 `run-summary.json`
+- 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、平均耗时、SDK monitor failures、observer failures
 
 待补:
 
@@ -244,6 +246,6 @@ TODO:
 
 ## 五、当前结论
 
-v0.3 已证明核心方向持续可行：Codex SDK 可承载串行闭环 + discovery 先行澄清 + snippet 检索的试运行路径。
+v0.3 已证明核心方向持续可行：Codex SDK 可承载串行闭环 + discovery 先行澄清 + snippet 检索 + summary/report 指标化的试运行路径。
 
 当前优先级转向稳定性验证（尤其是 `ask_user` 与非交互场景）和价值沉淀（observation、snippet 候选到正式入库）。

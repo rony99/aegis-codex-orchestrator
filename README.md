@@ -66,8 +66,9 @@ For v0.4, you can now generate an observer pass:
 
 - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - `codex-gtd run --task <task-file> ... --observe`
+- `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
 
-It writes `lessons.md` from current run traces for operator review.
+Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs.
 
 The manager decides one next action at a time:
 
@@ -90,6 +91,7 @@ The manager decides one next action at a time:
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
+- Report command (`codex-gtd report`) for done/ask-user/max-loop counts and recent run summaries.
 - Included pilot task: Markdown TODO exporter.
 
 ## Quick Start
@@ -125,6 +127,14 @@ npm run test:local
 
 These tests cover CLI parsing and fast-fail behavior without invoking the Codex SDK.
 They also validate the machine-readable `run-summary.json` shape.
+
+### Summarize runs
+
+```bash
+node dist/cli.js report --runs-dir runs --limit 10
+```
+
+The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, SDK monitor failures, observer failures, and recent runs.
 
 ### Run the included pilot task
 
@@ -188,6 +198,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ```text
 codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
 codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+codex-gtd report [--runs-dir <dir>] [--limit <n>]
 codex-gtd smoke [--model <model>]
 ```
 

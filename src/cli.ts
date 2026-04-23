@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runObserver, runOrchestration, runSmokeTest } from "./driver.js";
+import { runObserver, runOrchestration, runReport, runSmokeTest, type RunReport } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -14,6 +14,7 @@ type ParsedArgs = {
   skipDiscovery?: boolean;
   turnTimeoutMs?: number;
   maxLoops?: number;
+  limit?: number;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -105,6 +106,17 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--limit") {
+      if (!next) throw new Error("--limit requires a number");
+      const limit = Number.parseInt(next, 10);
+      if (!Number.isFinite(limit) || limit < 1) {
+        throw new Error("--limit must be a positive integer");
+      }
+      parsed.limit = limit;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       parsed.command = "help";
       continue;
@@ -122,6 +134,7 @@ function printHelp(): void {
 Usage:
   codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+  codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd smoke [--model <model>]
 
 Defaults:
@@ -134,6 +147,37 @@ Defaults:
 Model aliases:
   codex-5.3-spark -> gpt-5.3-codex-spark
 `);
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
+}
+
+function printReport(report: RunReport): void {
+  console.log(`Runs directory: ${report.runsDir}`);
+  console.log(`Total runs: ${report.totalRuns}`);
+  console.log(`Done: ${report.statuses.done}`);
+  console.log(`Ask user: ${report.statuses.ask_user}`);
+  console.log(`Max loops reached: ${report.statuses.max_loops_reached}`);
+  console.log(`Average duration: ${formatDuration(report.averageDurationMs)}`);
+  console.log(`SDK monitor failures: ${report.sdkMonitorFailures}`);
+  console.log(`Observer failures: ${report.observerFailures}`);
+
+  if (report.recentRuns.length === 0) {
+    console.log("Recent runs: none");
+    return;
+  }
+
+  console.log("Recent runs:");
+  for (const run of report.recentRuns) {
+    const reason = run.reason ? ` - ${run.reason}` : "";
+    console.log(`- ${run.endedAt} ${run.status} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${reason}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -213,6 +257,15 @@ async function main(): Promise<void> {
     if (result.status !== "done") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (args.command === "report") {
+    const report = await runReport({
+      runsDir: args.runsDir,
+      limit: args.limit,
+    });
+    printReport(report);
     return;
   }
 

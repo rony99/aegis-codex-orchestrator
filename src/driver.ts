@@ -75,10 +75,32 @@ export type ObserveOptions = {
   turnTimeoutMs?: number;
 };
 
+export type ReportOptions = {
+  runsDir?: string;
+  limit?: number;
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
   reason?: string;
+};
+
+export type RunReport = {
+  runsDir: string;
+  totalRuns: number;
+  statuses: Record<RunResult["status"], number>;
+  averageDurationMs: number;
+  sdkMonitorFailures: number;
+  observerFailures: number;
+  recentRuns: Array<{
+    runDir: string;
+    status: RunResult["status"];
+    reason?: string;
+    model: string;
+    durationMs: number;
+    endedAt: string;
+  }>;
 };
 
 type SdkHealthResult = {
@@ -675,6 +697,86 @@ export function buildRunSummary(input: RunSummaryInput): RunSummary {
       requiredEntries: RUN_PROTOCOL_ENTRIES,
     },
   };
+}
+
+export async function runReport(options: ReportOptions = {}): Promise<RunReport> {
+  const runsDir = path.resolve(options.runsDir ?? DEFAULT_RUNS_DIR);
+  const limit = options.limit ?? 10;
+  const summaries = await readRunSummaries(runsDir);
+  summaries.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
+
+  const statuses: Record<RunResult["status"], number> = {
+    done: 0,
+    ask_user: 0,
+    max_loops_reached: 0,
+  };
+  let totalDurationMs = 0;
+  let sdkMonitorFailures = 0;
+  let observerFailures = 0;
+
+  for (const summary of summaries) {
+    statuses[summary.status] += 1;
+    totalDurationMs += summary.durationMs;
+    if (summary.sdkMonitor && !summary.sdkMonitor.passed) {
+      sdkMonitorFailures += 1;
+    }
+    if (summary.observer?.status === "failed") {
+      observerFailures += 1;
+    }
+  }
+
+  return {
+    runsDir,
+    totalRuns: summaries.length,
+    statuses,
+    averageDurationMs: summaries.length === 0 ? 0 : Math.round(totalDurationMs / summaries.length),
+    sdkMonitorFailures,
+    observerFailures,
+    recentRuns: summaries.slice(0, limit).map((summary) => ({
+      runDir: summary.runDir,
+      status: summary.status,
+      reason: summary.reason,
+      model: summary.model,
+      durationMs: summary.durationMs,
+      endedAt: summary.endedAt,
+    })),
+  };
+}
+
+async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(runsDir);
+  } catch {
+    return [];
+  }
+
+  const summaries: RunSummary[] = [];
+  for (const entry of entries) {
+    const summaryPath = path.join(runsDir, entry, RUN_SUMMARY_FILE);
+    try {
+      const raw = await readFile(summaryPath, "utf8");
+      const parsed = JSON.parse(raw) as RunSummary;
+      if (isRunSummary(parsed)) {
+        summaries.push(parsed);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return summaries;
+}
+
+function isRunSummary(value: unknown): value is RunSummary {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<RunSummary>;
+  return candidate.schemaVersion === 1
+    && (candidate.status === "done" || candidate.status === "ask_user" || candidate.status === "max_loops_reached")
+    && typeof candidate.runDir === "string"
+    && typeof candidate.model === "string"
+    && typeof candidate.endedAt === "string"
+    && typeof candidate.durationMs === "number";
 }
 
 async function finishRun(

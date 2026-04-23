@@ -10,6 +10,7 @@
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
   - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
+  - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
   - `codex-gtd smoke [--model <model>]`
 - [x] 本地测试脚本:
   - `npm run test:local`
@@ -72,6 +73,11 @@
   - `sdkMonitor` / `observer`
   - `snippetCandidates`
   - `sessionLogEntries`
+- [x] 本地 report:
+  - 读取 `run-summary.json`
+  - 汇总 `done` / `ask_user` / `max_loops_reached`
+  - 汇总平均耗时、SDK monitor failures、observer failures
+  - 输出最近 N 次 run
 
 ## 验证记录
 
@@ -108,6 +114,11 @@
   - 状态: `ask_user`
   - 生成 `run-summary.json`
   - summary 记录 `status` / `reason` / `model` / `durationMs` / `sdkMonitor` / `sessionLogEntries`
+- [x] report verification:
+  - `node dist/cli.js report --runs-dir runs-summary-verify --limit 5`
+  - 汇总 1 条真实 `ask_user` run
+  - SDK monitor failures: `0`
+  - Observer failures: `0`
 
 ## 与最终目标的差距
 
@@ -137,6 +148,7 @@
   - model alias 文档输出
   - fast-fail 错误路径
   - `run-summary.json` schema shape
+  - fake `run-summary.json` report 汇总
 - [ ] 扩展本地测试:
   - run 目录结构
   - manager decision JSON 解析
