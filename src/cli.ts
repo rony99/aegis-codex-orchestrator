@@ -66,7 +66,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`codex-gtd v0.1
+  console.log(`codex-gtd v0.2
 
 Usage:
   codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--max-loops <n>]

@@ -8,7 +8,7 @@ Before coding starts, Aegis should help drive structured discovery: clarify the 
 
 Start a task, walk away, and come back to a structured run directory with a spec, frozen interfaces, progress notes, blockers, session traces, implementation output, and test evidence.
 
-> Current status: v0.1 alpha. The minimal loop works, but this is still a research prototype.
+> Current status: v0.2 alpha. The minimal loop works and API probe artifacts are now part of each run, but this is still a research prototype.
 
 ## Why This Exists
 
@@ -25,7 +25,7 @@ The first defense against babysitting is not better code generation. It is bette
 
 ## How It Works
 
-v0.1 runs a serial four-role loop:
+v0.2 runs a serial four-role loop:
 
 ```text
 researcher -> manager -> developer -> tester
@@ -33,7 +33,7 @@ researcher -> manager -> developer -> tester
 
 The intended lifecycle has two phases:
 
-1. **Discovery before development**: Codex helps clarify purpose, scope, requirements, stack, APIs, acceptance criteria, and non-goals, then writes `spec.md`, `interfaces.md`, and eventually `api-probes/`.
+1. **Discovery before development**: Codex helps clarify purpose, scope, requirements, stack, APIs, acceptance criteria, and non-goals, then writes `spec.md`, `interfaces.md`, and `api-probes/`.
 2. **Execution after freeze**: manager/developer/tester operate against those files instead of relying on a long, fragile chat history.
 
 Each role communicates through a file protocol inside `runs/<timestamp>/`:
@@ -45,10 +45,11 @@ interfaces.md      # frozen contract for implementation and testing
 progress.md        # current status and executed commands
 blockers.md        # issues that require user attention or cannot be self-resolved
 session-log/       # raw Codex turn traces for future observer/reflection work
+api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
 ```
 
-v0.1 alpha currently generates the files above. The target protocol will add `discovery.md`, `api-probes/`, `snippets/`, and `lessons.md` in later milestones.
+v0.2 alpha currently generates the files above. The target protocol will add `discovery.md`, `snippets/`, and `lessons.md` in later milestones.
 
 The manager decides one next action at a time:
 
@@ -63,6 +64,7 @@ The manager decides one next action at a time:
 
 - Real Codex SDK integration through `@openai/codex-sdk`.
 - Pre-development research artifact generation through the researcher role.
+- Per-run `api-probes/` artifacts for API/SDK dependency grounding.
 - Independent Codex thread per role to reduce context pollution.
 - File-based protocol that is inspectable, checkpointable, and replay-friendly.
 - Structured manager decisions using JSON schema output.
@@ -93,7 +95,7 @@ npm run build
 npm run smoke
 ```
 
-The smoke command starts a real Codex SDK thread with the fast test model alias `codex-5.3-spark`.
+The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the most reliable default for this project. You can still pass `--model codex-5.3-spark` for faster experimental runs when that model is supported by your Codex account.
 
 ### Run the included pilot task
 
@@ -160,6 +162,7 @@ runs/2026-04-23T08-27-29Z/
   progress.md
   blockers.md
   session-log/
+  api-probes/
   workspace/
 ```
 
@@ -175,7 +178,7 @@ and produced a working Markdown TODO exporter with a passing shell test.
 
 - [Product plan](docs/PLAN.md)
 - [Decision record](docs/DECISIONS.md)
-- [v0.1 status and TODO](docs/TODO.md)
+- [Current status and TODO](docs/TODO.md)
 
 ## Release Hygiene
 
@@ -197,7 +200,7 @@ Near-term hardening:
 
 Planned versions:
 
-- v0.2: API probe mechanism to reduce SDK/API hallucinations.
+- v0.2: API probe mechanism to reduce SDK/API hallucinations. Initial support is implemented.
 - v0.3: snippet reuse pool for agent-friendly private components.
 - v0.4: observer agent that learns from session traces.
 - v0.5: snippet candidate generation from successful runs.

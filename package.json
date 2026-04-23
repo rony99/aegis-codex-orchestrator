@@ -1,6 +1,6 @@
 {
   "name": "codex-gtd",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Aegis Codex Orchestrator: a minimal Codex SDK orchestration loop using a file-based agent protocol.",
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli.ts",
-    "smoke": "tsx src/cli.ts smoke --model codex-5.3-spark"
+    "smoke": "tsx src/cli.ts smoke --model gpt-5.4"
   },
   "dependencies": {
     "@openai/codex-sdk": "0.123.0"

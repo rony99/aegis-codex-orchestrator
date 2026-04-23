@@ -68,10 +68,12 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const model = resolveModel(options.model);
   const runDir = await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
   const workspaceDir = path.join(runDir, "workspace");
+  const apiProbesDir = path.join(runDir, "api-probes");
   const task = await readFile(path.resolve(options.taskFile), "utf8");
 
   await mkdir(path.join(runDir, "session-log"), { recursive: true });
   await mkdir(workspaceDir, { recursive: true });
+  await mkdir(apiProbesDir, { recursive: true });
   await writeFile(path.join(runDir, "task.md"), task);
   await writeFile(path.join(runDir, "progress.md"), initialProgress(model));
   await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n");

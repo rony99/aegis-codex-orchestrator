@@ -4,7 +4,7 @@
 
 ---
 
-## 当前真实实现(v0.1 alpha)
+## 当前真实实现(v0.2 alpha)
 
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
@@ -28,7 +28,12 @@
   - `progress.md`
   - `blockers.md`
   - `session-log/`
+  - `api-probes/`
   - `workspace/`
+- [x] researcher 必须写 `api-probes/README.md`。
+- [x] 无外部依赖任务会记录 no-probe 决策。
+- [x] 外部 API/SDK 任务会生成 probe artifact 和响应样例或失败说明。
+- [x] manager / developer / tester prompts 会读取并注入 `api-probes/` 摘要。
 - [x] manager 使用 structured JSON output:
   - `develop`
   - `test`
@@ -43,8 +48,6 @@
   - finalResponse
   - usage
   - items
-- [x] 真实 Codex SDK smoke test 已通过。
-- [x] Markdown TODO exporter pilot 已跑通。
 
 ## 验证记录
 
@@ -52,34 +55,36 @@
 - [x] `npm run typecheck`
 - [x] `npm run build`
 - [x] `npm run smoke`
-- [x] 成功 run:
+- [x] v0.1 pilot run:
   - `runs/2026-04-23T08-27-29Z`
   - 状态: `done`
-  - session log 数量: 6
   - 链路: researcher → manager → developer → manager → tester → manager
-- [x] 成功 run 中的测试脚本复跑通过:
-  - `runs/2026-04-23T08-27-29Z/workspace/todo-exporter-test.sh`
+- [x] v0.2 dogfood spec run:
+  - `runs-dogfood-v02/2026-04-23T09-20-58Z`
+  - 产出 v0.2 `spec.md` / `interfaces.md`
+- [x] v0.2 no-probe verification:
+  - `runs-dogfood-v02-verify/2026-04-23T09-24-38Z`
+  - 生成 `api-probes/README.md`
+  - 记录 no-probe 决策
+- [x] v0.2 public API probe verification:
+  - `runs-dogfood-v02-api/2026-04-23T09-26-25Z`
+  - 生成 `api-probes/httpbin-json-probe.sh`
+  - 生成 `api-probes/httpbin-json-response.json`
+  - 使用 `https://httpbin.org/json` 捕获真实响应样例
 
 ## 与最终目标的差距
 
 - [ ] 还没有真正的多轮 discovery。
-  - 当前: `run --task` 直接进入 researcher,根据单个 task 文件生成 `spec.md` / `interfaces.md`。
+  - 当前: `run --task` 直接进入 researcher。
   - 目标: Codex 先主导澄清目的、需求、边界、技术栈、API、账号/密钥、验收标准,写入 `discovery.md`,再进入开发。
-- [ ] 还没有 `api-probes/`。
-  - 当前: pilot task 无外部 API。
-  - 目标: 外部 API/SDK 必须先 probe,保存真实响应样例。
+- [ ] API probes 仍是 run-local 文件,还没有跨 run 缓存或 snippet 化。
 - [ ] 还没有 snippets。
 - [ ] 还没有 observer / lessons。
 - [ ] 还没有并行 developer。
 
-## v0.1 hardening TODO
+## v0.2 hardening TODO
 
 - [ ] 增加 discovery 阶段。
-  - `codex-gtd discover --task <task-file>` 或 `run` 的第一阶段先进入 discovery。
-  - Codex 生成高影响澄清问题。
-  - 用户回答后写入 `discovery.md`。
-  - researcher 基于 `discovery.md` 生成 `spec.md` / `interfaces.md`。
-  - 开发前明确 freeze。
 - [ ] 增加 `--turn-timeout-ms`,默认 5-10 分钟。
 - [ ] 使用 `AbortController` 传入 SDK `thread.run(prompt, { signal })`。
 - [ ] 每个 role turn 加 `try/catch`。
@@ -89,26 +94,13 @@
   - `session-log/<timestamp>-<role>-error.json`
 - [ ] 端到端失败时 CLI 返回非零退出码。
 - [ ] 增加 blocker 验收 task。
-- [ ] 规范 `progress.md` 最小结构:
-  - status
-  - current loop
-  - last action
-  - commands run
-  - remaining work
-  - blockers
+- [ ] 规范 `progress.md` 最小结构。
 - [ ] 增加轻量本地测试脚本:
   - CLI 参数解析
   - model alias
   - run 目录结构
   - manager decision JSON 解析
-
-## v0.2 TODO — API probes
-
-- [ ] 创建 `api-probes/` 目录协议。
-- [ ] researcher prompt 增加规则:凡是外部 API/SDK,必须先生成并运行 probe。
-- [ ] session log 记录 probe 命令、响应样例、失败原因。
-- [ ] developer prompt 强制引用 probe 结果作为 API ground truth。
-- [ ] 选一个低门槛外部 API/SDK 做验证。
+  - `api-probes/` 目录和 README 创建
 
 ## v0.3 TODO — Snippet 池
 
@@ -138,6 +130,6 @@
 
 ## 当前判断
 
-v0.1 alpha 已完成:最小闭环真实跑通,验证了 Codex SDK + 文件协议 + 多 role thread 的基本方向。
+v0.2 alpha 已完成:API probe 目录协议、researcher probe 要求、developer/tester probe 注入和真实 public API dogfood 都已跑通。
 
-但它还没有完整实现最终目标。要让 Aegis 真正减少 babysitting,下一步必须先补 discovery、turn timeout、失败落盘和 blocker 路径验收。
+但它还没有完整实现最终目标。要让 Aegis 真正减少 babysitting,下一步仍应优先补 discovery、turn timeout、失败落盘和 blocker 路径验收。

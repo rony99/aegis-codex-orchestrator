@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 type ManagerDecisionInput = {
@@ -40,21 +40,25 @@ Do not edit files. Do not run commands.`;
 }
 
 export function researcherPrompt(task: string): string {
-  return `You are the researcher agent for codex-gtd v0.1.
+  return `You are the researcher agent for Aegis Codex Orchestrator.
 
 Goal:
 Turn the user's task into frozen planning artifacts for a tiny implementation loop.
 
 Hard constraints:
-- Write ./spec.md and ./interfaces.md.
-- Keep v0.1 small; no UI, no external services, no speculative features.
+- Write ./spec.md, ./interfaces.md, and ./api-probes/README.md.
+- Keep the task small; no UI, no speculative features, and no unrelated systems.
 - The developer phase must not need to change public interfaces later.
 - Acceptance criteria must be testable.
 - If the task is ambiguous, choose the smallest reasonable behavior and record the assumption in spec.md.
+- If the task has no external API/SDK dependency, explicitly write that no probes are needed in ./api-probes/README.md.
+- If the task depends on an external API/SDK, create the smallest executable probe script or command note under ./api-probes/, plus a response sample or failure note.
+- Do not require OAuth, paid accounts, or user secrets for v0.2 probes. Prefer public no-key endpoints for sample probes.
 
 Files/directories available:
 - ./task.md contains the original task.
 - ./workspace/ is where implementation will happen later.
+- ./api-probes/ is where probe notes, scripts, samples, or failure notes must be written.
 - ./progress.md and ./blockers.md exist.
 
 Required ./spec.md sections:
@@ -70,22 +74,30 @@ Required ./interfaces.md sections:
 3. Error Contract
 4. Test Contract
 
-After writing both files, update ./progress.md with a short researcher status.
+Required ./api-probes/README.md sections:
+1. Probe Decision
+2. External Dependencies
+3. Probe Artifacts
+4. Recorded Results
+5. Known Limitations
+
+After writing these files, update ./progress.md with a short researcher status.
 
 Original task:
 ${task}`;
 }
 
 export async function managerPrompt(loop: number, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress, blockers] = await Promise.all([
+  const [task, spec, interfaces, progress, blockers, apiProbes] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
     readOptional(runDir, "blockers.md"),
+    readApiProbesSummary(runDir),
   ]);
 
-  return `You are the manager agent for codex-gtd v0.1.
+  return `You are the manager agent for Aegis Codex Orchestrator.
 
 Loop: ${loop}
 
@@ -123,18 +135,22 @@ Current progress.md:
 ${progress}
 
 Current blockers.md:
-${blockers}`;
+${blockers}
+
+Current api-probes summary:
+${apiProbes}`;
 }
 
 export async function developerPrompt(decision: ManagerDecisionInput, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress] = await Promise.all([
+  const [task, spec, interfaces, progress, apiProbes] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
+    readApiProbesSummary(runDir),
   ]);
 
-  return `You are the developer agent for codex-gtd v0.1.
+  return `You are the developer agent for Aegis Codex Orchestrator.
 
 Implement only inside ./workspace unless you need to update ./progress.md.
 
@@ -146,6 +162,8 @@ Hard constraints:
 - Run the relevant test command when possible.
 - Update ./progress.md with what changed, commands run, and remaining work.
 - If blocked, write the reason to ./blockers.md and stop.
+- Treat ./api-probes/ as API ground truth. If probe artifacts contradict your assumptions, follow the probe artifacts.
+- Do not invent API request/response shapes when ./api-probes/ contains a sample or failure note.
 
 Manager decision:
 ${JSON.stringify(decision, null, 2)}
@@ -159,19 +177,23 @@ ${spec}
 interfaces.md:
 ${interfaces}
 
+api-probes summary:
+${apiProbes}
+
 progress.md:
 ${progress}`;
 }
 
 export async function testerPrompt(decision: ManagerDecisionInput, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress] = await Promise.all([
+  const [task, spec, interfaces, progress, apiProbes] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
+    readApiProbesSummary(runDir),
   ]);
 
-  return `You are the tester agent for codex-gtd v0.1.
+  return `You are the tester agent for Aegis Codex Orchestrator.
 
 Verify the implementation in ./workspace against spec.md and interfaces.md.
 
@@ -181,6 +203,7 @@ Hard constraints:
 - Run the test command and record the exact command/result in ./progress.md.
 - If tests fail, do not hide the failure. Record the failure summary in ./progress.md and write actionable repair notes for the manager.
 - If acceptance criteria are fully met, mark that clearly in ./progress.md.
+- Use ./api-probes/ to verify API-dependent behavior. If probes are missing for an API-dependent task, record that as a test gap.
 
 Manager decision:
 ${JSON.stringify(decision, null, 2)}
@@ -193,6 +216,9 @@ ${spec}
 
 interfaces.md:
 ${interfaces}
+
+api-probes summary:
+${apiProbes}
 
 progress.md:
 ${progress}`;
@@ -204,4 +230,34 @@ async function readOptional(runDir: string, file: string): Promise<string> {
   } catch {
     return "(missing)";
   }
+}
+
+async function readApiProbesSummary(runDir: string): Promise<string> {
+  const probesDir = path.join(runDir, "api-probes");
+
+  try {
+    const entries = await readdir(probesDir);
+    if (entries.length === 0) {
+      return "api-probes/ exists but is empty.";
+    }
+
+    const chunks: string[] = [];
+    for (const entry of entries.sort()) {
+      const filePath = path.join(probesDir, entry);
+      const info = await stat(filePath);
+      if (!info.isFile()) continue;
+
+      const content = await readFile(filePath, "utf8");
+      chunks.push(`--- api-probes/${entry} ---\n${truncate(content, 6000)}`);
+    }
+
+    return chunks.length > 0 ? chunks.join("\n\n") : "api-probes/ contains no readable files.";
+  } catch {
+    return "api-probes/ is missing.";
+  }
+}
+
+function truncate(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n...<truncated>`;
 }

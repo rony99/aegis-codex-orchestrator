@@ -1,6 +1,7 @@
 node_modules/
 dist/
 runs/
+runs-*/
 .DS_Store
 *.log
 .env
