@@ -36,6 +36,7 @@
   - `interfaces.md`
   - `progress.md`
   - `blockers.md`
+  - `run-summary.json`
   - `session-log/`
   - `api-probes/`
   - `workspace/`
@@ -63,6 +64,14 @@
   - items
 - [x] role 失败时写入 `session-log/*-error.json`、`progress.md` 和 `blockers.md`；
 - [x] 每个 role turn 使用 `AbortController`（`thread.run(..., { signal })`）实现超时保护；`--turn-timeout-ms` 和 `CODEX_GTD_TURN_TIMEOUT_MS` 可配置。
+- [x] 每个 run 终态写入 `run-summary.json`:
+  - `status` / `reason`
+  - `model`
+  - `startedAt` / `endedAt` / `durationMs`
+  - `maxLoops` / `turnTimeoutMs`
+  - `sdkMonitor` / `observer`
+  - `snippetCandidates`
+  - `sessionLogEntries`
 
 ## 验证记录
 
@@ -94,6 +103,11 @@
   - SDK monitor: `ok`
   - 生成 `api-probes/sms-provider-probe.sh`
   - `blockers.md` 记录缺少 paid SMS provider credentials / sender ID / billing setup
+- [x] run summary verification:
+  - `runs-summary-verify/2026-04-23T11-30-25Z`
+  - 状态: `ask_user`
+  - 生成 `run-summary.json`
+  - summary 记录 `status` / `reason` / `model` / `durationMs` / `sdkMonitor` / `sessionLogEntries`
 
 ## 与最终目标的差距
 
@@ -122,6 +136,7 @@
   - CLI 参数解析
   - model alias 文档输出
   - fast-fail 错误路径
+  - `run-summary.json` schema shape
 - [ ] 扩展本地测试:
   - run 目录结构
   - manager decision JSON 解析

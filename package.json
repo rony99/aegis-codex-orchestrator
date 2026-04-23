@@ -25,6 +25,7 @@
     "docs/",
     "examples/",
     "snippets/",
+    "test/",
     "README.md",
     "LICENSE",
     "package.json",

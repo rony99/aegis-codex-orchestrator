@@ -26,9 +26,23 @@ const DEFAULT_MONITOR_SDK = true;
 const SDK_MONITOR_DIR = ".codex-gtd";
 const SDK_MONITOR_FILE = "sdk-health-baseline.json";
 const SDK_MONITOR_RUN_FILE = "sdk-health.json";
+const RUN_SUMMARY_FILE = "run-summary.json";
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
+
+export const RUN_PROTOCOL_ENTRIES = [
+  "task.md",
+  "discovery.md",
+  "spec.md",
+  "interfaces.md",
+  "progress.md",
+  "blockers.md",
+  "session-log/",
+  "api-probes/",
+  "workspace/",
+  "run-summary.json",
+] as const;
 
 type Role = "discovery" | "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
 type CodexTurn = Awaited<ReturnType<Thread["run"]>>;
@@ -77,6 +91,47 @@ type SdkHealthResult = {
   previousReason?: string;
   checkedAt: string;
 };
+
+export type RunSummary = {
+  schemaVersion: 1;
+  runDir: string;
+  status: RunResult["status"];
+  reason?: string;
+  model: string;
+  taskFile: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  maxLoops: number;
+  turnTimeoutMs: number;
+  options: {
+    observe: boolean;
+    monitorSdk: boolean;
+    skipDiscovery: boolean;
+  };
+  sdkMonitor?: SdkHealthResult;
+  observer?: ObserveResult;
+  snippetCandidates: string[];
+  metrics: {
+    sessionLogEntries: number;
+  };
+  protocol: {
+    requiredEntries: readonly string[];
+  };
+};
+
+type RunMeta = {
+  taskFile: string;
+  startedAt: string;
+  startedAtMs: number;
+  maxLoops: number;
+  turnTimeoutMs: number;
+  observe: boolean;
+  monitorSdk: boolean;
+  skipDiscovery: boolean;
+};
+
+type RunSummaryInput = Omit<RunSummary, "schemaVersion" | "protocol">;
 
 type ManagerDecision = {
   next_action: "develop" | "test" | "done" | "ask_user";
@@ -217,6 +272,8 @@ async function collectDiscoveryAnswers(questions: string[]): Promise<string> {
 }
 
 export async function runOrchestration(options: RunOptions): Promise<RunResult> {
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const model = resolveModel(options.model);
   const runDir = await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
   const workspaceDir = path.join(runDir, "workspace");
@@ -247,6 +304,16 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
   const runMonitorSdk = resolveMonitorSdk(options.monitorSdk);
   const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs);
+  const runMeta: RunMeta = {
+    taskFile: path.resolve(options.taskFile),
+    startedAt,
+    startedAtMs,
+    maxLoops,
+    turnTimeoutMs,
+    observe: Boolean(options.observe),
+    monitorSdk: runMonitorSdk,
+    skipDiscovery: Boolean(options.skipDiscovery),
+  };
   let sdkMonitor: SdkHealthResult | undefined;
 
   if (runMonitorSdk) {
@@ -266,14 +333,14 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     if (!health.passed) {
       const reason = `SDK monitor failed: ${health.reason ?? "codex sdk probe failed"}`;
       await appendBlocker(context.runDir, reason);
-      return {
+      return await finishRun(context, {
         runDir,
         status: "ask_user",
         reason,
         observer: undefined,
         snippetCandidates: [],
         sdkMonitor: health,
-      };
+      }, runMeta);
     }
   }
 
@@ -283,14 +350,14 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       const reason = `Discovery failed: ${discoveryResult.reason}`;
       await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
       await appendBlocker(context.runDir, reason);
-      return {
+      return await finishRun(context, {
         runDir,
         status: "ask_user",
         reason,
         observer: undefined,
         snippetCandidates: [],
         sdkMonitor,
-      };
+      }, runMeta);
     }
 
     const discoveryDecision = discoveryResult.result;
@@ -298,14 +365,14 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       const reason = "Discovery result missing after successful run.";
       await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
       await appendBlocker(context.runDir, reason);
-      return {
+      return await finishRun(context, {
         runDir,
         status: "ask_user",
         reason,
         observer: undefined,
         snippetCandidates: [],
         sdkMonitor,
-      };
+      }, runMeta);
     }
 
     await writeFile(path.join(context.runDir, "discovery.md"), discoveryDecision.discovery_md);
@@ -320,7 +387,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
           context.runDir,
           `\n## Failed\n\nDiscovery requires user input but CLI is not interactive.\n`,
         );
-        return {
+        return await finishRun(context, {
           runDir,
           status: "ask_user",
           reason: askUserReason,
@@ -334,7 +401,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
             : undefined,
           sdkMonitor,
           snippetCandidates: [],
-        };
+        }, runMeta);
       }
 
       const answers = await collectDiscoveryAnswers(discoveryDecision.open_questions);
@@ -343,7 +410,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
         const reason = `Discovery finalization failed: ${finalDiscoveryResult.reason}`;
         await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
         await appendBlocker(context.runDir, reason);
-        return {
+        return await finishRun(context, {
           runDir,
           status: "ask_user",
           reason,
@@ -357,14 +424,14 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
             : undefined,
           sdkMonitor,
           snippetCandidates: [],
-        };
+        }, runMeta);
       }
 
       if (!finalDiscoveryResult.result) {
         const reason = "Discovery finalization completed without payload.";
         await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
         await appendBlocker(context.runDir, reason);
-        return {
+        return await finishRun(context, {
           runDir,
           status: "ask_user",
           reason,
@@ -378,7 +445,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
             : undefined,
           sdkMonitor,
           snippetCandidates: [],
-        };
+        }, runMeta);
       }
 
       await writeFile(path.join(context.runDir, "discovery.md"), finalDiscoveryResult.result.discovery_md);
@@ -388,7 +455,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
           context.runDir,
           `Discovery incomplete: ${finalDiscoveryResult.result.open_questions.join("; ")}`,
         );
-        return {
+        return await finishRun(context, {
           runDir,
           status: "ask_user",
           reason: askUserReason,
@@ -402,7 +469,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
             : undefined,
           sdkMonitor,
           snippetCandidates: [],
-        };
+        }, runMeta);
       }
     }
   }
@@ -412,7 +479,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     const reason = `Researcher failed: ${researcherResult.reason}`;
     await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
     await appendBlocker(context.runDir, reason);
-    return {
+    return await finishRun(context, {
       runDir,
       status: "ask_user",
       reason,
@@ -426,7 +493,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
         : undefined,
       sdkMonitor,
       snippetCandidates: [],
-    };
+    }, runMeta);
   }
 
   let finalStatus: RunResult["status"] = "max_loops_reached";
@@ -517,14 +584,14 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     })
     : [];
 
-  return {
+  return await finishRun(context, {
     runDir,
     status: finalStatus,
     reason: finalReason,
     observer,
     snippetCandidates,
     sdkMonitor,
-  };
+  }, runMeta);
 }
 
 async function runSdkHealthCheck(options: {
@@ -584,6 +651,74 @@ async function runSdkHealthCheck(options: {
   }, null, 2)}\n`, "utf8");
 
   return health;
+}
+
+export function buildRunSummary(input: RunSummaryInput): RunSummary {
+  return {
+    schemaVersion: 1,
+    runDir: input.runDir,
+    status: input.status,
+    reason: input.reason,
+    model: input.model,
+    taskFile: input.taskFile,
+    startedAt: input.startedAt,
+    endedAt: input.endedAt,
+    durationMs: input.durationMs,
+    maxLoops: input.maxLoops,
+    turnTimeoutMs: input.turnTimeoutMs,
+    options: input.options,
+    sdkMonitor: input.sdkMonitor,
+    observer: input.observer,
+    snippetCandidates: input.snippetCandidates,
+    metrics: input.metrics,
+    protocol: {
+      requiredEntries: RUN_PROTOCOL_ENTRIES,
+    },
+  };
+}
+
+async function finishRun(
+  context: RunContext,
+  result: RunResult,
+  meta: RunMeta,
+): Promise<RunResult> {
+  const endedAtMs = Date.now();
+  const endedAt = new Date(endedAtMs).toISOString();
+  const summary = buildRunSummary({
+    runDir: result.runDir,
+    status: result.status,
+    reason: result.reason,
+    model: context.model,
+    taskFile: meta.taskFile,
+    startedAt: meta.startedAt,
+    endedAt,
+    durationMs: Math.max(0, endedAtMs - meta.startedAtMs),
+    maxLoops: meta.maxLoops,
+    turnTimeoutMs: meta.turnTimeoutMs,
+    options: {
+      observe: meta.observe,
+      monitorSdk: meta.monitorSdk,
+      skipDiscovery: meta.skipDiscovery,
+    },
+    sdkMonitor: result.sdkMonitor,
+    observer: result.observer,
+    snippetCandidates: result.snippetCandidates ?? [],
+    metrics: {
+      sessionLogEntries: await countSessionLogEntries(context.runDir),
+    },
+  });
+
+  await writeFile(path.join(context.runDir, RUN_SUMMARY_FILE), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  return result;
+}
+
+async function countSessionLogEntries(runDir: string): Promise<number> {
+  try {
+    const entries = await readdir(path.join(runDir, "session-log"));
+    return entries.filter((entry) => entry.endsWith(".json")).length;
+  } catch {
+    return 0;
+  }
 }
 
 async function safeRunObserver(options: ObserveOptions): Promise<ObserveResult> {

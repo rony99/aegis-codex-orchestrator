@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { buildRunSummary, RUN_PROTOCOL_ENTRIES } from "../dist/driver.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
@@ -45,4 +46,44 @@ test("unknown flags fail fast before any SDK call", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Unknown argument: --not-a-real-flag/);
+});
+
+test("run summary captures machine-readable terminal state", () => {
+  const summary = buildRunSummary({
+    runDir: "/tmp/aegis-run",
+    status: "ask_user",
+    reason: "missing credentials",
+    model: "gpt-5.3-codex-spark",
+    taskFile: "/tmp/task.md",
+    startedAt: "2026-04-23T00:00:00.000Z",
+    endedAt: "2026-04-23T00:00:01.000Z",
+    durationMs: 1000,
+    maxLoops: 2,
+    turnTimeoutMs: 300000,
+    options: {
+      observe: false,
+      monitorSdk: true,
+      skipDiscovery: true,
+    },
+    sdkMonitor: {
+      status: "ok",
+      model: "gpt-5.3-codex-spark",
+      sdkVersion: "0.123.0",
+      passed: true,
+      checkedAt: "2026-04-23T00:00:00.100Z",
+    },
+    snippetCandidates: [],
+    metrics: {
+      sessionLogEntries: 2,
+    },
+  });
+
+  assert.equal(summary.schemaVersion, 1);
+  assert.equal(summary.status, "ask_user");
+  assert.equal(summary.model, "gpt-5.3-codex-spark");
+  assert.equal(summary.options.skipDiscovery, true);
+  assert.equal(summary.sdkMonitor?.passed, true);
+  assert.equal(summary.metrics.sessionLogEntries, 2);
+  assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
+  assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
 });

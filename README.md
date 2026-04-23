@@ -47,6 +47,7 @@ spec.md            # functional requirements, acceptance criteria, non-goals
 interfaces.md      # frozen contract for implementation and testing
 progress.md        # current status and executed commands
 blockers.md        # issues that require user attention or cannot be self-resolved
+run-summary.json   # machine-readable terminal state and basic metrics
 session-log/       # raw Codex turn traces for future observer/reflection work
 api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
@@ -123,6 +124,7 @@ npm run test:local
 ```
 
 These tests cover CLI parsing and fast-fail behavior without invoking the Codex SDK.
+They also validate the machine-readable `run-summary.json` shape.
 
 ### Run the included pilot task
 
@@ -141,6 +143,7 @@ This creates a local `runs/<timestamp>/` directory containing:
 - `interfaces.md`
 - `progress.md`
 - `blockers.md`
+- `run-summary.json`
 - `session-log/`
 - `api-probes/`
 - `workspace/`
@@ -212,6 +215,7 @@ runs/2026-04-23T08-27-29Z/
   interfaces.md
   progress.md
   blockers.md
+  run-summary.json
   session-log/
   session-log/*-error.json (if a role fails or times out)
   api-probes/
