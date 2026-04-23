@@ -11,6 +11,7 @@ type ParsedArgs = {
   snippetsDir?: string;
   observe?: boolean;
   monitorSdk?: boolean;
+  skipDiscovery?: boolean;
   turnTimeoutMs?: number;
   maxLoops?: number;
 };
@@ -67,6 +68,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--skip-discovery") {
+      parsed.skipDiscovery = true;
+      continue;
+    }
+
     if (arg === "--monitor-sdk") {
       parsed.monitorSdk = true;
       continue;
@@ -114,7 +120,7 @@ function printHelp(): void {
   console.log(`codex-gtd v0.3
 
 Usage:
-  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]
+  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd smoke [--model <model>]
 
@@ -156,6 +162,7 @@ async function main(): Promise<void> {
       snippetsDir: args.snippetsDir,
       observe: args.observe,
       monitorSdk: args.monitorSdk,
+      skipDiscovery: args.skipDiscovery,
       turnTimeoutMs: args.turnTimeoutMs,
       maxLoops: args.maxLoops,
     });

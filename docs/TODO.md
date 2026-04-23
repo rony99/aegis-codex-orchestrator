@@ -9,15 +9,16 @@
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
-  - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]`
+  - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd smoke [--model <model>]`
 - [x] 模型配置:
   - 默认 `gpt-5.4`
   - `CODEX_GTD_MODEL`
   - `--model`
   - `codex-5.3-spark` alias → `gpt-5.3-codex-spark`
-- [x] 五个 role 线程（含手动 observer）:
+- [x] 六个 role 线程（含手动 observer）:
   - researcher
+  - discovery
   - manager
   - developer
   - tester
@@ -26,6 +27,7 @@
 - [x] `run --observe` 自动触发 observer 并在 run 结束后写入 `lessons.md`。
 - [x] 当前 run 文件协议:
   - `task.md`
+  - `discovery.md`
   - `spec.md`
   - `interfaces.md`
   - `progress.md`
@@ -83,9 +85,9 @@
 
 ## 与最终目标的差距
 
-- [ ] 还没有真正的多轮 discovery。
-  - 当前: `run --task` 直接进入 researcher。
-  - 目标: Codex 先主导澄清目的、需求、边界、技术栈、API、账号/密钥、验收标准,写入 `discovery.md`,再进入开发。
+- [x] discovery 仍有改进空间，但已落地前置澄清。
+  - 当前: `run` 已支持 discovery 阶段与 TTY 追问；`--skip-discovery` 用于非交互环境。
+  - 目标: 维持一次澄清+一次追问的真实闭环，继续减少不必要的人机往返。
 - [ ] API probes 仍是 run-local 文件,未对接跨 run 的质量门控。
 - [ ] Snippets 还在扩充中，缺少覆盖关键场景的模板和治理规则。
 - [x] observer 命令可生成 lessons（基础版），且 `run --observe` 已挂接到主循环。
@@ -93,7 +95,7 @@
 
 ## v0.2 hardening TODO
 
-- [ ] 增加 discovery 阶段。
+- [x] 增加 discovery 阶段。
 - [x] 增加 `--turn-timeout-ms`,默认 5 分钟（可通过 env 调整）。
 - [x] 使用 `AbortController` 传入 SDK `thread.run(prompt, { signal })`。
 - [x] 每个 role turn 加 `try/catch`。
@@ -133,6 +135,6 @@
 
 ## 当前判断
 
-v0.3 alpha 已完成: API probe 与 snippet 检索通路、prompt 接入、版本与文档同步都已打通。
+v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、版本与文档同步都已打通。
 
-但它还没有完整实现最终目标。要让 Aegis 真正减少 babysitting,下一步仍应优先补 discovery 和 blocker 路径验收。
+但它仍未完全闭环。下一步优先补 blocker 路径验收和非交互场景下 discovery 可靠性。

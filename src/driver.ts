@@ -1,11 +1,15 @@
 import { Codex, type Thread } from "@openai/codex-sdk";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  discoveryPrompt,
   developerPrompt,
   observerPrompt,
+  discoverySchema,
   managerPrompt,
   managerSchema,
   researcherPrompt,
@@ -26,7 +30,7 @@ const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
 
-type Role = "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
+type Role = "discovery" | "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
 type CodexTurn = Awaited<ReturnType<Thread["run"]>>;
 
 export type RunOptions = {
@@ -36,6 +40,7 @@ export type RunOptions = {
   snippetsDir?: string;
   observe?: boolean;
   monitorSdk?: boolean;
+  skipDiscovery?: boolean;
   turnTimeoutMs?: number;
   maxLoops?: number;
 };
@@ -78,6 +83,12 @@ type ManagerDecision = {
   target?: string;
   instructions?: string;
   reason: string;
+};
+
+type DiscoveryDecision = {
+  status: "complete" | "needs_input";
+  discovery_md: string;
+  open_questions: string[];
 };
 
 type RunContext = {
@@ -140,6 +151,71 @@ async function readSdkVersion(): Promise<string> {
   }
 }
 
+async function runDiscovery(
+  context: RunContext,
+  task: string,
+  snippetsDir: string,
+  userAnswers = "",
+): Promise<{ ok: boolean; result?: DiscoveryDecision; reason?: string }> {
+  const prompt = await discoveryPrompt(task, snippetsDir, userAnswers);
+  const role = "discovery";
+  const thread = getThread(context, role);
+  const startedAt = new Date().toISOString();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    abortController.abort();
+  }, context.turnTimeoutMs);
+
+  try {
+    const turn = await thread.run(prompt, { outputSchema: discoverySchema, signal: abortController.signal });
+    const endedAt = new Date().toISOString();
+    await writeSessionLog(context, {
+      role,
+      prompt,
+      turn,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+
+    const parsed = parseDiscoveryDecision(turn.finalResponse);
+    return { ok: true, result: parsed };
+  } catch (error) {
+    const endedAt = new Date().toISOString();
+    const reason = summarizeError(error);
+
+    await writeRoleErrorLog(context, {
+      role,
+      prompt,
+      reason,
+      error,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function collectDiscoveryAnswers(questions: string[]): Promise<string> {
+  const rl = createInterface({ input: stdin, output: stdout });
+  const answers: string[] = [];
+
+  try {
+    for (const [index, question] of questions.entries()) {
+      const title = question.trim() === "" ? `Question ${index + 1}` : question.trim();
+      const answer = await rl.question(`\n${index + 1}. ${title}\n> `);
+      answers.push(`Q: ${title}\nA: ${answer.trim() || "Not provided"}`);
+    }
+  } finally {
+    await rl.close();
+  }
+
+  return answers.join("\n\n");
+}
+
 export async function runOrchestration(options: RunOptions): Promise<RunResult> {
   const model = resolveModel(options.model);
   const runDir = await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
@@ -155,6 +231,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   await writeFile(path.join(runDir, "task.md"), task);
   await writeFile(path.join(runDir, "progress.md"), initialProgress(model));
   await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n");
+  await writeFile(path.join(runDir, "discovery.md"), "# Discovery\n\nPending discovery.\n");
 
   const context: RunContext = {
     codex: new Codex(),
@@ -197,6 +274,136 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
         snippetCandidates: [],
         sdkMonitor: health,
       };
+    }
+  }
+
+  if (!options.skipDiscovery) {
+    const discoveryResult = await runDiscovery(context, task, snippetsDir);
+    if (!discoveryResult.ok) {
+      const reason = `Discovery failed: ${discoveryResult.reason}`;
+      await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+      await appendBlocker(context.runDir, reason);
+      return {
+        runDir,
+        status: "ask_user",
+        reason,
+        observer: undefined,
+        snippetCandidates: [],
+        sdkMonitor,
+      };
+    }
+
+    const discoveryDecision = discoveryResult.result;
+    if (!discoveryDecision) {
+      const reason = "Discovery result missing after successful run.";
+      await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+      await appendBlocker(context.runDir, reason);
+      return {
+        runDir,
+        status: "ask_user",
+        reason,
+        observer: undefined,
+        snippetCandidates: [],
+        sdkMonitor,
+      };
+    }
+
+    await writeFile(path.join(context.runDir, "discovery.md"), discoveryDecision.discovery_md);
+    if (discoveryDecision.status !== "complete") {
+      if (!process.stdin.isTTY) {
+        const askUserReason = "Discovery has high-impact open questions. Re-run with --skip-discovery for non-interactive usage.";
+        await appendBlocker(
+          context.runDir,
+          `Discovery incomplete (non-interactive): ${discoveryDecision.open_questions.join("; ")}`,
+        );
+        await appendProgress(
+          context.runDir,
+          `\n## Failed\n\nDiscovery requires user input but CLI is not interactive.\n`,
+        );
+        return {
+          runDir,
+          status: "ask_user",
+          reason: askUserReason,
+          observer: options.observe
+            ? await safeRunObserver({
+              runDir,
+              model: options.model,
+              snippetsDir: options.snippetsDir,
+              turnTimeoutMs: options.turnTimeoutMs,
+            })
+            : undefined,
+          sdkMonitor,
+          snippetCandidates: [],
+        };
+      }
+
+      const answers = await collectDiscoveryAnswers(discoveryDecision.open_questions);
+      const finalDiscoveryResult = await runDiscovery(context, task, snippetsDir, answers);
+      if (!finalDiscoveryResult.ok) {
+        const reason = `Discovery finalization failed: ${finalDiscoveryResult.reason}`;
+        await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+        await appendBlocker(context.runDir, reason);
+        return {
+          runDir,
+          status: "ask_user",
+          reason,
+          observer: options.observe
+            ? await safeRunObserver({
+              runDir,
+              model: options.model,
+              snippetsDir: options.snippetsDir,
+              turnTimeoutMs: options.turnTimeoutMs,
+            })
+            : undefined,
+          sdkMonitor,
+          snippetCandidates: [],
+        };
+      }
+
+      if (!finalDiscoveryResult.result) {
+        const reason = "Discovery finalization completed without payload.";
+        await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+        await appendBlocker(context.runDir, reason);
+        return {
+          runDir,
+          status: "ask_user",
+          reason,
+          observer: options.observe
+            ? await safeRunObserver({
+              runDir,
+              model: options.model,
+              snippetsDir: options.snippetsDir,
+              turnTimeoutMs: options.turnTimeoutMs,
+            })
+            : undefined,
+          sdkMonitor,
+          snippetCandidates: [],
+        };
+      }
+
+      await writeFile(path.join(context.runDir, "discovery.md"), finalDiscoveryResult.result.discovery_md);
+      if (finalDiscoveryResult.result.status !== "complete") {
+        const askUserReason = "Discovery still has open questions after one clarification round.";
+        await appendBlocker(
+          context.runDir,
+          `Discovery incomplete: ${finalDiscoveryResult.result.open_questions.join("; ")}`,
+        );
+        return {
+          runDir,
+          status: "ask_user",
+          reason: askUserReason,
+          observer: options.observe
+            ? await safeRunObserver({
+              runDir,
+              model: options.model,
+              snippetsDir: options.snippetsDir,
+              turnTimeoutMs: options.turnTimeoutMs,
+            })
+            : undefined,
+          sdkMonitor,
+          snippetCandidates: [],
+        };
+      }
     }
   }
 
@@ -684,6 +891,30 @@ function parseManagerDecision(finalResponse: string): ManagerDecision {
     target: typeof candidate.target === "string" ? candidate.target : undefined,
     instructions: typeof candidate.instructions === "string" ? candidate.instructions : undefined,
     reason: typeof candidate.reason === "string" ? candidate.reason : "No reason provided.",
+  };
+}
+
+function parseDiscoveryDecision(finalResponse: string): DiscoveryDecision {
+  const parsed = parseJsonObject(finalResponse);
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Discovery returned non-JSON response: ${finalResponse}`);
+  }
+
+  const candidate = parsed as Partial<DiscoveryDecision>;
+  if (candidate.status !== "complete" && candidate.status !== "needs_input") {
+    throw new Error(`Discovery returned invalid status: ${finalResponse}`);
+  }
+  if (typeof candidate.discovery_md !== "string" || candidate.discovery_md.trim().length === 0) {
+    throw new Error(`Discovery returned invalid discovery_md: ${finalResponse}`);
+  }
+  if (!Array.isArray(candidate.open_questions)) {
+    throw new Error(`Discovery returned invalid open_questions: ${finalResponse}`);
+  }
+
+  return {
+    status: candidate.status,
+    discovery_md: candidate.discovery_md,
+    open_questions: candidate.open_questions.filter((q) => typeof q === "string"),
   };
 }
 

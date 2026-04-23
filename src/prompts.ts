@@ -32,11 +32,69 @@ export const managerSchema = {
   additionalProperties: false,
 } as const;
 
+export const discoverySchema = {
+  type: "object",
+  properties: {
+    status: {
+      type: "string",
+      enum: ["complete", "needs_input"],
+      description: "Whether discovery is ready for implementation.",
+    },
+    discovery_md: {
+      type: "string",
+      description: "Full markdown content for discovery.md.",
+    },
+    open_questions: {
+      type: "array",
+      items: {
+        type: "string",
+      },
+      description: "Only when status=needs_input. Concrete clarification questions.",
+    },
+  },
+  required: ["status", "discovery_md", "open_questions"],
+  additionalProperties: false,
+} as const;
+
 export function smokePrompt(model: string): string {
   return `You are running a Codex SDK smoke test with model ${model}.
 
 Return exactly one concise sentence confirming that the SDK thread is working.
 Do not edit files. Do not run commands.`;
+}
+
+export async function discoveryPrompt(task: string, snippetsDir: string, answers: string = ""): Promise<string> {
+  const snippets = await readSnippetsSummary(snippetsDir);
+
+  return `You are the discovery agent for Aegis Codex Orchestrator.
+
+Goal:
+Run one high-signal clarification pass BEFORE implementation.
+
+Hard constraints:
+- Use no tools and no file edits.
+- Return JSON-only content that matches the discovery schema.
+- If task intent and constraints are clear enough, return status "complete".
+- If not, return status "needs_input" and include only high-impact questions that materially affect interface, scope, acceptance, dependencies, or risk.
+- Keep questions to 4-8 items when status is needs_input.
+
+Task:
+${task}
+
+${answers ? `User answers provided:\n${answers}\n` : ""}
+
+Available snippet context:
+${snippets}
+
+Return discovery_md with these sections:
+1. Purpose & scope
+2. Product requirements
+3. Functional constraints
+4. Tech stack assumptions
+5. API / dependency assumptions
+6. Acceptance criteria
+7. Open questions (if any)
+`;
 }
 
 export async function researcherPrompt(task: string, snippetsDir: string): Promise<string> {
@@ -99,8 +157,9 @@ export async function managerPrompt(
   runDir: string,
   snippetsDir: string,
 ): Promise<string> {
-  const [task, spec, interfaces, progress, blockers, apiProbes, snippets] = await Promise.all([
+  const [task, discovery, spec, interfaces, progress, blockers, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
+    readOptional(runDir, "discovery.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
@@ -137,6 +196,9 @@ Return JSON only. Match the provided schema.
 Current task.md:
 ${task}
 
+Current discovery.md:
+${discovery}
+
 Current spec.md:
 ${spec}
 
@@ -161,8 +223,9 @@ export async function developerPrompt(
   runDir: string,
   snippetsDir: string,
 ): Promise<string> {
-  const [task, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
+  const [task, discovery, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
+    readOptional(runDir, "discovery.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
@@ -193,6 +256,9 @@ ${JSON.stringify(decision, null, 2)}
 task.md:
 ${task}
 
+discovery.md:
+${discovery}
+
 spec.md:
 ${spec}
 
@@ -214,8 +280,9 @@ export async function testerPrompt(
   runDir: string,
   snippetsDir: string,
 ): Promise<string> {
-  const [task, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
+  const [task, discovery, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
+    readOptional(runDir, "discovery.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
@@ -240,6 +307,9 @@ ${JSON.stringify(decision, null, 2)}
 
 task.md:
 ${task}
+
+discovery.md:
+${discovery}
 
 spec.md:
 ${spec}

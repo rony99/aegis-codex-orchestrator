@@ -42,6 +42,7 @@ Each role communicates through a file protocol inside `runs/<timestamp>/`:
 
 ```text
 task.md            # original user task
+discovery.md       # clarification pass and open questions (interactive unless --skip-discovery)
 spec.md            # functional requirements, acceptance criteria, non-goals
 interfaces.md      # frozen contract for implementation and testing
 progress.md        # current status and executed commands
@@ -57,7 +58,7 @@ snippets/INDEX.md  # reusable implementation snippets for prompt grounding
 
 The target protocol includes:
 
-- `discovery.md` in a later milestone for multi-turn clarification.
+- `discovery.md` with clarification and open questions.
 - `lessons.md` in v0.4 from observer review.
 
 For v0.4, you can now generate an observer pass:
@@ -127,6 +128,7 @@ node dist/cli.js run \
 This creates a local `runs/<timestamp>/` directory containing:
 
 - `task.md`
+- `discovery.md`
 - `spec.md`
 - `interfaces.md`
 - `progress.md`
@@ -159,7 +161,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ## CLI
 
 ```text
-codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]
+codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
 codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
 codex-gtd smoke [--model <model>]
 ```
@@ -224,7 +226,7 @@ The repository is configured to publish only code and documentation:
 
 Near-term hardening:
 
-- Add a real multi-turn discovery mode before implementation starts.
+- Continue discovery hardening for non-interactive and ambiguous tasks.
 - Add per-turn timeout control for Codex SDK calls.
 - Persist role failures into `blockers.md`, `progress.md`, and error session logs.
 - Add a real blocker-path test for `ask_user`.
