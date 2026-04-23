@@ -116,6 +116,14 @@ npm run smoke
 
 The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the most reliable default for this project. You can still pass `--model codex-5.3-spark` for faster experimental runs when that model is supported by your Codex account.
 
+### Run local tests
+
+```bash
+npm run test:local
+```
+
+These tests cover CLI parsing and fast-fail behavior without invoking the Codex SDK.
+
 ### Run the included pilot task
 
 ```bash
@@ -138,6 +146,20 @@ This creates a local `runs/<timestamp>/` directory containing:
 - `workspace/`
 - `lessons.md` (if `observe` is enabled)
 - `snippets/_candidates/<timestamp>-candidates.md` (if observer outputs candidate snippets)
+
+### Verify blocker behavior
+
+The repository includes a task that should stop before implementation because it requires a paid SMS provider account and secrets:
+
+```bash
+node dist/cli.js run \
+  --task examples/blocker-api-key-task.md \
+  --model codex-5.3-spark \
+  --skip-discovery \
+  --max-loops 2
+```
+
+Expected result: `Status: ask_user`, with the missing credentials recorded in `blockers.md`.
 
 ### Development mode
 

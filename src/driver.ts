@@ -519,12 +519,12 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
 
   return {
     runDir,
-      status: finalStatus,
-      reason: finalReason,
-      observer,
-      snippetCandidates,
-      sdkMonitor,
-    };
+    status: finalStatus,
+    reason: finalReason,
+    observer,
+    snippetCandidates,
+    sdkMonitor,
+  };
 }
 
 async function runSdkHealthCheck(options: {

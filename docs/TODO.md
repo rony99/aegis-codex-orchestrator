@@ -11,6 +11,9 @@
 - [x] CLI:
   - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd smoke [--model <model>]`
+- [x] 本地测试脚本:
+  - `npm run test:local`
+  - 覆盖 CLI help、必填 task、非法 numeric flags、未知 flags 的 fast-fail 路径
 - [x] 模型配置:
   - 默认 `gpt-5.4`
   - `CODEX_GTD_MODEL`
@@ -22,6 +25,7 @@
   - manager
   - developer
   - tester
+  - observer
 - [x] observer 命令:
   - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - [x] `run --observe` 自动触发 observer 并在 run 结束后写入 `lessons.md`。
@@ -65,6 +69,7 @@
 - [x] `npm install`
 - [x] `npm run typecheck`
 - [x] `npm run build`
+- [x] `npm run test:local`
 - [x] `npm run smoke`
 - [x] v0.1 pilot run:
   - `runs/2026-04-23T08-27-29Z`
@@ -82,6 +87,13 @@
   - 生成 `api-probes/httpbin-json-probe.sh`
   - 生成 `api-probes/httpbin-json-response.json`
   - 使用 `https://httpbin.org/json` 捕获真实响应样例
+- [x] blocker-path verification:
+  - `runs-blocker-verify/2026-04-23T11-23-42Z`
+  - task: `examples/blocker-api-key-task.md`
+  - 状态: `ask_user`
+  - SDK monitor: `ok`
+  - 生成 `api-probes/sms-provider-probe.sh`
+  - `blockers.md` 记录缺少 paid SMS provider credentials / sender ID / billing setup
 
 ## 与最终目标的差距
 
@@ -104,11 +116,13 @@
   - `progress.md`
   - `session-log/<timestamp>-<role>-error.json`
 - [x] 端到端失败时 CLI 返回非零退出码。
-- [ ] 增加 blocker 验收 task。
+- [x] 增加 blocker 验收 task。
 - [ ] 规范 `progress.md` 最小结构。
-- [ ] 增加轻量本地测试脚本:
+- [x] 增加轻量本地测试脚本:
   - CLI 参数解析
-  - model alias
+  - model alias 文档输出
+  - fast-fail 错误路径
+- [ ] 扩展本地测试:
   - run 目录结构
   - manager decision JSON 解析
   - `api-probes/` 目录和 README 创建

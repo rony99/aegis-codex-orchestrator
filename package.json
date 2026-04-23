@@ -36,6 +36,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:local": "npm run build && node --test test/*.test.mjs",
     "dev": "tsx src/cli.ts",
     "smoke": "tsx src/cli.ts smoke --model gpt-5.4"
   },
