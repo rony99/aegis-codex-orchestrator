@@ -1,10 +1,11 @@
 import { Codex, type Thread } from "@openai/codex-sdk";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   developerPrompt,
+  observerPrompt,
   managerPrompt,
   managerSchema,
   researcherPrompt,
@@ -17,11 +18,15 @@ const DEFAULT_RUNS_DIR = "runs";
 const DEFAULT_SNIPPETS_DIR = "snippets";
 const DEFAULT_MAX_LOOPS = 8;
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+const DEFAULT_MONITOR_SDK = true;
+const SDK_MONITOR_DIR = ".codex-gtd";
+const SDK_MONITOR_FILE = "sdk-health-baseline.json";
+const SDK_MONITOR_RUN_FILE = "sdk-health.json";
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
 
-type Role = "researcher" | "manager" | "developer" | "tester" | "smoke";
+type Role = "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
 type CodexTurn = Awaited<ReturnType<Thread["run"]>>;
 
 export type RunOptions = {
@@ -29,6 +34,8 @@ export type RunOptions = {
   model?: string;
   runsDir?: string;
   snippetsDir?: string;
+  observe?: boolean;
+  monitorSdk?: boolean;
   turnTimeoutMs?: number;
   maxLoops?: number;
 };
@@ -37,6 +44,33 @@ export type RunResult = {
   runDir: string;
   status: "done" | "ask_user" | "max_loops_reached";
   reason?: string;
+  observer?: ObserveResult;
+  snippetCandidates?: string[];
+  sdkMonitor?: SdkHealthResult;
+};
+
+export type ObserveOptions = {
+  runDir: string;
+  model?: string;
+  snippetsDir?: string;
+  turnTimeoutMs?: number;
+};
+
+export type ObserveResult = {
+  runDir: string;
+  status: "done" | "failed";
+  reason?: string;
+};
+
+type SdkHealthResult = {
+  status: "ok" | "failed" | "degraded";
+  model: string;
+  sdkVersion: string;
+  passed: boolean;
+  reason?: string;
+  previousPassed?: boolean;
+  previousReason?: string;
+  checkedAt: string;
 };
 
 type ManagerDecision = {
@@ -57,9 +91,30 @@ type RunContext = {
   threads: Map<Role, Thread>;
 };
 
-export async function runSmokeTest(options: { model?: string } = {}): Promise<CodexTurn> {
-  const model = resolveModel(options.model);
+type ObserverContext = {
+  codex: Codex;
+  model: string;
+  turnTimeoutMs: number;
+  runDir: string;
+  snippetsDir: string;
+  threads: Map<Role, Thread>;
+};
+
+export async function runSmokeTest(
+  options: { model?: string; turnTimeoutMs?: number } = {},
+): Promise<CodexTurn> {
+  const resolvedModel = resolveModel(options.model);
+  const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs);
+  return runSmokeTestWithSignal(resolvedModel, turnTimeoutMs);
+}
+
+async function runSmokeTestWithSignal(model: string, turnTimeoutMs: number): Promise<CodexTurn> {
   const codex = new Codex();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    abortController.abort();
+  }, turnTimeoutMs);
+
   const thread = codex.startThread({
     model,
     skipGitRepoCheck: true,
@@ -67,7 +122,22 @@ export async function runSmokeTest(options: { model?: string } = {}): Promise<Co
     approvalPolicy: "never",
   });
 
-  return thread.run(smokePrompt(model));
+  try {
+    return await thread.run(smokePrompt(model), { signal: abortController.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readSdkVersion(): Promise<string> {
+  try {
+    const packagePath = path.resolve("package.json");
+    const packageContent = await readFile(packagePath, "utf8");
+    const packageJson = JSON.parse(packageContent) as { dependencies?: Record<string, string> };
+    return packageJson.dependencies?.["@openai/codex-sdk"] ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 export async function runOrchestration(options: RunOptions): Promise<RunResult> {
@@ -97,22 +167,73 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     threads: new Map<Role, Thread>(),
   };
 
+  const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
+  const runMonitorSdk = resolveMonitorSdk(options.monitorSdk);
+  const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs);
+  let sdkMonitor: SdkHealthResult | undefined;
+
+  if (runMonitorSdk) {
+    const monitorModel = options.model;
+    const health = await runSdkHealthCheck({
+      model: monitorModel,
+      turnTimeoutMs,
+      runDir,
+    });
+    await writeFile(path.join(context.runDir, SDK_MONITOR_RUN_FILE), `${JSON.stringify(health, null, 2)}\n`, "utf8");
+    sdkMonitor = health;
+    await appendProgress(
+      context.runDir,
+      `\n## SDK Health (${health.checkedAt})\n\nStatus: ${health.status}\nModel: ${health.model}\nSDK Version: ${health.sdkVersion}\nResult: ${health.passed ? "passed" : "failed"}\n${health.reason ? `Reason: ${health.reason}\n` : ""}\n`,
+    );
+
+    if (!health.passed) {
+      const reason = `SDK monitor failed: ${health.reason ?? "codex sdk probe failed"}`;
+      await appendBlocker(context.runDir, reason);
+      return {
+        runDir,
+        status: "ask_user",
+        reason,
+        observer: undefined,
+        snippetCandidates: [],
+        sdkMonitor: health,
+      };
+    }
+  }
+
   const researcherResult = await runRole(context, "researcher", await researcherPrompt(task, snippetsDir));
   if (!researcherResult.ok) {
     const reason = `Researcher failed: ${researcherResult.reason}`;
     await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
     await appendBlocker(context.runDir, reason);
-    return { runDir, status: "ask_user", reason };
+    return {
+      runDir,
+      status: "ask_user",
+      reason,
+      observer: options.observe
+        ? await safeRunObserver({
+          runDir,
+          model: options.model,
+          snippetsDir: options.snippetsDir,
+          turnTimeoutMs: options.turnTimeoutMs,
+        })
+        : undefined,
+      sdkMonitor,
+      snippetCandidates: [],
+    };
   }
 
-  const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
+  let finalStatus: RunResult["status"] = "max_loops_reached";
+  let finalReason: string | undefined;
+
   for (let loop = 1; loop <= maxLoops; loop += 1) {
     const managerRoleResult = await runRole(context, "manager", await managerPrompt(loop, context.runDir, context.snippetsDir));
     if (!managerRoleResult.ok) {
       const reason = `Manager failed: ${managerRoleResult.reason}`;
       await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
       await appendBlocker(context.runDir, reason);
-      return { runDir, status: "ask_user", reason };
+      finalStatus = "ask_user";
+      finalReason = reason;
+      break;
     }
 
     let decision: ManagerDecision;
@@ -122,17 +243,23 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       const reason = `Manager returned invalid decision: ${summarizeError(error)}`;
       await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
       await appendBlocker(context.runDir, reason);
-      return { runDir, status: "ask_user", reason };
+      finalStatus = "ask_user";
+      finalReason = reason;
+      break;
     }
 
     if (decision.next_action === "done") {
       await appendProgress(context.runDir, `\n## Final\n\nDone: ${decision.reason}\n`);
-      return { runDir, status: "done", reason: decision.reason };
+      finalStatus = "done";
+      finalReason = decision.reason;
+      break;
     }
 
     if (decision.next_action === "ask_user") {
       await appendBlocker(context.runDir, decision.reason);
-      return { runDir, status: "ask_user", reason: decision.reason };
+      finalStatus = "ask_user";
+      finalReason = decision.reason;
+      break;
     }
 
     if (decision.next_action === "develop") {
@@ -141,7 +268,9 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
         const reason = `Developer failed: ${developerRoleResult.reason}`;
         await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
         await appendBlocker(context.runDir, reason);
-        return { runDir, status: "ask_user", reason };
+        finalStatus = "ask_user";
+        finalReason = reason;
+        break;
       }
       continue;
     }
@@ -152,15 +281,144 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
         const reason = `Tester failed: ${testerRoleResult.reason}`;
         await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
         await appendBlocker(context.runDir, reason);
-        return { runDir, status: "ask_user", reason };
+        finalStatus = "ask_user";
+        finalReason = reason;
+        break;
       }
       continue;
     }
   }
 
-  const reason = `Manager did not finish within ${maxLoops} loop(s).`;
-  await appendBlocker(context.runDir, reason);
-  return { runDir, status: "max_loops_reached", reason };
+  if (finalStatus === "max_loops_reached" && !finalReason) {
+    finalReason = `Manager did not finish within ${maxLoops} loop(s).`;
+    await appendBlocker(context.runDir, finalReason);
+  }
+
+  const observer = options.observe
+    ? await safeRunObserver({
+      runDir,
+      model: options.model,
+      snippetsDir: options.snippetsDir,
+      turnTimeoutMs: options.turnTimeoutMs,
+    })
+    : undefined;
+
+  const snippetCandidates = finalStatus === "done" && observer?.status === "done"
+    ? await safeGenerateSnippetCandidates({
+      runDir,
+      snippetsDir,
+    })
+    : [];
+
+  return {
+    runDir,
+      status: finalStatus,
+      reason: finalReason,
+      observer,
+      snippetCandidates,
+      sdkMonitor,
+    };
+}
+
+async function runSdkHealthCheck(options: {
+  model?: string;
+  turnTimeoutMs: number;
+  runDir: string;
+}): Promise<SdkHealthResult> {
+  const model = resolveModel(options.model);
+  const checkedAt = new Date().toISOString();
+  const sdkVersion = await readSdkVersion();
+  const monitorDir = path.resolve(SDK_MONITOR_DIR);
+  const baselinePath = path.join(monitorDir, SDK_MONITOR_FILE);
+  await mkdir(monitorDir, { recursive: true });
+
+  let previous: SdkHealthResult | undefined;
+  try {
+    const baselineContent = await readFile(baselinePath, "utf8");
+    previous = JSON.parse(baselineContent) as SdkHealthResult;
+  } catch {
+    previous = undefined;
+  }
+
+  let smokeError: string | undefined;
+  try {
+    await runSmokeTestWithSignal(model, options.turnTimeoutMs);
+  } catch (error) {
+    smokeError = summarizeError(error);
+  }
+
+  const currentPassed = smokeError === undefined;
+  const health: SdkHealthResult = {
+    status: currentPassed ? "ok" : "failed",
+    model,
+    sdkVersion,
+    passed: currentPassed,
+    checkedAt,
+    previousPassed: previous?.passed,
+    previousReason: previous?.reason,
+  };
+
+  if (previous && previous.passed === true && !currentPassed) {
+    health.status = "degraded";
+    health.reason = `SDK health regressed since last run: ${previous.reason ?? "previous smoke passed"} -> now failed (${smokeError ?? "no response"})`;
+  } else if (!currentPassed && smokeError) {
+    health.reason = smokeError;
+  } else {
+    health.reason = smokeError;
+  }
+
+  await writeFile(baselinePath, `${JSON.stringify({
+    checkedAt: health.checkedAt,
+    model: health.model,
+    sdkVersion: health.sdkVersion,
+    passed: health.passed,
+    status: health.status,
+    reason: health.reason,
+  }, null, 2)}\n`, "utf8");
+
+  return health;
+}
+
+async function safeRunObserver(options: ObserveOptions): Promise<ObserveResult> {
+  try {
+    return await runObserver(options);
+  } catch (error) {
+    return { runDir: path.resolve(options.runDir), status: "failed", reason: `Observer failed: ${summarizeError(error)}` };
+  }
+}
+
+export async function runObserver(options: ObserveOptions): Promise<ObserveResult> {
+  const runDir = path.resolve(options.runDir);
+  const model = resolveModel(options.model);
+  const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
+
+  try {
+    const sessionLogDir = path.join(runDir, "session-log");
+    const entries = await readdir(sessionLogDir);
+    if (entries.length === 0) {
+      return { runDir, status: "failed", reason: `No observer input: session-log is empty in ${runDir}` };
+    }
+  } catch {
+    return { runDir, status: "failed", reason: `No observer input: session-log is missing in ${runDir}` };
+  }
+
+  await ensureSnippetCatalog(snippetsDir);
+
+  const context: ObserverContext = {
+    codex: new Codex(),
+    model,
+    turnTimeoutMs: resolveTurnTimeout(options.turnTimeoutMs),
+    runDir,
+    snippetsDir,
+    threads: new Map<Role, Thread>(),
+  };
+
+  const observerResult = await runObserverRole(context, await observerPrompt(runDir, context.snippetsDir));
+  if (!observerResult.ok) {
+    return { runDir, status: "failed", reason: `Observer failed: ${observerResult.reason}` };
+  }
+
+  return { runDir, status: "done" };
 }
 
 async function ensureSnippetCatalog(snippetsDir: string): Promise<void> {
@@ -246,6 +504,53 @@ async function runRole(
   }
 }
 
+async function runObserverRole(
+  context: ObserverContext,
+  prompt: string,
+): Promise<RunRoleResult> {
+  const thread = getObserverThread(context);
+  const startedAt = new Date().toISOString();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    abortController.abort();
+  }, context.turnTimeoutMs);
+
+  try {
+    const turn = await thread.run(prompt, { signal: abortController.signal });
+    const endedAt = new Date().toISOString();
+    const lessonFile = path.join(context.runDir, "lessons.md");
+    await writeFile(lessonFile, `${turn.finalResponse}\n`, "utf8");
+
+    await writeSessionLog(context, {
+      role: "observer",
+      prompt,
+      turn,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+
+    return { ok: true, turn };
+  } catch (error) {
+    const endedAt = new Date().toISOString();
+    const reason = summarizeError(error);
+
+    await writeRoleErrorLog(context, {
+      role: "observer",
+      prompt,
+      reason,
+      error,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getThread(context: RunContext, role: Role): Thread {
   const existing = context.threads.get(role);
   if (existing) return existing;
@@ -262,10 +567,26 @@ function getThread(context: RunContext, role: Role): Thread {
   return thread;
 }
 
+function getObserverThread(context: ObserverContext): Thread {
+  const existing = context.threads.get("observer");
+  if (existing) return existing;
+
+  const thread = context.codex.startThread({
+    model: context.model,
+    workingDirectory: context.runDir,
+    skipGitRepoCheck: true,
+    sandboxMode: "read-only",
+    approvalPolicy: "never",
+    networkAccessEnabled: true,
+  });
+  context.threads.set("observer", thread);
+  return thread;
+}
+
 async function writeSessionLog(
-  context: RunContext,
+  context: RunContext | ObserverContext,
   entry: {
-    role: Role;
+      role: Role;
     prompt: string;
     turn: CodexTurn;
     startedAt: string;
@@ -301,7 +622,7 @@ async function writeSessionLog(
 }
 
 async function writeRoleErrorLog(
-  context: RunContext,
+  context: RunContext | ObserverContext,
   entry: {
     role: Role;
     prompt: string;
@@ -431,4 +752,149 @@ function summarizeError(error: unknown): string {
     return `${error.name}: ${error.message}`;
   }
   return String(error);
+}
+
+function resolveMonitorSdk(flag?: boolean): boolean {
+  if (flag !== undefined) return flag;
+
+  const raw = process.env.CODEX_GTD_MONITOR_SDK;
+  if (raw === undefined) return DEFAULT_MONITOR_SDK;
+
+  return !["0", "false", "no", "off"].includes(raw.toLowerCase());
+}
+
+type SnippetCandidateOptions = {
+  runDir: string;
+  snippetsDir: string;
+};
+
+async function generateSnippetCandidates(options: SnippetCandidateOptions): Promise<string[]> {
+  const runDir = path.resolve(options.runDir);
+  const snippetsDir = path.resolve(options.snippetsDir);
+  const lessonsPath = path.join(runDir, "lessons.md");
+  const candidatesDir = path.join(snippetsDir, "_candidates");
+  const generated: string[] = [];
+
+  let lessons = "";
+  try {
+    lessons = await readFile(lessonsPath, "utf8");
+  } catch {
+    return generated;
+  }
+
+  const sectionText = extractMarkdownSection(lessons, "Reusable snippets candidates");
+  if (!sectionText.trim()) {
+    return generated;
+  }
+
+  const entries = parseBulletEntries(sectionText);
+  if (entries.length === 0) {
+    return generated;
+  }
+
+  await mkdir(candidatesDir, { recursive: true });
+  const runId = path.basename(runDir);
+  const safeRunId = runId.replaceAll("-", "_");
+  const candidateFile = path.join(candidatesDir, `${safeRunId}-candidates.md`);
+
+  const body = formatSnippetCandidateDocument({
+    runDir,
+    entries,
+  });
+
+  await writeFile(candidateFile, body, "utf8");
+  generated.push(candidateFile);
+  return generated;
+}
+
+async function safeGenerateSnippetCandidates(options: SnippetCandidateOptions): Promise<string[]> {
+  try {
+    return await generateSnippetCandidates(options);
+  } catch {
+    return [];
+  }
+}
+
+function extractMarkdownSection(markdown: string, heading: string): string {
+  const lines = markdown.split("\n");
+  const headingRegex = new RegExp(`^#{1,6}\\s+${escapeRegExp(heading)}\\s*$`, "i");
+  const startIdx = lines.findIndex((line) => headingRegex.test(line));
+  if (startIdx === -1) return "";
+
+  const startPrefix = lines[startIdx].match(/^(#+)\s+/)?.[1].length ?? 1;
+  const section: string[] = [];
+
+  for (let i = startIdx + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    const headingMatch = line.match(/^(#{1,6})\s+/);
+    if (headingMatch && headingMatch[1].length <= startPrefix) {
+      break;
+    }
+    section.push(line);
+  }
+
+  return section.join("\n").trim();
+}
+
+function parseBulletEntries(sectionText: string): string[] {
+  const lines = sectionText.split("\n");
+  const entries: string[] = [];
+  let current: string[] = [];
+  const bulletStart = /^(?:-|\d+\.)\s+/;
+
+  for (const line of lines) {
+    if (bulletStart.test(line)) {
+      if (current.length > 0) {
+        entries.push(current.join("\n").trim());
+      }
+      current = [line.replace(/^\s*(?:-|\d+\.)\s+/, "").trim()];
+      continue;
+    }
+
+    if (line.trim() === "") {
+      continue;
+    }
+
+    if (current.length > 0) {
+      current.push(line.trim());
+    }
+  }
+
+  if (current.length > 0) {
+    entries.push(current.join("\n").trim());
+  }
+
+  return entries.filter((entry) => entry.length > 0);
+}
+
+function formatSnippetCandidateDocument(params: { runDir: string; entries: string[] }): string {
+  const lines = [
+    "# Snippet candidates (Aegis v0.5)",
+    "",
+    `Source run: ${params.runDir}`,
+    `Generated at: ${new Date().toISOString()}`,
+    "",
+    "## Candidates extracted from observer lessons",
+    "",
+  ];
+
+  for (const [index, entry] of params.entries.entries()) {
+    lines.push(`### ${index + 1}`);
+    lines.push("");
+    lines.push(entry);
+    lines.push("");
+  }
+
+  lines.push("## Acceptance before promotion");
+  lines.push("");
+  lines.push("- Run tests on the extracted snippet in your repo context.");
+  lines.push("- Validate assumptions against current tech stack (runtime, dependencies, error contract).");
+  lines.push("- Move approved snippets to `snippets/` and add to `snippets/INDEX.md`.");
+  lines.push("");
+
+  return `${lines.join("\n")}\n`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

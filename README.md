@@ -25,10 +25,12 @@ The first defense against babysitting is not better code generation. It is bette
 
 ## How It Works
 
-v0.3 runs a serial four-role loop:
+v0.3 runs a serial loop:
 
 ```text
 researcher -> manager -> developer -> tester
+
+Observer is optional and can be run after the loop (or during run via --observe).
 ```
 
 The intended lifecycle has two phases:
@@ -53,7 +55,17 @@ v0.3 alpha currently generates the files above and also reads a global snippet c
 
 snippets/INDEX.md  # reusable implementation snippets for prompt grounding
 
-The target protocol will add `discovery.md`, `lessons.md` in later milestones.
+The target protocol includes:
+
+- `discovery.md` in a later milestone for multi-turn clarification.
+- `lessons.md` in v0.4 from observer review.
+
+For v0.4, you can now generate an observer pass:
+
+- `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
+- `codex-gtd run --task <task-file> ... --observe`
+
+It writes `lessons.md` from current run traces for operator review.
 
 The manager decides one next action at a time:
 
@@ -75,6 +87,7 @@ The manager decides one next action at a time:
 - Structured manager decisions using JSON schema output.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
+- Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
 - Included pilot task: Markdown TODO exporter.
 
 ## Quick Start
@@ -107,7 +120,8 @@ The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the mo
 ```bash
 node dist/cli.js run \
   --task examples/todo-exporter-task.md \
-  --model codex-5.3-spark
+  --model codex-5.3-spark \
+  --observe
 ```
 
 This creates a local `runs/<timestamp>/` directory containing:
@@ -120,6 +134,8 @@ This creates a local `runs/<timestamp>/` directory containing:
 - `session-log/`
 - `api-probes/`
 - `workspace/`
+- `lessons.md` (if `observe` is enabled)
+- `snippets/_candidates/<timestamp>-candidates.md` (if observer outputs candidate snippets)
 
 ### Development mode
 
@@ -143,7 +159,8 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ## CLI
 
 ```text
-codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>]
+codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]
+codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
 codex-gtd smoke [--model <model>]
 ```
 
@@ -154,6 +171,7 @@ Defaults:
 - snippets directory: `snippets`
 - turn timeout: `300000` ms (5 分钟), or `CODEX_GTD_TURN_TIMEOUT_MS`
 - loops: `8`
+- sdk monitor: `CODEX_GTD_MONITOR_SDK` (`true` by default, set to `0`/`false`/`off` to disable)
 
 Model alias:
 
@@ -174,6 +192,10 @@ runs/2026-04-23T08-27-29Z/
   session-log/*-error.json (if a role fails or times out)
   api-probes/
   workspace/
+  lessons.md         # optional, created by observer pass
+  snippets/_candidates/
+    <timestamp>-candidates.md  # optional, created by candidate extraction
+  sdk-health.json    # optional, SDK smoke/health trace for this run
 ```
 
 The v0.1 pilot run completed the full chain:
@@ -212,8 +234,8 @@ Planned versions:
 
 - v0.2: API probe mechanism to reduce SDK/API hallucinations. Implemented.
 - v0.3: snippet reuse pool for agent-friendly private components. Initial support is implemented.
-- v0.4: observer agent that learns from session traces.
-- v0.5: snippet candidate generation from successful runs.
+- v0.4: observer pass available (`codex-gtd observe`) to produce `lessons.md`.
+- v0.5: snippet candidate generation from successful runs into `snippets/_candidates/`.
 - v0.6+: parallel developers after interfaces are frozen.
 
 ## Philosophy

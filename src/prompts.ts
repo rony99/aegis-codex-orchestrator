@@ -257,6 +257,65 @@ progress.md:
 ${progress}`;
 }
 
+export async function observerPrompt(runDir: string, snippetsDir: string): Promise<string> {
+  const [task, spec, interfaces, progress, blockers, apiProbes, sessionLog, snippets] = await Promise.all([
+    readOptional(runDir, "task.md"),
+    readOptional(runDir, "spec.md"),
+    readOptional(runDir, "interfaces.md"),
+    readOptional(runDir, "progress.md"),
+    readOptional(runDir, "blockers.md"),
+    readApiProbesSummary(runDir),
+    readSessionLogSummary(runDir),
+    readSnippetsSummary(snippetsDir),
+  ]);
+
+  return `You are the observer agent for Aegis Codex Orchestrator.
+
+Goal:
+Review the latest run traces and extract practical lessons for next runs.
+
+Hard constraints:
+- Write only ./lessons.md.
+- Keep lessons concrete and evidence-based from session-log and protocol files.
+- Include what to change in future loops, not only a generic summary.
+- Do not edit task.md/spec.md/interfaces.md/progress.md/blockers.md/workspace.
+
+Required ./lessons.md sections:
+1. Root-cause summary
+2. Recurring failure patterns
+3. Missed discovery/clarification opportunities
+4. Agent-specific improvements
+5. Reusable snippets candidates
+
+Use evidence phrases with timestamps/roles from session-log when possible.
+
+Observed artifacts:
+
+task.md:
+${task}
+
+spec.md:
+${spec}
+
+interfaces.md:
+${interfaces}
+
+progress.md:
+${progress}
+
+blockers.md:
+${blockers}
+
+api-probes summary:
+${apiProbes}
+
+snippet summary:
+${snippets}
+
+session-log summary:
+${sessionLog}`;
+}
+
 async function readOptional(runDir: string, file: string): Promise<string> {
   try {
     return await readFile(path.join(runDir, file), "utf8");
@@ -315,6 +374,35 @@ ${truncate(index, 2400)}`];
     return chunks.join("\n\n");
   } catch {
     return "snippets/ is missing or unreadable. Proceed without snippets.";
+  }
+}
+
+async function readSessionLogSummary(runDir: string): Promise<string> {
+  const sessionLogDir = path.join(runDir, "session-log");
+
+  try {
+    const entries = await readdir(sessionLogDir);
+    if (entries.length === 0) {
+      return "session-log exists but is empty.";
+    }
+
+    const chunks: string[] = [];
+    const sorted = entries.filter((entry) => entry.endsWith(".json")).sort().slice(-12);
+
+    for (const entry of sorted) {
+      const filePath = path.join(sessionLogDir, entry);
+      const info = await stat(filePath);
+      if (!info.isFile()) continue;
+
+      const content = await readFile(filePath, "utf8");
+      chunks.push(`--- session-log/${entry} ---\n${truncate(content, 3600)}`);
+    }
+
+    return chunks.length > 0
+      ? chunks.join("\n\n")
+      : "session-log is present but has no readable JSON files.";
+  } catch {
+    return "session-log is missing.";
   }
 }
 

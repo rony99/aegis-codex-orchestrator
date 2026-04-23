@@ -9,18 +9,21 @@
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
-  - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>]`
+  - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd smoke [--model <model>]`
 - [x] 模型配置:
   - 默认 `gpt-5.4`
   - `CODEX_GTD_MODEL`
   - `--model`
   - `codex-5.3-spark` alias → `gpt-5.3-codex-spark`
-- [x] 四个 role thread:
+- [x] 五个 role 线程（含手动 observer）:
   - researcher
   - manager
   - developer
   - tester
+- [x] observer 命令:
+  - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
+- [x] `run --observe` 自动触发 observer 并在 run 结束后写入 `lessons.md`。
 - [x] 当前 run 文件协议:
   - `task.md`
   - `spec.md`
@@ -30,6 +33,7 @@
   - `session-log/`
   - `api-probes/`
   - `workspace/`
+  - `sdk-health.json`
 - [x] 当前全局 snippet 目录协议:
   - `snippets/INDEX.md`
   - snippets 检索注入到 researcher/manager/developer/tester prompt
@@ -84,7 +88,7 @@
   - 目标: Codex 先主导澄清目的、需求、边界、技术栈、API、账号/密钥、验收标准,写入 `discovery.md`,再进入开发。
 - [ ] API probes 仍是 run-local 文件,未对接跨 run 的质量门控。
 - [ ] Snippets 还在扩充中，缺少覆盖关键场景的模板和治理规则。
-- [ ] 还没有 observer / lessons。
+- [x] observer 命令可生成 lessons（基础版），且 `run --observe` 已挂接到主循环。
 - [ ] 还没有并行 developer。
 
 ## v0.2 hardening TODO
@@ -97,7 +101,7 @@
   - `blockers.md`
   - `progress.md`
   - `session-log/<timestamp>-<role>-error.json`
-- [ ] 端到端失败时 CLI 返回非零退出码。
+- [x] 端到端失败时 CLI 返回非零退出码。
 - [ ] 增加 blocker 验收 task。
 - [ ] 规范 `progress.md` 最小结构。
 - [ ] 增加轻量本地测试脚本:
@@ -116,15 +120,15 @@
 
 ## v0.4 TODO — Observer 与 lessons
 
-- [ ] 实现 observer role。
-- [ ] 创建 `lessons.md`。
-- [ ] 输入 session-log,输出错误模式和改进建议。
-- [ ] 先基于 5-10 个真实任务 trace 再启用。
+- [x] 实现 `observe` 命令。
+- [x] 产出 `lessons.md`（基于现有 run 的 `session-log`）。
+- [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
+- [x] 决定 observer 挂接策略（`run --observe` 自动触发）。
 
 ## v0.5 TODO — Snippet 自增长
 
-- [ ] observer 判断通过测试的实现是否值得抽象。
-- [ ] 自动生成 `/snippets/_candidates/`。
+- [x] observer 判断通过测试实现是否值得抽象（通过 lessons 中候选片段区提取）。
+- [x] 自动生成 `/snippets/_candidates/`。
 - [ ] 用户审核后入库。
 
 ## 当前判断

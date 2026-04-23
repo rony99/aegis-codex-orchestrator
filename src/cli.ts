@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
-import { runOrchestration, runSmokeTest } from "./driver.js";
+import { runObserver, runOrchestration, runSmokeTest } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
   task?: string;
+  runDir?: string;
   model?: string;
   runsDir?: string;
   snippetsDir?: string;
+  observe?: boolean;
+  monitorSdk?: boolean;
   turnTimeoutMs?: number;
   maxLoops?: number;
 };
@@ -31,6 +34,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--run-dir") {
+      if (!next) throw new Error("--run-dir requires a directory");
+      parsed.runDir = next;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--model") {
       if (!next) throw new Error("--model requires a model name");
       parsed.model = next;
@@ -49,6 +59,21 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (!next) throw new Error("--snippets-dir requires a directory");
       parsed.snippetsDir = next;
       i += 1;
+      continue;
+    }
+
+    if (arg === "--observe") {
+      parsed.observe = true;
+      continue;
+    }
+
+    if (arg === "--monitor-sdk") {
+      parsed.monitorSdk = true;
+      continue;
+    }
+
+    if (arg === "--skip-sdk-monitor") {
+      parsed.monitorSdk = false;
       continue;
     }
 
@@ -89,7 +114,8 @@ function printHelp(): void {
   console.log(`codex-gtd v0.3
 
 Usage:
-  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>]
+  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor]
+  codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd smoke [--model <model>]
 
 Defaults:
@@ -97,6 +123,7 @@ Defaults:
   runs-dir: runs
   snippets-dir: snippets
   turn-timeout-ms: 300000
+  sdk monitor: CODEX_GTD_MONITOR_SDK (default: true)
 
 Model aliases:
   codex-5.3-spark -> gpt-5.3-codex-spark
@@ -127,12 +154,53 @@ async function main(): Promise<void> {
       model: args.model,
       runsDir: args.runsDir,
       snippetsDir: args.snippetsDir,
+      observe: args.observe,
+      monitorSdk: args.monitorSdk,
       turnTimeoutMs: args.turnTimeoutMs,
       maxLoops: args.maxLoops,
     });
 
     console.log(`Run directory: ${result.runDir}`);
     console.log(`Status: ${result.status}`);
+    if (result.reason) console.log(`Reason: ${result.reason}`);
+    if (result.observer?.status === "done") {
+      console.log(`Observer: ${result.observer.status}`);
+    } else if (result.observer?.status === "failed") {
+      console.log(`Observer: ${result.observer.status}`);
+      if (result.observer.reason) console.log(`Observer reason: ${result.observer.reason}`);
+    }
+    if ((result.snippetCandidates?.length ?? 0) > 0) {
+      console.log(`Snippet candidates: ${result.snippetCandidates?.length}`);
+      for (const candidate of result.snippetCandidates ?? []) {
+        console.log(`- ${candidate}`);
+      }
+    }
+    if (result.sdkMonitor) {
+      console.log(`SDK monitor: ${result.sdkMonitor.status}`);
+      console.log(`SDK version: ${result.sdkMonitor.sdkVersion}`);
+      if (result.sdkMonitor.reason) console.log(`SDK monitor reason: ${result.sdkMonitor.reason}`);
+    }
+
+    if (result.status !== "done" || result.observer?.status === "failed") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.command === "observe") {
+    if (!args.runDir) {
+      throw new Error("observe requires --run-dir <run-dir>");
+    }
+
+    const result = await runObserver({
+      runDir: args.runDir,
+      model: args.model,
+      snippetsDir: args.snippetsDir,
+      turnTimeoutMs: args.turnTimeoutMs,
+    });
+
+    console.log(`Run directory: ${result.runDir}`);
+    console.log(`Observer status: ${result.status}`);
     if (result.reason) console.log(`Reason: ${result.reason}`);
 
     if (result.status !== "done") {

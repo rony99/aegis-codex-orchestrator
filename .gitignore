@@ -10,6 +10,7 @@ runs-*/
 coverage/
 .nyc_output/
 .cache/
+.codex-gtd/
 tmp/
 temp/
 *.tgz
