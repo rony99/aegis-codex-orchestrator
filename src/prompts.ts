@@ -39,7 +39,9 @@ Return exactly one concise sentence confirming that the SDK thread is working.
 Do not edit files. Do not run commands.`;
 }
 
-export function researcherPrompt(task: string): string {
+export async function researcherPrompt(task: string, snippetsDir: string): Promise<string> {
+  const snippets = await readSnippetsSummary(snippetsDir);
+
   return `You are the researcher agent for Aegis Codex Orchestrator.
 
 Goal:
@@ -50,6 +52,7 @@ Hard constraints:
 - Keep the task small; no UI, no speculative features, and no unrelated systems.
 - The developer phase must not need to change public interfaces later.
 - Acceptance criteria must be testable.
+- Reuse a matching snippet when possible; if a snippet is used, explicitly note it in spec.md assumptions.
 - If the task is ambiguous, choose the smallest reasonable behavior and record the assumption in spec.md.
 - If the task has no external API/SDK dependency, explicitly write that no probes are needed in ./api-probes/README.md.
 - If the task depends on an external API/SDK, create the smallest executable probe script or command note under ./api-probes/, plus a response sample or failure note.
@@ -60,6 +63,10 @@ Files/directories available:
 - ./workspace/ is where implementation will happen later.
 - ./api-probes/ is where probe notes, scripts, samples, or failure notes must be written.
 - ./progress.md and ./blockers.md exist.
+- ./snippets/ catalog summary is provided below and is the primary reuse source.
+
+Available snippets summary:
+${snippets}
 
 Required ./spec.md sections:
 1. Goal
@@ -87,14 +94,19 @@ Original task:
 ${task}`;
 }
 
-export async function managerPrompt(loop: number, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress, blockers, apiProbes] = await Promise.all([
+export async function managerPrompt(
+  loop: number,
+  runDir: string,
+  snippetsDir: string,
+): Promise<string> {
+  const [task, spec, interfaces, progress, blockers, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
     readOptional(runDir, "blockers.md"),
     readApiProbesSummary(runDir),
+    readSnippetsSummary(snippetsDir),
   ]);
 
   return `You are the manager agent for Aegis Codex Orchestrator.
@@ -138,16 +150,24 @@ Current blockers.md:
 ${blockers}
 
 Current api-probes summary:
-${apiProbes}`;
+${apiProbes}
+
+Current snippet summary:
+${snippets}`;
 }
 
-export async function developerPrompt(decision: ManagerDecisionInput, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress, apiProbes] = await Promise.all([
+export async function developerPrompt(
+  decision: ManagerDecisionInput,
+  runDir: string,
+  snippetsDir: string,
+): Promise<string> {
+  const [task, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
     readApiProbesSummary(runDir),
+    readSnippetsSummary(snippetsDir),
   ]);
 
   return `You are the developer agent for Aegis Codex Orchestrator.
@@ -164,6 +184,8 @@ Hard constraints:
 - If blocked, write the reason to ./blockers.md and stop.
 - Treat ./api-probes/ as API ground truth. If probe artifacts contradict your assumptions, follow the probe artifacts.
 - Do not invent API request/response shapes when ./api-probes/ contains a sample or failure note.
+- Reuse approved snippets and adapt the selected snippet IDs/names from snippets summary.
+- Keep changes minimal and avoid introducing dependency creep beyond listed snippets.
 
 Manager decision:
 ${JSON.stringify(decision, null, 2)}
@@ -180,17 +202,25 @@ ${interfaces}
 api-probes summary:
 ${apiProbes}
 
+snippet summary:
+${snippets}
+
 progress.md:
 ${progress}`;
 }
 
-export async function testerPrompt(decision: ManagerDecisionInput, runDir: string): Promise<string> {
-  const [task, spec, interfaces, progress, apiProbes] = await Promise.all([
+export async function testerPrompt(
+  decision: ManagerDecisionInput,
+  runDir: string,
+  snippetsDir: string,
+): Promise<string> {
+  const [task, spec, interfaces, progress, apiProbes, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
     readOptional(runDir, "interfaces.md"),
     readOptional(runDir, "progress.md"),
     readApiProbesSummary(runDir),
+    readSnippetsSummary(snippetsDir),
   ]);
 
   return `You are the tester agent for Aegis Codex Orchestrator.
@@ -219,6 +249,9 @@ ${interfaces}
 
 api-probes summary:
 ${apiProbes}
+
+snippet summary:
+${snippets}
 
 progress.md:
 ${progress}`;
@@ -251,9 +284,37 @@ async function readApiProbesSummary(runDir: string): Promise<string> {
       chunks.push(`--- api-probes/${entry} ---\n${truncate(content, 6000)}`);
     }
 
-    return chunks.length > 0 ? chunks.join("\n\n") : "api-probes/ contains no readable files.";
+  return chunks.length > 0 ? chunks.join("\n\n") : "api-probes/ contains no readable files.";
   } catch {
     return "api-probes/ is missing.";
+  }
+}
+
+async function readSnippetsSummary(snippetsDir: string): Promise<string> {
+  const indexPath = path.join(snippetsDir, "INDEX.md");
+  try {
+    const index = await readFile(indexPath, "utf8");
+    const entries = await readdir(snippetsDir, { withFileTypes: true });
+    const snippetFiles = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "INDEX.md")
+      .map((entry) => entry.name)
+      .sort();
+
+    if (snippetFiles.length === 0) {
+      return truncate(`snippets/INDEX.md:
+${truncate(index, 5000)}\n\nNo additional snippet files yet.`, 6000);
+    }
+
+    const chunks: string[] = [`snippets/INDEX.md:
+${truncate(index, 2400)}`];
+    for (const file of snippetFiles.slice(0, 4)) {
+      const filePath = path.join(snippetsDir, file);
+      const content = await readFile(filePath, "utf8");
+      chunks.push(`--- snippets/${file} ---\n${truncate(content, 2600)}`);
+    }
+    return chunks.join("\n\n");
+  } catch {
+    return "snippets/ is missing or unreadable. Proceed without snippets.";
   }
 }
 

@@ -14,7 +14,9 @@ import {
 
 const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_RUNS_DIR = "runs";
+const DEFAULT_SNIPPETS_DIR = "snippets";
 const DEFAULT_MAX_LOOPS = 8;
+const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
@@ -26,6 +28,8 @@ export type RunOptions = {
   taskFile: string;
   model?: string;
   runsDir?: string;
+  snippetsDir?: string;
+  turnTimeoutMs?: number;
   maxLoops?: number;
 };
 
@@ -45,8 +49,10 @@ type ManagerDecision = {
 type RunContext = {
   codex: Codex;
   model: string;
+  turnTimeoutMs: number;
   runDir: string;
   workspaceDir: string;
+  snippetsDir: string;
   task: string;
   threads: Map<Role, Thread>;
 };
@@ -69,11 +75,13 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const runDir = await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
   const workspaceDir = path.join(runDir, "workspace");
   const apiProbesDir = path.join(runDir, "api-probes");
+  const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
   const task = await readFile(path.resolve(options.taskFile), "utf8");
 
   await mkdir(path.join(runDir, "session-log"), { recursive: true });
   await mkdir(workspaceDir, { recursive: true });
   await mkdir(apiProbesDir, { recursive: true });
+  await ensureSnippetCatalog(snippetsDir);
   await writeFile(path.join(runDir, "task.md"), task);
   await writeFile(path.join(runDir, "progress.md"), initialProgress(model));
   await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n");
@@ -81,18 +89,41 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const context: RunContext = {
     codex: new Codex(),
     model,
+    turnTimeoutMs: resolveTurnTimeout(options.turnTimeoutMs),
     runDir,
     workspaceDir,
+    snippetsDir,
     task,
     threads: new Map<Role, Thread>(),
   };
 
-  await runRole(context, "researcher", researcherPrompt(task));
+  const researcherResult = await runRole(context, "researcher", await researcherPrompt(task, snippetsDir));
+  if (!researcherResult.ok) {
+    const reason = `Researcher failed: ${researcherResult.reason}`;
+    await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+    await appendBlocker(context.runDir, reason);
+    return { runDir, status: "ask_user", reason };
+  }
 
   const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
   for (let loop = 1; loop <= maxLoops; loop += 1) {
-    const managerTurn = await runRole(context, "manager", await managerPrompt(loop, context.runDir));
-    const decision = parseManagerDecision(managerTurn.finalResponse);
+    const managerRoleResult = await runRole(context, "manager", await managerPrompt(loop, context.runDir, context.snippetsDir));
+    if (!managerRoleResult.ok) {
+      const reason = `Manager failed: ${managerRoleResult.reason}`;
+      await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+      await appendBlocker(context.runDir, reason);
+      return { runDir, status: "ask_user", reason };
+    }
+
+    let decision: ManagerDecision;
+    try {
+      decision = parseManagerDecision(managerRoleResult.turn.finalResponse);
+    } catch (error) {
+      const reason = `Manager returned invalid decision: ${summarizeError(error)}`;
+      await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+      await appendBlocker(context.runDir, reason);
+      return { runDir, status: "ask_user", reason };
+    }
 
     if (decision.next_action === "done") {
       await appendProgress(context.runDir, `\n## Final\n\nDone: ${decision.reason}\n`);
@@ -105,12 +136,24 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     }
 
     if (decision.next_action === "develop") {
-      await runRole(context, "developer", await developerPrompt(decision, context.runDir));
+      const developerRoleResult = await runRole(context, "developer", await developerPrompt(decision, context.runDir, context.snippetsDir));
+      if (!developerRoleResult.ok) {
+        const reason = `Developer failed: ${developerRoleResult.reason}`;
+        await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+        await appendBlocker(context.runDir, reason);
+        return { runDir, status: "ask_user", reason };
+      }
       continue;
     }
 
     if (decision.next_action === "test") {
-      await runRole(context, "tester", await testerPrompt(decision, context.runDir));
+      const testerRoleResult = await runRole(context, "tester", await testerPrompt(decision, context.runDir, context.snippetsDir));
+      if (!testerRoleResult.ok) {
+        const reason = `Tester failed: ${testerRoleResult.reason}`;
+        await appendProgress(context.runDir, `\n## Failed\n\n${reason}\n`);
+        await appendBlocker(context.runDir, reason);
+        return { runDir, status: "ask_user", reason };
+      }
       continue;
     }
   }
@@ -120,24 +163,87 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   return { runDir, status: "max_loops_reached", reason };
 }
 
-async function runRole(context: RunContext, role: Role, prompt: string): Promise<CodexTurn> {
+async function ensureSnippetCatalog(snippetsDir: string): Promise<void> {
+  await mkdir(snippetsDir, { recursive: true });
+  const indexPath = path.join(snippetsDir, "INDEX.md");
+  try {
+    await readFile(indexPath, "utf8");
+    return;
+  } catch {
+    await writeFile(indexPath, defaultSnippetIndex(), "utf8");
+  }
+}
+
+function defaultSnippetIndex(): string {
+  return `# Snippets
+
+This repository is starting v0.3 with a minimal snippet reuse pool.
+
+## How to use
+
+- Add reusable implementation patterns as markdown files in this directory.
+- Keep each snippet under ~200 lines.
+- Document dependencies, assumptions, and test evidence for quick reuse.
+- In v0.3, the researcher reads this index and selected snippets before implementing.
+`;
+}
+
+type RunRoleResult =
+  | {
+      ok: true;
+      turn: CodexTurn;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
+async function runRole(
+  context: RunContext,
+  role: Role,
+  prompt: string,
+): Promise<RunRoleResult> {
   const thread = getThread(context, role);
   const startedAt = new Date().toISOString();
-  const turn = role === "manager"
-    ? await thread.run(prompt, { outputSchema: managerSchema })
-    : await thread.run(prompt);
-  const endedAt = new Date().toISOString();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    abortController.abort();
+  }, context.turnTimeoutMs);
 
-  await writeSessionLog(context, {
-    role,
-    prompt,
-    turn,
-    startedAt,
-    endedAt,
-    threadId: thread.id,
-  });
+  try {
+    const turn = role === "manager"
+      ? await thread.run(prompt, { outputSchema: managerSchema, signal: abortController.signal })
+      : await thread.run(prompt, { signal: abortController.signal });
+    const endedAt = new Date().toISOString();
 
-  return turn;
+    await writeSessionLog(context, {
+      role,
+      prompt,
+      turn,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+
+    return { ok: true, turn };
+  } catch (error) {
+    const endedAt = new Date().toISOString();
+    const reason = summarizeError(error);
+
+    await writeRoleErrorLog(context, {
+      role,
+      prompt,
+      reason,
+      error,
+      startedAt,
+      endedAt,
+      threadId: thread.id,
+    });
+
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getThread(context: RunContext, role: Role): Thread {
@@ -187,6 +293,47 @@ async function writeSessionLog(
         finalResponse: entry.turn.finalResponse,
         usage: entry.turn.usage,
         items: entry.turn.items,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+async function writeRoleErrorLog(
+  context: RunContext,
+  entry: {
+    role: Role;
+    prompt: string;
+    reason: string;
+    error: unknown;
+    startedAt: string;
+    endedAt: string;
+    threadId: string | null;
+  },
+): Promise<void> {
+  const safeStartedAt = entry.startedAt.replaceAll(":", "-");
+  const file = path.join(
+    context.runDir,
+    "session-log",
+    `${safeStartedAt}-${entry.role}-error.json`,
+  );
+
+  await writeFile(
+    file,
+    `${JSON.stringify(
+      {
+        role: entry.role,
+        model: context.model,
+        threadId: entry.threadId,
+        startedAt: entry.startedAt,
+        endedAt: entry.endedAt,
+        reason: entry.reason,
+        prompt: entry.prompt,
+        error:
+          entry.error instanceof Error
+            ? { name: entry.error.name, message: entry.error.message }
+            : String(entry.error),
       },
       null,
       2,
@@ -263,4 +410,25 @@ async function appendBlocker(runDir: string, reason: string): Promise<void> {
   const current = await readFile(path.join(runDir, "blockers.md"), "utf8");
   const next = current.replace(/\nNone\.\n?$/, "\n");
   await writeFile(path.join(runDir, "blockers.md"), `${next}\n- ${reason}\n`);
+}
+
+function resolveTurnTimeout(overrideMs?: number): number {
+  if (overrideMs !== undefined && Number.isFinite(overrideMs) && overrideMs > 0) {
+    return overrideMs;
+  }
+
+  const envTimeout = process.env.CODEX_GTD_TURN_TIMEOUT_MS;
+  if (envTimeout !== undefined) {
+    const parsed = Number.parseInt(envTimeout, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  return DEFAULT_TURN_TIMEOUT_MS;
+}
+
+function summarizeError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+  return String(error);
 }

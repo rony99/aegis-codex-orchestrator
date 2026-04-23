@@ -8,7 +8,7 @@ Before coding starts, Aegis should help drive structured discovery: clarify the 
 
 Start a task, walk away, and come back to a structured run directory with a spec, frozen interfaces, progress notes, blockers, session traces, implementation output, and test evidence.
 
-> Current status: v0.2 alpha. The minimal loop works and API probe artifacts are now part of each run, but this is still a research prototype.
+> Current status: v0.3 alpha. API probe and snippet pool support is now active, and this is still a research prototype.
 
 ## Why This Exists
 
@@ -25,7 +25,7 @@ The first defense against babysitting is not better code generation. It is bette
 
 ## How It Works
 
-v0.2 runs a serial four-role loop:
+v0.3 runs a serial four-role loop:
 
 ```text
 researcher -> manager -> developer -> tester
@@ -49,7 +49,11 @@ api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
 ```
 
-v0.2 alpha currently generates the files above. The target protocol will add `discovery.md`, `snippets/`, and `lessons.md` in later milestones.
+v0.3 alpha currently generates the files above and also reads a global snippet catalog:
+
+snippets/INDEX.md  # reusable implementation snippets for prompt grounding
+
+The target protocol will add `discovery.md`, `lessons.md` in later milestones.
 
 The manager decides one next action at a time:
 
@@ -65,6 +69,7 @@ The manager decides one next action at a time:
 - Real Codex SDK integration through `@openai/codex-sdk`.
 - Pre-development research artifact generation through the researcher role.
 - Per-run `api-probes/` artifacts for API/SDK dependency grounding.
+- Global `snippets/INDEX.md` prompt-time retrieval before implementation.
 - Independent Codex thread per role to reduce context pollution.
 - File-based protocol that is inspectable, checkpointable, and replay-friendly.
 - Structured manager decisions using JSON schema output.
@@ -113,6 +118,7 @@ This creates a local `runs/<timestamp>/` directory containing:
 - `progress.md`
 - `blockers.md`
 - `session-log/`
+- `api-probes/`
 - `workspace/`
 
 ### Development mode
@@ -137,7 +143,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ## CLI
 
 ```text
-codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--max-loops <n>]
+codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>]
 codex-gtd smoke [--model <model>]
 ```
 
@@ -145,6 +151,9 @@ Defaults:
 
 - model: `CODEX_GTD_MODEL` or `gpt-5.4`
 - runs directory: `runs`
+- snippets directory: `snippets`
+- turn timeout: `300000` ms (5 分钟), or `CODEX_GTD_TURN_TIMEOUT_MS`
+- loops: `8`
 
 Model alias:
 
@@ -162,6 +171,7 @@ runs/2026-04-23T08-27-29Z/
   progress.md
   blockers.md
   session-log/
+  session-log/*-error.json (if a role fails or times out)
   api-probes/
   workspace/
 ```
@@ -200,8 +210,8 @@ Near-term hardening:
 
 Planned versions:
 
-- v0.2: API probe mechanism to reduce SDK/API hallucinations. Initial support is implemented.
-- v0.3: snippet reuse pool for agent-friendly private components.
+- v0.2: API probe mechanism to reduce SDK/API hallucinations. Implemented.
+- v0.3: snippet reuse pool for agent-friendly private components. Initial support is implemented.
 - v0.4: observer agent that learns from session traces.
 - v0.5: snippet candidate generation from successful runs.
 - v0.6+: parallel developers after interfaces are frozen.

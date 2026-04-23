@@ -7,6 +7,8 @@ type ParsedArgs = {
   task?: string;
   model?: string;
   runsDir?: string;
+  snippetsDir?: string;
+  turnTimeoutMs?: number;
   maxLoops?: number;
 };
 
@@ -43,6 +45,24 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--snippets-dir") {
+      if (!next) throw new Error("--snippets-dir requires a directory");
+      parsed.snippetsDir = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--turn-timeout-ms") {
+      if (!next) throw new Error("--turn-timeout-ms requires milliseconds");
+      const turnTimeoutMs = Number.parseInt(next, 10);
+      if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs <= 0) {
+        throw new Error("--turn-timeout-ms must be a positive integer");
+      }
+      parsed.turnTimeoutMs = turnTimeoutMs;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--max-loops") {
       if (!next) throw new Error("--max-loops requires a number");
       const maxLoops = Number.parseInt(next, 10);
@@ -66,15 +86,17 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`codex-gtd v0.2
+  console.log(`codex-gtd v0.3
 
 Usage:
-  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--max-loops <n>]
+  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>]
   codex-gtd smoke [--model <model>]
 
 Defaults:
   model: CODEX_GTD_MODEL or gpt-5.4
   runs-dir: runs
+  snippets-dir: snippets
+  turn-timeout-ms: 300000
 
 Model aliases:
   codex-5.3-spark -> gpt-5.3-codex-spark
@@ -104,12 +126,18 @@ async function main(): Promise<void> {
       taskFile: args.task,
       model: args.model,
       runsDir: args.runsDir,
+      snippetsDir: args.snippetsDir,
+      turnTimeoutMs: args.turnTimeoutMs,
       maxLoops: args.maxLoops,
     });
 
     console.log(`Run directory: ${result.runDir}`);
     console.log(`Status: ${result.status}`);
     if (result.reason) console.log(`Reason: ${result.reason}`);
+
+    if (result.status !== "done") {
+      process.exitCode = 1;
+    }
     return;
   }
 
