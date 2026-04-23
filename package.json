@@ -1,0 +1,52 @@
+{
+  "name": "codex-gtd",
+  "version": "0.1.0",
+  "description": "Aegis Codex Orchestrator: a minimal Codex SDK orchestration loop using a file-based agent protocol.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/rony99/aegis-codex-orchestrator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rony99/aegis-codex-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rony99/aegis-codex-orchestrator/issues"
+  },
+  "keywords": [
+    "codex",
+    "agent",
+    "orchestration",
+    "ai-coding",
+    "developer-tools"
+  ],
+  "files": [
+    "dist/",
+    "src/",
+    "docs/",
+    "examples/",
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "bin": {
+    "codex-gtd": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli.ts",
+    "smoke": "tsx src/cli.ts smoke --model codex-5.3-spark"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.123.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+runs/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+.nyc_output/
+.cache/
+tmp/
+temp/
+*.tgz
+*.tsbuildinfo
