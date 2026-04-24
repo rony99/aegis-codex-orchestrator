@@ -11,6 +11,7 @@ import {
   initializeRunProtocol,
   parseManagerDecision,
   parseProgressState,
+  promoteSnippetCandidate,
   runReport,
   RUN_PROTOCOL_ENTRIES,
   updateProgressDocument,
@@ -132,9 +133,10 @@ test("help documents run options without invoking Codex SDK", () => {
     encoding: "utf8",
   });
 
-  assert.match(output, /codex-gtd v0\.4/);
+  assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
+  assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
@@ -161,6 +163,23 @@ test("unknown flags fail fast before any SDK call", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Unknown argument: --not-a-real-flag/);
+});
+
+test("promote-snippet requires candidate and slug before any SDK call", () => {
+  const noCandidate = runCli(["promote-snippet", "--slug", "approved-snippet"]);
+  assert.equal(noCandidate.status, 1);
+  assert.match(noCandidate.stderr, /promote-snippet requires --candidate <candidate-file>/);
+
+  const noSlug = runCli(["promote-snippet", "--candidate", "snippets/_candidates/example.md"]);
+  assert.equal(noSlug.status, 1);
+  assert.match(noSlug.stderr, /promote-snippet requires --slug <slug>/);
+});
+
+test("promote-snippet rejects unsafe slugs before any SDK call", () => {
+  const result = runCli(["promote-snippet", "--candidate", "snippets/_candidates/example.md", "--slug", "../bad"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /slug must use lowercase letters, numbers, and hyphens/);
 });
 
 test("report summarizes run-summary files without invoking Codex SDK", async () => {
@@ -785,5 +804,85 @@ test("observer prompt compacts medium runs while preserving protocol health and 
     assert.ok(!prompt.includes("verbose trace item ".repeat(80)));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("promoteSnippetCandidate writes snippet and updates index idempotently", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-promote-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+  const candidatePath = path.join(snippetsDir, "_candidates", "candidate.md");
+
+  try {
+    await mkdir(path.dirname(candidatePath), { recursive: true });
+    await writeFile(path.join(snippetsDir, "INDEX.md"), `# Aegis Snippets
+
+## Available snippets
+
+- [Existing snippet](./existing.md)
+
+## How to use
+
+Keep snippets focused.
+`, "utf8");
+    await writeFile(candidatePath, `# Snippet candidates
+
+Source run: /tmp/run-a
+
+## Candidates extracted from observer lessons
+
+### 1
+
+Use a small parser and keep tests local.
+`, "utf8");
+
+    const first = await promoteSnippetCandidate({
+      candidateFile: candidatePath,
+      snippetsDir,
+      slug: "approved-parser",
+      title: "Approved parser",
+    });
+    const second = await promoteSnippetCandidate({
+      candidateFile: candidatePath,
+      snippetsDir,
+      slug: "approved-parser",
+      title: "Approved parser",
+    });
+
+    const snippet = await readFile(path.join(snippetsDir, "approved-parser.md"), "utf8");
+    const index = await readFile(path.join(snippetsDir, "INDEX.md"), "utf8");
+
+    assert.equal(first.status, "created");
+    assert.equal(second.status, "unchanged");
+    assert.match(snippet, /# Snippet: Approved parser/);
+    assert.match(snippet, /<!-- snippet-promotion: \{"slug":"approved-parser","title":"Approved parser"/);
+    assert.match(snippet, /Source candidate:/);
+    assert.match(snippet, /Use a small parser and keep tests local\./);
+    assert.equal((index.match(/approved-parser\.md/g) ?? []).length, 1);
+    assert.match(index, /- \[Approved parser\]\(\.\/approved-parser\.md\)/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("promoteSnippetCandidate rejects conflicting existing snippet files", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-promote-conflict-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+  const candidatePath = path.join(rootDir, "candidate.md");
+
+  try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(candidatePath, "# Candidate\n\nApproved content.\n", "utf8");
+    await writeFile(path.join(snippetsDir, "approved-parser.md"), "# Different\n", "utf8");
+
+    await assert.rejects(
+      () => promoteSnippetCandidate({
+        candidateFile: candidatePath,
+        snippetsDir,
+        slug: "approved-parser",
+      }),
+      /Refusing to overwrite existing snippet/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
   }
 });

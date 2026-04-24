@@ -8,7 +8,7 @@ Before coding starts, Aegis should help drive structured discovery: clarify the 
 
 Start a task, walk away, and come back to a structured run directory with a spec, frozen interfaces, progress notes, blockers, session traces, implementation output, and test evidence.
 
-> Current status: v0.4 alpha. API probe, snippet pool, observer lessons, and bounded observer context are active; this is still a research prototype.
+> Current status: v0.5 alpha. API probe, snippet pool, observer lessons, bounded observer context, and snippet promotion are active; this is still a research prototype.
 
 ## Why This Exists
 
@@ -25,7 +25,7 @@ The first defense against babysitting is not better code generation. It is bette
 
 ## How It Works
 
-v0.4 runs a serial loop:
+v0.5 runs a serial loop:
 
 ```text
 researcher -> manager -> developer -> tester
@@ -53,7 +53,7 @@ api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
 ```
 
-v0.4 alpha currently generates the files above and also reads a global snippet catalog:
+v0.5 alpha currently generates the files above and also reads a global snippet catalog:
 
 snippets/INDEX.md  # reusable implementation snippets for prompt grounding
 
@@ -92,6 +92,7 @@ The manager decides one next action at a time:
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
+- Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries.
 - Included pilot task: Markdown TODO exporter.
 
@@ -190,6 +191,19 @@ npm link
 codex-gtd run --task examples/todo-exporter-task.md --model codex-5.3-spark
 ```
 
+### Promote a reviewed snippet candidate
+
+After a successful `--observe` run produces `snippets/_candidates/*.md`, review the candidate file manually. Promote only approved content:
+
+```bash
+node dist/cli.js promote-snippet \
+  --candidate snippets/_candidates/example-candidates.md \
+  --slug approved-parser \
+  --title "Approved parser"
+```
+
+The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
+
 ### Generated files and privacy
 
 Run artifacts are written to `runs/` and are intentionally ignored by git and npm packaging. They can contain local file paths, prompts, model traces, and generated workspace code. Do not publish `runs/` unless you have reviewed and sanitized it.
@@ -199,6 +213,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ```text
 codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
 codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
 codex-gtd report [--runs-dir <dir>] [--limit <n>]
 codex-gtd smoke [--model <model>]
 ```
@@ -276,7 +291,7 @@ Planned versions:
 - v0.2: API probe mechanism to reduce SDK/API hallucinations. Implemented.
 - v0.3: snippet reuse pool for agent-friendly private components. Initial support is implemented.
 - v0.4: observer pass available (`codex-gtd observe`) to produce `lessons.md`; observer input is bounded before the SDK turn.
-- v0.5: snippet candidate generation from successful runs into `snippets/_candidates/`.
+- v0.5: snippet candidate generation and reviewed promotion into the reusable `snippets/` catalog.
 - v0.6+: parallel developers after interfaces are frozen.
 
 ## Philosophy

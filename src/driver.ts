@@ -1336,14 +1336,14 @@ async function ensureSnippetCatalog(snippetsDir: string): Promise<void> {
 function defaultSnippetIndex(): string {
   return `# Snippets
 
-This repository is starting v0.3 with a minimal snippet reuse pool.
+This repository is starting with a minimal snippet reuse pool.
 
 ## How to use
 
 - Add reusable implementation patterns as markdown files in this directory.
 - Keep each snippet under ~200 lines.
 - Document dependencies, assumptions, and test evidence for quick reuse.
-- In v0.3, the researcher reads this index and selected snippets before implementing.
+- The researcher reads this index and selected snippets before implementing.
 `;
 }
 
@@ -1811,6 +1811,68 @@ type SnippetCandidateOptions = {
   snippetsDir: string;
 };
 
+export type PromoteSnippetOptions = {
+  candidateFile: string;
+  snippetsDir: string;
+  slug: string;
+  title?: string;
+};
+
+export type PromoteSnippetResult = {
+  status: "created" | "unchanged";
+  snippetFile: string;
+  indexFile: string;
+};
+
+export async function promoteSnippetCandidate(options: PromoteSnippetOptions): Promise<PromoteSnippetResult> {
+  validateSnippetSlug(options.slug);
+
+  const snippetsDir = path.resolve(options.snippetsDir);
+  const candidateFile = path.resolve(options.candidateFile);
+  const snippetFile = path.join(snippetsDir, `${options.slug}.md`);
+  const indexFile = path.join(snippetsDir, "INDEX.md");
+  const title = options.title?.trim() || titleFromSlug(options.slug);
+  const candidateContent = await readFile(candidateFile, "utf8");
+  const promotedContent = formatPromotedSnippet({
+    title,
+    slug: options.slug,
+    candidateFile,
+    candidateContent,
+  });
+
+  await ensureSnippetCatalog(snippetsDir);
+  await mkdir(snippetsDir, { recursive: true });
+
+  let status: PromoteSnippetResult["status"] = "created";
+  try {
+    const existing = await readFile(snippetFile, "utf8");
+    if (existing !== promotedContent) {
+      throw new Error(`Refusing to overwrite existing snippet: ${snippetFile}`);
+    }
+    status = "unchanged";
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing to overwrite")) {
+      throw error;
+    }
+    await writeFile(snippetFile, promotedContent, "utf8");
+  }
+
+  const index = await readFile(indexFile, "utf8");
+  const updatedIndex = addSnippetToIndex(index, {
+    title,
+    slug: options.slug,
+  });
+  if (updatedIndex !== index) {
+    await writeFile(indexFile, updatedIndex, "utf8");
+  }
+
+  return {
+    status,
+    snippetFile,
+    indexFile,
+  };
+}
+
 async function generateSnippetCandidates(options: SnippetCandidateOptions): Promise<string[]> {
   const runDir = path.resolve(options.runDir);
   const snippetsDir = path.resolve(options.snippetsDir);
@@ -1935,6 +1997,74 @@ function formatSnippetCandidateDocument(params: { runDir: string; entries: strin
   lines.push("- Move approved snippets to `snippets/` and add to `snippets/INDEX.md`.");
   lines.push("");
 
+  return `${lines.join("\n")}\n`;
+}
+
+function validateSnippetSlug(slug: string): void {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    throw new Error("slug must use lowercase letters, numbers, and hyphens");
+  }
+}
+
+function titleFromSlug(slug: string): string {
+  return slug
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatPromotedSnippet(params: {
+  title: string;
+  slug: string;
+  candidateFile: string;
+  candidateContent: string;
+}): string {
+  return `# Snippet: ${params.title}
+
+<!-- snippet-promotion: ${JSON.stringify({
+    slug: params.slug,
+    title: params.title,
+    source: path.basename(params.candidateFile),
+    status: "approved",
+    createdBy: "promote-snippet",
+  })} -->
+
+## Promotion
+
+- Status: approved
+- Slug: ${params.slug}
+- Source candidate: ${path.basename(params.candidateFile)}
+- Promoted by: codex-gtd promote-snippet
+
+## Content
+
+${params.candidateContent.trim()}
+`;
+}
+
+function addSnippetToIndex(index: string, params: { title: string; slug: string }): string {
+  const entry = `- [${params.title}](./${params.slug}.md)`;
+  if (index.includes(`](./${params.slug}.md)`)) {
+    return index;
+  }
+
+  const lines = index.trimEnd().split("\n");
+  const headingIndex = lines.findIndex((line) => /^##\s+Available snippets\s*$/i.test(line));
+  if (headingIndex === -1) {
+    return `${index.trimEnd()}
+
+## Available snippets
+
+${entry}
+`;
+  }
+
+  let insertIndex = headingIndex + 1;
+  while (insertIndex < lines.length && lines[insertIndex].trim() === "") {
+    insertIndex += 1;
+  }
+
+  lines.splice(insertIndex, 0, entry);
   return `${lines.join("\n")}\n`;
 }
 

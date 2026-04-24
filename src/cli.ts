@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runObserver, runOrchestration, runReport, runSmokeTest, type RunReport } from "./driver.js";
+import { promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunReport } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -9,6 +9,9 @@ type ParsedArgs = {
   model?: string;
   runsDir?: string;
   snippetsDir?: string;
+  candidate?: string;
+  slug?: string;
+  title?: string;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
@@ -60,6 +63,27 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--snippets-dir") {
       if (!next) throw new Error("--snippets-dir requires a directory");
       parsed.snippetsDir = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--candidate") {
+      if (!next) throw new Error("--candidate requires a file path");
+      parsed.candidate = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--slug") {
+      if (!next) throw new Error("--slug requires a slug");
+      parsed.slug = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--title") {
+      if (!next) throw new Error("--title requires a title");
+      parsed.title = next;
       i += 1;
       continue;
     }
@@ -129,11 +153,12 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`codex-gtd v0.4
+  console.log(`codex-gtd v0.5
 
 Usage:
   codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd smoke [--model <model>]
 
@@ -270,6 +295,27 @@ async function main(): Promise<void> {
     if (result.status !== "done") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (args.command === "promote-snippet") {
+    if (!args.candidate) {
+      throw new Error("promote-snippet requires --candidate <candidate-file>");
+    }
+    if (!args.slug) {
+      throw new Error("promote-snippet requires --slug <slug>");
+    }
+
+    const result = await promoteSnippetCandidate({
+      candidateFile: args.candidate,
+      snippetsDir: args.snippetsDir ?? "snippets",
+      slug: args.slug,
+      title: args.title,
+    });
+
+    console.log(`Snippet status: ${result.status}`);
+    console.log(`Snippet file: ${result.snippetFile}`);
+    console.log(`Index file: ${result.indexFile}`);
     return;
   }
 

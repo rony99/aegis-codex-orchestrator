@@ -1,6 +1,6 @@
 # Aegis Snippets
 
-This directory is the v0.3 cross-run snippet pool.
+This directory is the v0.5 cross-run snippet pool.
 
 ## Available snippets
 

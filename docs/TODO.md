@@ -4,13 +4,14 @@
 
 ---
 
-## 当前真实实现(v0.4 alpha)
+## 当前真实实现(v0.5 alpha)
 
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
   - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
+  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>]`
 - [x] 本地测试脚本:
   - `npm run test:local`
@@ -301,10 +302,27 @@
 
 - [x] observer 判断通过测试实现是否值得抽象（通过 lessons 中候选片段区提取）。
 - [x] 自动生成 `/snippets/_candidates/`。
-- [ ] 用户审核后入库。
+- [x] 用户审核后入库:
+  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
+  - 写入 `snippets/<slug>.md`
+  - 幂等更新 `snippets/INDEX.md`
+  - promoted snippet 包含 `snippet-promotion` JSON metadata comment
+  - slug 只允许 lowercase letters、numbers、hyphens，阻止 path traversal
+  - 已有同名但内容不同的 snippet 会拒绝覆盖
+- [x] self-dogfood v0.5 promotion run:
+  - `node dist/cli.js run --task tmp/selfdogfood-v05-promote-snippet-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --runs-dir runs-selfdogfood-v05-promote`
+  - run: `runs-selfdogfood-v05-promote/2026-04-24T06-27-14Z`
+  - status: `done`
+  - SDK monitor: `ok`
+- [x] real CLI promotion smoke:
+  - `node dist/cli.js promote-snippet --candidate <candidate-file> --slug parser-pattern --title "Parser pattern" --snippets-dir <temp-snippets-dir>`
+  - first run: `created`
+  - second run: `unchanged`
+  - verified no duplicate `INDEX.md` entry
+- [ ] 用 3-5 个真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断
 
-v0.4 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、observer lessons、protocol health context、observer 输入压缩、版本与文档同步都已打通。
+v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
 
-但它仍需要更多真实 run 数据。下一步优先继续跑中等/大型 `--observe` dogfood，检查压缩后 lessons 是否仍保留足够证据，并继续沉淀失败模式。
+但它仍需要更多真实 run 数据。下一步优先继续跑中等/大型 `--observe` dogfood，检查 promoted snippets 是否在后续任务中真实命中并提升开发质量。
