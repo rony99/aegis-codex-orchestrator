@@ -1,5 +1,5 @@
 import { Codex, type Thread } from "@openai/codex-sdk";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import path from "node:path";
@@ -44,6 +44,14 @@ export const RUN_PROTOCOL_ENTRIES = [
   "api-probes/",
   "workspace/",
   "run-summary.json",
+] as const;
+
+export const API_PROBE_README_SECTIONS = [
+  "Probe Decision",
+  "External Dependencies",
+  "Probe Artifacts",
+  "Recorded Results",
+  "Known Limitations",
 ] as const;
 
 type Role = "discovery" | "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
@@ -115,6 +123,30 @@ export type RunReport = {
     durationMs: number;
     endedAt: string;
   }>;
+};
+
+export type RunProtocolValidation = {
+  ok: boolean;
+  missing: string[];
+  found: string[];
+};
+
+export type ApiProbeReadmeValidation = {
+  ok: boolean;
+  missingSections: string[];
+  presentSections: string[];
+};
+
+export type ProtocolDriftMismatch = {
+  key: string;
+  progressValue?: unknown;
+  summaryValue?: unknown;
+};
+
+export type ProtocolDriftReport = {
+  ok: boolean;
+  mismatches: ProtocolDriftMismatch[];
+  details: string[];
 };
 
 type SdkHealthResult = {
@@ -891,6 +923,134 @@ function progressStatusForResult(result: RunResult, failureCategory: FailureCate
   if (result.status === "ask_user" && (failureCategory === "blocker" || failureCategory === "discovery_needed" || failureCategory === "sdk_failed")) {
     return "blocked";
   }
+  return "failed";
+}
+
+export async function validateRunProtocol(
+  runDir: string,
+  requiredEntries: readonly string[] = RUN_PROTOCOL_ENTRIES,
+): Promise<RunProtocolValidation> {
+  const found: string[] = [];
+  const missing: string[] = [];
+
+  for (const entry of requiredEntries) {
+    const isDirectory = entry.endsWith("/");
+    const entryPath = path.join(runDir, isDirectory ? entry.slice(0, -1) : entry);
+    try {
+      const stats = await stat(entryPath);
+      if ((isDirectory && stats.isDirectory()) || (!isDirectory && stats.isFile())) {
+        found.push(entry);
+      } else {
+        missing.push(entry);
+      }
+    } catch {
+      missing.push(entry);
+    }
+  }
+
+  return {
+    ok: missing.length === 0,
+    missing,
+    found,
+  };
+}
+
+export async function validateApiProbesReadme(
+  runDir: string,
+  requiredSections: readonly string[] = API_PROBE_README_SECTIONS,
+): Promise<ApiProbeReadmeValidation> {
+  let markdown = "";
+  try {
+    markdown = await readFile(path.join(runDir, "api-probes", "README.md"), "utf8");
+  } catch {
+    return {
+      ok: false,
+      missingSections: [...requiredSections],
+      presentSections: [],
+    };
+  }
+
+  const headings = new Set<string>();
+  for (const match of markdown.matchAll(/^##\s+(.+?)\s*$/gm)) {
+    const heading = match[1]?.trim();
+    if (heading) headings.add(heading);
+  }
+
+  const presentSections = requiredSections.filter((section) => headings.has(section));
+  const missingSections = requiredSections.filter((section) => !headings.has(section));
+  return {
+    ok: missingSections.length === 0,
+    missingSections,
+    presentSections,
+  };
+}
+
+export async function compareProgressRunSummary(runDir: string): Promise<ProtocolDriftReport> {
+  const details: string[] = [];
+  let progressState: ProgressState | undefined;
+  let summary: RunSummary | undefined;
+
+  try {
+    progressState = parseProgressState(await readFile(path.join(runDir, "progress.md"), "utf8"));
+    if (!progressState) details.push("progress.md missing valid progress state block");
+  } catch {
+    details.push("progress.md missing or unreadable");
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(path.join(runDir, RUN_SUMMARY_FILE), "utf8")) as RunSummary;
+    if (isRunSummary(parsed)) {
+      summary = parsed;
+    } else {
+      details.push("run-summary.json is not a valid run summary");
+    }
+  } catch {
+    details.push("run-summary.json missing or unreadable");
+  }
+
+  if (!progressState || !summary) {
+    return { ok: false, mismatches: [], details };
+  }
+
+  const expected = progressStateFromSummary(summary);
+  const mismatches: ProtocolDriftMismatch[] = [];
+  for (const key of ["status", "terminal", "lastRole", "loop", "reason"] as const) {
+    if (progressState[key] !== expected[key]) {
+      mismatches.push({
+        key,
+        progressValue: progressState[key],
+        summaryValue: expected[key],
+      });
+    }
+  }
+
+  return {
+    ok: mismatches.length === 0 && details.length === 0,
+    mismatches,
+    details,
+  };
+}
+
+function progressStateFromSummary(summary: RunSummary): Pick<ProgressState, "status" | "terminal" | "lastRole" | "loop" | "reason"> {
+  return {
+    status: progressStatusForSummary(summary),
+    terminal: true,
+    lastRole: summary.terminalRole ?? "driver",
+    loop: summary.metrics.roleTurns.manager ?? 0,
+    reason: summary.reason,
+  };
+}
+
+function progressStatusForSummary(summary: RunSummary): ProgressStatus {
+  if (summary.status === "done" && summary.failureCategory === "none") return "done";
+  if (summary.status === "max_loops_reached") return "max_loops_reached";
+  if (
+    summary.status === "ask_user"
+    && (summary.failureCategory === "blocker" || summary.failureCategory === "discovery_needed" || summary.failureCategory === "sdk_failed")
+  ) {
+    return "blocked";
+  }
+
   return "failed";
 }
 

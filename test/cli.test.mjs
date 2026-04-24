@@ -12,6 +12,9 @@ import {
   parseProgressState,
   RUN_PROTOCOL_ENTRIES,
   updateProgressDocument,
+  validateApiProbesReadme,
+  validateRunProtocol,
+  compareProgressRunSummary,
 } from "../dist/driver.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -345,6 +348,183 @@ test("initializeRunProtocol creates required files and directories without invok
       lastRole: "driver",
       loop: 0,
       terminal: false,
+    });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("validateRunProtocol reports missing required entries without invoking Codex SDK", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-protocol-missing-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await rm(path.join(runDir, "workspace"), { recursive: true, force: true });
+
+    const result = await validateRunProtocol(runDir);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.missing, ["spec.md", "interfaces.md", "workspace/", "run-summary.json"]);
+    assert.equal(result.found.includes("task.md"), true);
+    assert.equal(result.found.includes("workspace/"), false);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("validateApiProbesReadme reports valid and missing sections", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-api-probes-"));
+  const validRunDir = path.join(runsDir, "valid");
+  const invalidRunDir = path.join(runsDir, "invalid");
+
+  try {
+    await mkdir(path.join(validRunDir, "api-probes"), { recursive: true });
+    await writeFile(path.join(validRunDir, "api-probes", "README.md"), `# API Probes
+
+## Probe Decision
+No external dependency.
+
+## External Dependencies
+None.
+
+## Probe Artifacts
+None.
+
+## Recorded Results
+Not required.
+
+## Known Limitations
+None.
+`);
+    await mkdir(path.join(invalidRunDir, "api-probes"), { recursive: true });
+    await writeFile(path.join(invalidRunDir, "api-probes", "README.md"), `# API Probes
+
+## Probe Decision
+No external dependency.
+
+## Probe Artifacts
+None.
+
+## Known Limitations
+None.
+`);
+
+    assert.deepEqual(await validateApiProbesReadme(validRunDir), {
+      ok: true,
+      missingSections: [],
+      presentSections: [
+        "Probe Decision",
+        "External Dependencies",
+        "Probe Artifacts",
+        "Recorded Results",
+        "Known Limitations",
+      ],
+    });
+    assert.deepEqual(await validateApiProbesReadme(invalidRunDir), {
+      ok: false,
+      missingSections: ["External Dependencies", "Recorded Results"],
+      presentSections: ["Probe Decision", "Probe Artifacts", "Known Limitations"],
+    });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("compareProgressRunSummary reports consistency and drift", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-drift-"));
+  const matchRunDir = path.join(runsDir, "match");
+  const driftRunDir = path.join(runsDir, "drift");
+
+  try {
+    for (const runDir of [matchRunDir, driftRunDir]) {
+      await initializeRunProtocol({
+        runDir,
+        task: "# Task\n\nBuild a local CLI.",
+        model: "gpt-5.4",
+        startedAt: "2026-04-24T00:00:00.000Z",
+      });
+    }
+
+    const summary = buildRunSummary({
+      runDir: matchRunDir,
+      status: "done",
+      reason: "tests passed",
+      model: "gpt-5.4",
+      taskFile: path.join(matchRunDir, "task.md"),
+      startedAt: "2026-04-24T00:00:00.000Z",
+      endedAt: "2026-04-24T00:01:00.000Z",
+      durationMs: 60000,
+      maxLoops: 4,
+      turnTimeoutMs: 300000,
+      options: {
+        observe: false,
+        monitorSdk: true,
+        skipDiscovery: true,
+      },
+      snippetCandidates: [],
+      terminalRole: "manager",
+      failureCategory: "none",
+      metrics: {
+        sessionLogEntries: 3,
+        roleTurns: {
+          manager: 2,
+        },
+      },
+    });
+    const terminalProgress = updateProgressDocument(await readFile(path.join(matchRunDir, "progress.md"), "utf8"), {
+      status: "done",
+      lastUpdatedAt: "2026-04-24T00:01:00.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "tests passed",
+    });
+    await writeFile(path.join(matchRunDir, "progress.md"), terminalProgress);
+    await writeFile(path.join(matchRunDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+
+    const driftSummary = { ...summary, runDir: driftRunDir, status: "ask_user", failureCategory: "blocker", reason: "missing key" };
+    await writeFile(path.join(driftRunDir, "run-summary.json"), `${JSON.stringify(driftSummary, null, 2)}\n`);
+
+    assert.deepEqual(await compareProgressRunSummary(matchRunDir), {
+      ok: true,
+      mismatches: [],
+      details: [],
+    });
+    assert.deepEqual(await compareProgressRunSummary(driftRunDir), {
+      ok: false,
+      mismatches: [
+        {
+          key: "status",
+          progressValue: "initialized",
+          summaryValue: "blocked",
+        },
+        {
+          key: "terminal",
+          progressValue: false,
+          summaryValue: true,
+        },
+        {
+          key: "lastRole",
+          progressValue: "driver",
+          summaryValue: "manager",
+        },
+        {
+          key: "loop",
+          progressValue: 0,
+          summaryValue: 2,
+        },
+        {
+          key: "reason",
+          progressValue: undefined,
+          summaryValue: "missing key",
+        },
+      ],
+      details: [],
     });
   } finally {
     await rm(runsDir, { recursive: true, force: true });

@@ -52,6 +52,15 @@
 - [x] researcher 必须写 `api-probes/README.md`。
 - [x] 无外部依赖任务会记录 no-probe 决策。
 - [x] 外部 API/SDK 任务会生成 probe artifact 和响应样例或失败说明。
+- [x] `api-probes/README.md` section validator:
+  - `Probe Decision`
+  - `External Dependencies`
+  - `Probe Artifacts`
+  - `Recorded Results`
+  - `Known Limitations`
+- [x] protocol drift helper:
+  - 比较 `progress.md` state 与 `run-summary.json`
+  - 返回 structured mismatches, 不抛异常
 - [x] manager / developer / tester prompts 会读取并注入 `api-probes/` 摘要。
 - [x] manager 使用 structured JSON output:
   - `develop`
@@ -146,6 +155,16 @@
 - [x] local manager decision parser verification:
   - `npm run test:local`
   - 覆盖 plain JSON、fenced JSON、非法 action、缺失 reason fallback
+- [x] self-dogfood API/protocol drift run:
+  - `node dist/cli.js run --task tmp/selfdogfood-api-protocol-drift-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --runs-dir runs-selfdogfood-api-drift`
+  - run: `runs-selfdogfood-api-drift/2026-04-24T03-35-17Z`
+  - status: `done`
+  - SDK monitor: `ok`
+- [x] local API probe / protocol drift verification:
+  - `npm run test:local`
+  - 覆盖 missing protocol entries
+  - 覆盖 valid/missing `api-probes/README.md` sections
+  - 覆盖 progress/run-summary consistency and drift
 - [x] real SDK outcome metrics verification:
   - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
   - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
@@ -165,7 +184,7 @@
 - [x] discovery 仍有改进空间，但已落地前置澄清。
   - 当前: `run` 已支持 discovery 阶段与 TTY 追问；`--skip-discovery` 用于非交互环境。
   - 目标: 维持一次澄清+一次追问的真实闭环，继续减少不必要的人机往返。
-- [ ] API probes 仍是 run-local 文件,未对接跨 run 的质量门控。
+- [ ] API probes 仍是 run-local 文件,已具备本地 validator,但未对接跨 run 的质量门控。
 - [ ] Snippets 还在扩充中，缺少覆盖关键场景的模板和治理规则。
 - [x] observer 命令可生成 lessons（基础版），且 `run --observe` 已挂接到主循环。
 - [ ] 还没有并行 developer。
@@ -193,9 +212,10 @@
   - run 目录结构
   - manager decision JSON 解析
   - `api-probes/` 目录创建
-- [ ] 扩展本地测试:
+- [x] 扩展本地测试:
   - researcher 产出的 `api-probes/README.md` 结构
   - protocol drift 检测
+- [ ] 将 API probe artifact / protocol drift helper 接入 observer 或 report 输出。
 
 ## v0.3 TODO — Snippet 池
 
@@ -223,4 +243,4 @@
 
 v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先补 API probe artifact 测试、protocol drift 检测，以及基于真实任务 trace 的失败模式沉淀。
+但它仍未完全闭环。下一步优先把 API probe artifact / protocol drift helper 接入 observer 或 report 输出，并继续基于真实任务 trace 沉淀失败模式。
