@@ -88,6 +88,7 @@ The manager decides one next action at a time:
 - Independent Codex thread per role to reduce context pollution.
 - File-based protocol that is inspectable, checkpointable, and replay-friendly.
 - Structured manager decisions using JSON schema output.
+- Local protocol helpers and tests for run initialization, progress state repair, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
@@ -266,7 +267,7 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Add more local tests around run directory creation and manager decision parsing.
+- Add more local tests around API probe artifacts and protocol drift detection.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 
 Planned versions:

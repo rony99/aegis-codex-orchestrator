@@ -58,6 +58,11 @@
   - `test`
   - `done`
   - `ask_user`
+- [x] manager decision parser 已本地测试:
+  - plain JSON
+  - fenced JSON
+  - invalid `next_action`
+  - missing `reason` fallback
 - [x] 每个 role turn 写入 `session-log/*.json`:
   - role
   - model
@@ -134,6 +139,13 @@
   - `npm run test:local`
   - 覆盖 `buildProgressDocument` / `parseProgressState` / `updateProgressDocument`
   - 验证 state block 可更新且不丢失人类日志
+- [x] local run protocol verification:
+  - `npm run test:local`
+  - 覆盖 `initializeRunProtocol`
+  - 验证 `task.md` / `discovery.md` / `progress.md` / `blockers.md` / `session-log/` / `api-probes/` / `workspace/`
+- [x] local manager decision parser verification:
+  - `npm run test:local`
+  - 覆盖 plain JSON、fenced JSON、非法 action、缺失 reason fallback
 - [x] real SDK outcome metrics verification:
   - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
   - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
@@ -177,10 +189,13 @@
   - fast-fail 错误路径
   - `run-summary.json` schema shape
   - fake `run-summary.json` report 汇总
-- [ ] 扩展本地测试:
+- [x] 扩展本地测试:
   - run 目录结构
   - manager decision JSON 解析
-  - `api-probes/` 目录和 README 创建
+  - `api-probes/` 目录创建
+- [ ] 扩展本地测试:
+  - researcher 产出的 `api-probes/README.md` 结构
+  - protocol drift 检测
 
 ## v0.3 TODO — Snippet 池
 
@@ -208,4 +223,4 @@
 
 v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先补更多 run-local 协议测试、manager decision 解析测试，以及基于真实任务 trace 的失败模式沉淀。
+但它仍未完全闭环。下一步优先补 API probe artifact 测试、protocol drift 检测，以及基于真实任务 trace 的失败模式沉淀。

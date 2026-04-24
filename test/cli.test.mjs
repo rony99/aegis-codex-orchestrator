@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import {
   buildProgressDocument,
   buildRunSummary,
+  initializeRunProtocol,
+  parseManagerDecision,
   parseProgressState,
   RUN_PROTOCOL_ENTRIES,
   updateProgressDocument,
@@ -282,4 +284,69 @@ test("progress document can restore state when an agent overwrites the header", 
     reason: "missing credentials",
   });
   assert.match(restored, /Researcher updated this file/);
+});
+
+test("manager decision parser accepts plain and fenced JSON", () => {
+  assert.deepEqual(parseManagerDecision('{"next_action":"test","target":"workspace","instructions":"run tests","reason":"implementation exists"}'), {
+    next_action: "test",
+    target: "workspace",
+    instructions: "run tests",
+    reason: "implementation exists",
+  });
+
+  assert.deepEqual(parseManagerDecision("```json\n{\"next_action\":\"done\",\"target\":null,\"instructions\":null,\"reason\":\"tests passed\"}\n```"), {
+    next_action: "done",
+    target: undefined,
+    instructions: undefined,
+    reason: "tests passed",
+  });
+});
+
+test("manager decision parser rejects invalid actions and defaults missing reason", () => {
+  assert.throws(
+    () => parseManagerDecision('{"next_action":"ship","target":null,"instructions":null,"reason":"no"}'),
+    /invalid next_action/,
+  );
+
+  assert.deepEqual(parseManagerDecision('{"next_action":"develop"}'), {
+    next_action: "develop",
+    target: undefined,
+    instructions: undefined,
+    reason: "No reason provided.",
+  });
+});
+
+test("initializeRunProtocol creates required files and directories without invoking Codex SDK", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-protocol-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+
+    const entries = new Set(await readdir(runDir));
+    for (const entry of ["task.md", "discovery.md", "progress.md", "blockers.md", "session-log", "api-probes", "workspace"]) {
+      assert.equal(entries.has(entry), true, `${entry} should exist`);
+    }
+
+    assert.equal(await readFile(path.join(runDir, "task.md"), "utf8"), "# Task\n\nBuild a local CLI.");
+    assert.match(await readFile(path.join(runDir, "blockers.md"), "utf8"), /None\./);
+    const progress = await readFile(path.join(runDir, "progress.md"), "utf8");
+    assert.deepEqual(parseProgressState(progress), {
+      schemaVersion: 1,
+      status: "initialized",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+      lastUpdatedAt: "2026-04-24T00:00:00.000Z",
+      lastRole: "driver",
+      loop: 0,
+      terminal: false,
+    });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
 });

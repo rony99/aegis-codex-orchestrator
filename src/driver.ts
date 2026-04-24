@@ -192,6 +192,13 @@ export type ProgressState = {
   reason?: string;
 };
 
+export type RunProtocolInitOptions = {
+  runDir: string;
+  task: string;
+  model: string;
+  startedAt: string;
+};
+
 type ProgressStatePatch = Partial<Omit<ProgressState, "schemaVersion" | "model" | "startedAt">> & {
   schemaVersion?: 1;
   model?: string;
@@ -346,14 +353,13 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
   const task = await readFile(path.resolve(options.taskFile), "utf8");
 
-  await mkdir(path.join(runDir, "session-log"), { recursive: true });
-  await mkdir(workspaceDir, { recursive: true });
-  await mkdir(apiProbesDir, { recursive: true });
   await ensureSnippetCatalog(snippetsDir);
-  await writeFile(path.join(runDir, "task.md"), task);
-  await writeFile(path.join(runDir, "progress.md"), initialProgress(model, startedAt));
-  await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n");
-  await writeFile(path.join(runDir, "discovery.md"), "# Discovery\n\nPending discovery.\n");
+  await initializeRunProtocol({
+    runDir,
+    task,
+    model,
+    startedAt,
+  });
 
   const context: RunContext = {
     codex: new Codex(),
@@ -1281,7 +1287,7 @@ async function writeRoleErrorLog(
   );
 }
 
-function parseManagerDecision(finalResponse: string): ManagerDecision {
+export function parseManagerDecision(finalResponse: string): ManagerDecision {
   const parsed = parseJsonObject(finalResponse);
 
   if (!parsed || typeof parsed !== "object") {
@@ -1348,6 +1354,19 @@ async function createRunDirectory(runsDir: string): Promise<string> {
   const runDir = path.join(absoluteRunsDir, stamp);
   await mkdir(runDir, { recursive: true });
   return runDir;
+}
+
+export async function initializeRunProtocol(options: RunProtocolInitOptions): Promise<void> {
+  const workspaceDir = path.join(options.runDir, "workspace");
+  const apiProbesDir = path.join(options.runDir, "api-probes");
+
+  await mkdir(path.join(options.runDir, "session-log"), { recursive: true });
+  await mkdir(workspaceDir, { recursive: true });
+  await mkdir(apiProbesDir, { recursive: true });
+  await writeFile(path.join(options.runDir, "task.md"), options.task);
+  await writeFile(path.join(options.runDir, "progress.md"), initialProgress(options.model, options.startedAt));
+  await writeFile(path.join(options.runDir, "blockers.md"), "# Blockers\n\nNone.\n");
+  await writeFile(path.join(options.runDir, "discovery.md"), "# Discovery\n\nPending discovery.\n");
 }
 
 function resolveModel(model?: string): string {

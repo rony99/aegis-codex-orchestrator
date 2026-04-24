@@ -107,6 +107,8 @@ runs/<timestamp>/
 
 `progress.md` 当前采用双层结构：顶部是 `codex-gtd:progress-state` JSON block，包含 `status`、`lastRole`、`loop`、`terminal`、`reason` 等最小机器状态；下方 `## Log` 保留人类可读过程记录。这样后续 driver/observer 可以稳定判断 run 状态，而不需要解析自然语言日志。
 
+run-local 协议初始化和 manager decision parser 已拆成可测试 helper。当前本地测试覆盖 run 目录结构、progress state 修复、plain/fenced JSON decision、非法 action 和缺失 reason fallback。
+
 ### 3.3 当前主循环
 
 ```text
@@ -220,6 +222,7 @@ TODO:
 - 新增 `run-summary.json`
 - 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、failure categories、平均耗时、SDK monitor failures、observer failures
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
+- 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 
 待补:
 
