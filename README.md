@@ -45,7 +45,7 @@ task.md            # original user task
 discovery.md       # clarification pass and open questions (interactive unless --skip-discovery)
 spec.md            # functional requirements, acceptance criteria, non-goals
 interfaces.md      # frozen contract for implementation and testing
-progress.md        # current status and executed commands
+progress.md        # human log plus machine-readable state block
 blockers.md        # issues that require user attention or cannot be self-resolved
 run-summary.json   # machine-readable terminal state, failure category, and role metrics
 session-log/       # raw Codex turn traces for future observer/reflection work
@@ -237,7 +237,7 @@ runs/2026-04-23T08-27-29Z/
   sdk-health.json    # optional, SDK smoke/health trace for this run
 ```
 
-`run-summary.json` includes `failureCategory`, `terminalRole`, and per-role turn counts under `metrics.roleTurns`. Older summaries without these fields still load in `report` and are categorized as `unknown`.
+`progress.md` starts with a `codex-gtd:progress-state` JSON block containing `status`, `lastRole`, `loop`, `terminal`, and optional `reason`, then keeps the human-readable log below it. `run-summary.json` includes `failureCategory`, `terminalRole`, and per-role turn counts under `metrics.roleTurns`. Older summaries without these fields still load in `report` and are categorized as `unknown`.
 
 The v0.1 pilot run completed the full chain:
 
@@ -266,7 +266,6 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Normalize `progress.md` into a more machine-readable status format.
 - Add more local tests around run directory creation and manager decision parsing.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 

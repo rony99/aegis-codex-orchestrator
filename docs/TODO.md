@@ -42,6 +42,10 @@
   - `api-probes/`
   - `workspace/`
   - `sdk-health.json`
+- [x] `progress.md` 最小机器状态:
+  - 文件顶部包含 `codex-gtd:progress-state` JSON block
+  - 字段包括 `status` / `model` / `startedAt` / `lastUpdatedAt` / `lastRole` / `loop` / `terminal` / `reason`
+  - JSON block 后保留人类可读 Log
 - [x] 当前全局 snippet 目录协议:
   - `snippets/INDEX.md`
   - snippets 检索注入到 researcher/manager/developer/tester prompt
@@ -126,6 +130,10 @@
   - `npm run test:local`
   - fake summary 覆盖 `failureCategory` / `terminalRole` / `metrics.roleTurns`
   - report 输出 failure category 聚合，并兼容旧 summary 的 `unknown`
+- [x] local progress protocol verification:
+  - `npm run test:local`
+  - 覆盖 `buildProgressDocument` / `parseProgressState` / `updateProgressDocument`
+  - 验证 state block 可更新且不丢失人类日志
 - [x] real SDK outcome metrics verification:
   - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
   - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
@@ -134,6 +142,11 @@
   - `failureCategory`: `blocker`
   - `terminalRole`: `manager`
   - `metrics.roleTurns`: researcher `1`, manager `1`
+- [x] real SDK progress protocol verification:
+  - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-progress-verify-2`
+  - run: `runs-progress-verify-2/2026-04-24T03-19-41Z`
+  - `progress.md` state: `status=blocked`, `model=gpt-5.3-codex-spark`, `lastRole=manager`, `loop=1`, `terminal=true`
+  - `run-summary.json`: `status=ask_user`, `failureCategory=blocker`, `terminalRole=manager`
 
 ## 与最终目标的差距
 
@@ -157,7 +170,7 @@
   - `session-log/<timestamp>-<role>-error.json`
 - [x] 端到端失败时 CLI 返回非零退出码。
 - [x] 增加 blocker 验收 task。
-- [ ] 规范 `progress.md` 最小结构。
+- [x] 规范 `progress.md` 最小结构。
 - [x] 增加轻量本地测试脚本:
   - CLI 参数解析
   - model alias 文档输出
@@ -193,6 +206,6 @@
 
 ## 当前判断
 
-v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、run summary/report 指标化、版本与文档同步都已打通。
+v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先补 `progress.md` 机器可读化、更多 run-local 协议测试，以及基于真实任务 trace 的失败模式沉淀。
+但它仍未完全闭环。下一步优先补更多 run-local 协议测试、manager decision 解析测试，以及基于真实任务 trace 的失败模式沉淀。

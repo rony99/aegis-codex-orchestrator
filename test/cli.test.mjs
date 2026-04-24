@@ -4,7 +4,13 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRunSummary, RUN_PROTOCOL_ENTRIES } from "../dist/driver.js";
+import {
+  buildProgressDocument,
+  buildRunSummary,
+  parseProgressState,
+  RUN_PROTOCOL_ENTRIES,
+  updateProgressDocument,
+} from "../dist/driver.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
@@ -201,4 +207,79 @@ test("run summary captures machine-readable terminal state", () => {
   assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
+});
+
+test("progress document keeps a machine-readable state block", () => {
+  const document = buildProgressDocument({
+    schemaVersion: 1,
+    status: "initialized",
+    model: "gpt-5.4",
+    startedAt: "2026-04-24T00:00:00.000Z",
+    lastUpdatedAt: "2026-04-24T00:00:00.000Z",
+    lastRole: "driver",
+    loop: 0,
+    terminal: false,
+  }, "- Status: initialized\n");
+
+  assert.match(document, /<!-- codex-gtd:progress-state:start -->/);
+  assert.match(document, /<!-- codex-gtd:progress-state:end -->/);
+  assert.deepEqual(parseProgressState(document), {
+    schemaVersion: 1,
+    status: "initialized",
+    model: "gpt-5.4",
+    startedAt: "2026-04-24T00:00:00.000Z",
+    lastUpdatedAt: "2026-04-24T00:00:00.000Z",
+    lastRole: "driver",
+    loop: 0,
+    terminal: false,
+  });
+
+  const updated = updateProgressDocument(document, {
+    status: "blocked",
+    lastUpdatedAt: "2026-04-24T00:01:00.000Z",
+    lastRole: "manager",
+    loop: 1,
+    terminal: true,
+    reason: "missing credentials",
+  }, "\n## Failed\n\nmissing credentials\n");
+
+  assert.deepEqual(parseProgressState(updated), {
+    schemaVersion: 1,
+    status: "blocked",
+    model: "gpt-5.4",
+    startedAt: "2026-04-24T00:00:00.000Z",
+    lastUpdatedAt: "2026-04-24T00:01:00.000Z",
+    lastRole: "manager",
+    loop: 1,
+    terminal: true,
+    reason: "missing credentials",
+  });
+  assert.match(updated, /## Failed/);
+});
+
+test("progress document can restore state when an agent overwrites the header", () => {
+  const overwrittenByAgent = "# Progress\n\nResearcher updated this file without preserving the state block.\n";
+  const restored = updateProgressDocument(overwrittenByAgent, {
+    status: "blocked",
+    model: "gpt-5.3-codex-spark",
+    startedAt: "2026-04-24T00:00:00.000Z",
+    lastUpdatedAt: "2026-04-24T00:02:00.000Z",
+    lastRole: "manager",
+    loop: 1,
+    terminal: true,
+    reason: "missing credentials",
+  });
+
+  assert.deepEqual(parseProgressState(restored), {
+    schemaVersion: 1,
+    status: "blocked",
+    model: "gpt-5.3-codex-spark",
+    startedAt: "2026-04-24T00:00:00.000Z",
+    lastUpdatedAt: "2026-04-24T00:02:00.000Z",
+    lastRole: "manager",
+    loop: 1,
+    terminal: true,
+    reason: "missing credentials",
+  });
+  assert.match(restored, /Researcher updated this file/);
 });

@@ -105,6 +105,8 @@ runs/<timestamp>/
 
 `run-summary.json` 当前记录终态 `status` / `reason`、`failureCategory`、`terminalRole`、`metrics.roleTurns`、SDK health、observer 结果和 snippet candidates。`report` 会聚合这些 summary，并兼容旧 summary 中缺失的新字段。
 
+`progress.md` 当前采用双层结构：顶部是 `codex-gtd:progress-state` JSON block，包含 `status`、`lastRole`、`loop`、`terminal`、`reason` 等最小机器状态；下方 `## Log` 保留人类可读过程记录。这样后续 driver/observer 可以稳定判断 run 状态，而不需要解析自然语言日志。
+
 ### 3.3 当前主循环
 
 ```text
@@ -175,7 +177,7 @@ TODO:
   - `session-log/<timestamp>-<role>-error.json`
 - 已完成: CLI 在端到端失败时返回非零退出码（`ask_user` 与 `max_loops_reached` 视为失败终态）
 - 已完成: 增加 blocker 路径验收 task。
-- 规范 `progress.md` 最小状态字段
+- 已完成: 规范 `progress.md` 最小状态字段。
 
 ### v0.2 — API 可靠性强化
 

@@ -27,6 +27,8 @@ const SDK_MONITOR_DIR = ".codex-gtd";
 const SDK_MONITOR_FILE = "sdk-health-baseline.json";
 const SDK_MONITOR_RUN_FILE = "sdk-health.json";
 const RUN_SUMMARY_FILE = "run-summary.json";
+const PROGRESS_STATE_START = "<!-- codex-gtd:progress-state:start -->";
+const PROGRESS_STATE_END = "<!-- codex-gtd:progress-state:end -->";
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
@@ -174,6 +176,26 @@ type SessionLogMetrics = {
   sessionLogEntries: number;
   roleTurns: Record<string, number>;
   terminalRole?: string;
+};
+
+export type ProgressStatus = "initialized" | "running" | "blocked" | "done" | "max_loops_reached" | "failed";
+
+export type ProgressState = {
+  schemaVersion: 1;
+  status: ProgressStatus;
+  model: string;
+  startedAt: string;
+  lastUpdatedAt: string;
+  lastRole: string;
+  loop: number;
+  terminal: boolean;
+  reason?: string;
+};
+
+type ProgressStatePatch = Partial<Omit<ProgressState, "schemaVersion" | "model" | "startedAt">> & {
+  schemaVersion?: 1;
+  model?: string;
+  startedAt?: string;
 };
 
 type ManagerDecision = {
@@ -329,7 +351,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   await mkdir(apiProbesDir, { recursive: true });
   await ensureSnippetCatalog(snippetsDir);
   await writeFile(path.join(runDir, "task.md"), task);
-  await writeFile(path.join(runDir, "progress.md"), initialProgress(model));
+  await writeFile(path.join(runDir, "progress.md"), initialProgress(model, startedAt));
   await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n");
   await writeFile(path.join(runDir, "discovery.md"), "# Discovery\n\nPending discovery.\n");
 
@@ -816,6 +838,16 @@ async function finishRun(
   const endedAt = new Date(endedAtMs).toISOString();
   const sessionMetrics = await readSessionLogMetrics(context.runDir);
   const failureCategory = classifyFailure(result, sessionMetrics.terminalRole);
+  await appendProgress(context.runDir, "", {
+    status: progressStatusForResult(result, failureCategory),
+    model: context.model,
+    startedAt: meta.startedAt,
+    lastUpdatedAt: endedAt,
+    lastRole: sessionMetrics.terminalRole ?? "driver",
+    loop: sessionMetrics.roleTurns.manager ?? 0,
+    terminal: true,
+    reason: result.reason,
+  });
   const summary = buildRunSummary({
     runDir: result.runDir,
     status: result.status,
@@ -845,6 +877,15 @@ async function finishRun(
 
   await writeFile(path.join(context.runDir, RUN_SUMMARY_FILE), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
   return result;
+}
+
+function progressStatusForResult(result: RunResult, failureCategory: FailureCategory): ProgressStatus {
+  if (result.status === "done" && failureCategory === "none") return "done";
+  if (result.status === "max_loops_reached") return "max_loops_reached";
+  if (result.status === "ask_user" && (failureCategory === "blocker" || failureCategory === "discovery_needed" || failureCategory === "sdk_failed")) {
+    return "blocked";
+  }
+  return "failed";
 }
 
 function createFailureCategoryCounts(): Record<FailureCategory, number> {
@@ -1314,19 +1355,124 @@ function resolveModel(model?: string): string {
   return MODEL_ALIASES[requested] ?? requested;
 }
 
-function initialProgress(model: string): string {
-  return `# Progress
-
-- Status: initialized
+function initialProgress(model: string, startedAt: string): string {
+  return buildProgressDocument({
+    schemaVersion: 1,
+    status: "initialized",
+    model,
+    startedAt,
+    lastUpdatedAt: startedAt,
+    lastRole: "driver",
+    loop: 0,
+    terminal: false,
+  }, `- Status: initialized
 - Model: ${model}
 - Run URL: ${pathToFileURL(process.cwd()).href}
 
-`;
+`);
 }
 
-async function appendProgress(runDir: string, text: string): Promise<void> {
+export function buildProgressDocument(state: ProgressState, log = ""): string {
+  return `# Progress
+
+${PROGRESS_STATE_START}
+${JSON.stringify(state, null, 2)}
+${PROGRESS_STATE_END}
+
+## Log
+
+${log}`;
+}
+
+export function parseProgressState(document: string): ProgressState | undefined {
+  const start = document.indexOf(PROGRESS_STATE_START);
+  const end = document.indexOf(PROGRESS_STATE_END);
+  if (start === -1 || end === -1 || end <= start) return undefined;
+
+  const jsonStart = start + PROGRESS_STATE_START.length;
+  const rawJson = document.slice(jsonStart, end).trim();
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<ProgressState>;
+    if (
+      parsed.schemaVersion !== 1
+      || !isProgressStatus(parsed.status)
+      || typeof parsed.model !== "string"
+      || typeof parsed.startedAt !== "string"
+      || typeof parsed.lastUpdatedAt !== "string"
+      || typeof parsed.lastRole !== "string"
+      || typeof parsed.loop !== "number"
+      || typeof parsed.terminal !== "boolean"
+    ) {
+      return undefined;
+    }
+
+    const state: ProgressState = {
+      schemaVersion: 1,
+      status: parsed.status,
+      model: parsed.model,
+      startedAt: parsed.startedAt,
+      lastUpdatedAt: parsed.lastUpdatedAt,
+      lastRole: parsed.lastRole,
+      loop: parsed.loop,
+      terminal: parsed.terminal,
+    };
+    if (typeof parsed.reason === "string") state.reason = parsed.reason;
+    return state;
+  } catch {
+    return undefined;
+  }
+}
+
+export function updateProgressDocument(
+  document: string,
+  patch: ProgressStatePatch,
+  logEntry = "",
+): string {
+  const currentState = parseProgressState(document);
+  const fallbackNow = new Date().toISOString();
+  const nextState: ProgressState = {
+    schemaVersion: 1,
+    status: patch.status ?? currentState?.status ?? "running",
+    model: patch.model ?? currentState?.model ?? "unknown",
+    startedAt: patch.startedAt ?? currentState?.startedAt ?? fallbackNow,
+    lastUpdatedAt: patch.lastUpdatedAt ?? currentState?.lastUpdatedAt ?? fallbackNow,
+    lastRole: patch.lastRole ?? currentState?.lastRole ?? "driver",
+    loop: patch.loop ?? currentState?.loop ?? 0,
+    terminal: patch.terminal ?? currentState?.terminal ?? false,
+  };
+  const reason = patch.reason ?? currentState?.reason;
+  if (reason !== undefined) nextState.reason = reason;
+
+  const existingLog = extractProgressLog(document);
+  return buildProgressDocument(nextState, `${existingLog}${logEntry}`);
+}
+
+function isProgressStatus(value: unknown): value is ProgressStatus {
+  return value === "initialized"
+    || value === "running"
+    || value === "blocked"
+    || value === "done"
+    || value === "max_loops_reached"
+    || value === "failed";
+}
+
+function extractProgressLog(document: string): string {
+  const marker = "\n## Log\n\n";
+  const markerIndex = document.indexOf(marker);
+  if (markerIndex >= 0) {
+    return document.slice(markerIndex + marker.length);
+  }
+
+  return document.replace(/^# Progress\s*/u, "");
+}
+
+async function appendProgress(
+  runDir: string,
+  text: string,
+  patch: ProgressStatePatch = { status: "running", lastUpdatedAt: new Date().toISOString() },
+): Promise<void> {
   const current = await readFile(path.join(runDir, "progress.md"), "utf8");
-  await writeFile(path.join(runDir, "progress.md"), current + text);
+  await writeFile(path.join(runDir, "progress.md"), updateProgressDocument(current, patch, text));
 }
 
 async function appendBlocker(runDir: string, reason: string): Promise<void> {
