@@ -18,7 +18,13 @@ import {
   validateRunProtocol,
   compareProgressRunSummary,
 } from "../dist/driver.js";
-import { observerPrompt } from "../dist/prompts.js";
+import {
+  OBSERVER_PROMPT_MAX_CHARS,
+  OBSERVER_SESSION_LOG_MAX_ENTRIES,
+  OBSERVER_TRUNCATION_MARKER,
+  compactObserverText,
+  observerPrompt,
+} from "../dist/prompts.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const VALID_API_PROBES_README = `# API Probes
@@ -126,7 +132,7 @@ test("help documents run options without invoking Codex SDK", () => {
     encoding: "utf8",
   });
 
-  assert.match(output, /codex-gtd v0\.3/);
+  assert.match(output, /codex-gtd v0\.4/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
@@ -711,6 +717,72 @@ test("observer prompt includes protocol health context", async () => {
     assert.match(prompt, /## Protocol Health/);
     assert.match(prompt, /Protocol Health is clean\./);
     assert.match(prompt, /Required \.\/lessons\.md sections:/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("observer text compaction uses a deterministic truncation marker", () => {
+  const compacted = compactObserverText("task.md", "x".repeat(1200), 160);
+
+  assert.ok(compacted.length <= 160);
+  assert.match(compacted, new RegExp(OBSERVER_TRUNCATION_MARKER));
+  assert.match(compacted, /\[truncated task\.md:/);
+});
+
+test("observer prompt compacts medium runs while preserving protocol health and error reasons", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-observer-compact-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: `# Task\n\n${"Collect a medium sized trace. ".repeat(900)}`,
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), `# Spec\n\n${"Large spec detail. ".repeat(900)}`, "utf8");
+    await writeFile(path.join(runDir, "interfaces.md"), `# Interfaces\n\n${"Large interface detail. ".repeat(900)}`, "utf8");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), `${VALID_API_PROBES_README}\n${"Probe output. ".repeat(900)}`, "utf8");
+    await mkdir(path.join(runDir, "session-log"), { recursive: true });
+
+    for (let index = 0; index < OBSERVER_SESSION_LOG_MAX_ENTRIES + 8; index += 1) {
+      const entry = {
+        role: index === 0 ? "observer" : "manager",
+        threadId: `thread-${index}`,
+        startedAt: `2026-04-24T00:${String(index).padStart(2, "0")}:00.000Z`,
+        endedAt: `2026-04-24T00:${String(index).padStart(2, "0")}:30.000Z`,
+        model: "gpt-5.4",
+        finalResponse: `final response ${index} ${"verbose trace item ".repeat(300)}`,
+        items: Array.from({ length: 30 }, (_, itemIndex) => ({ itemIndex, text: "large item payload ".repeat(40) })),
+      };
+      await writeFile(path.join(runDir, "session-log", `000${index}-manager.json`), `${JSON.stringify(entry, null, 2)}\n`, "utf8");
+    }
+
+    await writeFile(path.join(runDir, "session-log", "999-observer-error.json"), `${JSON.stringify({
+      role: "observer",
+      startedAt: "2026-04-24T01:00:00.000Z",
+      endedAt: "2026-04-24T01:05:00.000Z",
+      status: "error",
+      reason: "AbortError: observer turn exceeded deadline",
+      error: {
+        name: "AbortError",
+        message: "This operation was aborted",
+      },
+      finalResponse: "",
+    }, null, 2)}\n`, "utf8");
+
+    const prompt = await observerPrompt(runDir, path.join(runsDir, "snippets"), "## Protocol Health\n\nProtocol Health is clean.\n");
+    const roleMatches = prompt.match(/^- role:/gm) ?? [];
+
+    assert.ok(prompt.length <= OBSERVER_PROMPT_MAX_CHARS);
+    assert.match(prompt, /## Protocol Health/);
+    assert.match(prompt, /Protocol Health is clean\./);
+    assert.match(prompt, /AbortError: observer turn exceeded deadline/);
+    assert.match(prompt, new RegExp(OBSERVER_TRUNCATION_MARKER));
+    assert.ok(roleMatches.length <= OBSERVER_SESSION_LOG_MAX_ENTRIES);
+    assert.ok(!prompt.includes("large item payload ".repeat(20)));
+    assert.ok(!prompt.includes("verbose trace item ".repeat(80)));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

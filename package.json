@@ -1,6 +1,6 @@
 {
   "name": "codex-gtd",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Aegis Codex Orchestrator: a minimal Codex SDK orchestration loop using a file-based agent protocol.",
   "license": "MIT",
   "type": "module",

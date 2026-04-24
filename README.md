@@ -8,7 +8,7 @@ Before coding starts, Aegis should help drive structured discovery: clarify the 
 
 Start a task, walk away, and come back to a structured run directory with a spec, frozen interfaces, progress notes, blockers, session traces, implementation output, and test evidence.
 
-> Current status: v0.3 alpha. API probe and snippet pool support is now active, and this is still a research prototype.
+> Current status: v0.4 alpha. API probe, snippet pool, observer lessons, and bounded observer context are active; this is still a research prototype.
 
 ## Why This Exists
 
@@ -25,7 +25,7 @@ The first defense against babysitting is not better code generation. It is bette
 
 ## How It Works
 
-v0.3 runs a serial loop:
+v0.4 runs a serial loop:
 
 ```text
 researcher -> manager -> developer -> tester
@@ -53,7 +53,7 @@ api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
 ```
 
-v0.3 alpha currently generates the files above and also reads a global snippet catalog:
+v0.4 alpha currently generates the files above and also reads a global snippet catalog:
 
 snippets/INDEX.md  # reusable implementation snippets for prompt grounding
 
@@ -267,7 +267,7 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Compact observer input for medium/large runs.
+- Run more medium/large `observe` dogfood passes now that observer input is compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 
@@ -275,7 +275,7 @@ Planned versions:
 
 - v0.2: API probe mechanism to reduce SDK/API hallucinations. Implemented.
 - v0.3: snippet reuse pool for agent-friendly private components. Initial support is implemented.
-- v0.4: observer pass available (`codex-gtd observe`) to produce `lessons.md`.
+- v0.4: observer pass available (`codex-gtd observe`) to produce `lessons.md`; observer input is bounded before the SDK turn.
 - v0.5: snippet candidate generation from successful runs into `snippets/_candidates/`.
 - v0.6+: parallel developers after interfaces are frozen.
 

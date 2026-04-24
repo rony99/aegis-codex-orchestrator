@@ -4,7 +4,7 @@
 
 ---
 
-## 当前真实实现(v0.3 alpha)
+## 当前真实实现(v0.4 alpha)
 
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
@@ -197,10 +197,31 @@
   - status: `done`
   - observer prompt included `## Protocol Health`
   - `lessons.md` mentioned protocol health issue and repair suggestion
-- [ ] observer scaling issue:
+- [x] observer scaling issue:
   - medium self-dogfood run observe timed out at 300000ms with `AbortError`
   - likely cause: observer prompt includes too much session-log/protocol context
-  - next hardening: compact observer input or summarize session trace before SDK observer turn
+  - fixed by compacting observer input before the SDK observer turn
+  - `observerPrompt` now has `OBSERVER_PROMPT_MAX_CHARS`, per-section caps, bounded session-log entry count, and deterministic truncation markers
+  - compact session-log summaries preserve role/timestamp/thread/model plus finalResponse excerpts and error reasons
+- [x] self-dogfood observer compaction run:
+  - `node dist/cli.js run --task tmp/selfdogfood-observer-compaction-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --runs-dir runs-selfdogfood-observer-compaction`
+  - run: `runs-selfdogfood-observer-compaction/2026-04-24T06-05-39Z`
+  - status: `done`
+  - SDK monitor: `ok`
+- [x] local observer compaction verification:
+  - `npm run test:local`
+  - 覆盖 deterministic truncation marker
+  - 覆盖 medium run prompt hard cap
+  - 覆盖 bounded session-log summary
+  - 覆盖 protocol health 保留
+  - 覆盖 observer error reason 保留
+- [x] real SDK observer compaction verification:
+  - `node dist/cli.js observe --run-dir runs-selfdogfood-observer-health/2026-04-24T05-51-53Z --model codex-5.3-spark --turn-timeout-ms 300000`
+  - status: `done`
+  - duration: about 14s
+  - previous failure on this run was `AbortError` at 300000ms
+  - new observer prompt length: 19579 chars
+  - prompt retained `## Protocol Health`, prior `AbortError`, and truncation marker
 - [x] local observer protocol health verification:
   - `npm run test:local`
   - 覆盖 clean/unhealthy protocol health section
@@ -256,7 +277,7 @@
   - researcher 产出的 `api-probes/README.md` 结构
   - protocol drift 检测
 - [x] 将 API probe artifact / protocol drift helper 接入 report 输出。
-- [ ] 将 protocol health details 接入 observer lessons。
+- [x] 将 protocol health details 接入 observer lessons。
 
 ## v0.3 TODO — Snippet 池
 
@@ -273,6 +294,7 @@
 - [x] `run-summary.json` 增加终态失败分类、terminal role、role turn counts。
 - [x] `report` 增加 failure category 聚合。
 - [x] observer prompt 注入 protocol health context。
+- [x] observer prompt 输入压缩，避免中等 run 的原始 session trace 直接进入 SDK turn。
 - [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 
 ## v0.5 TODO — Snippet 自增长
@@ -283,6 +305,6 @@
 
 ## 当前判断
 
-v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、版本与文档同步都已打通。
+v0.4 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、observer lessons、protocol health context、observer 输入压缩、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先把 protocol health details 接入 observer lessons，并继续基于真实任务 trace 沉淀失败模式。
+但它仍需要更多真实 run 数据。下一步优先继续跑中等/大型 `--observe` dogfood，检查压缩后 lessons 是否仍保留足够证据，并继续沉淀失败模式。

@@ -1,6 +1,14 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+export const OBSERVER_PROMPT_MAX_CHARS = 40_000;
+export const OBSERVER_SECTION_MAX_CHARS = 3_500;
+export const OBSERVER_PROTOCOL_HEALTH_MAX_CHARS = 5_000;
+export const OBSERVER_SESSION_LOG_MAX_CHARS = 8_000;
+export const OBSERVER_SESSION_LOG_MAX_ENTRIES = 8;
+export const OBSERVER_SESSION_LOG_ENTRY_MAX_CHARS = 900;
+export const OBSERVER_TRUNCATION_MARKER = "truncated";
+
 type ManagerDecisionInput = {
   next_action: "develop" | "test" | "done" | "ask_user";
   target?: string;
@@ -339,7 +347,23 @@ export async function observerPrompt(runDir: string, snippetsDir: string, protoc
     readSnippetsSummary(snippetsDir),
   ]);
 
-  return `You are the observer agent for Aegis Codex Orchestrator.
+  const observedArtifacts = [
+    compactObserverSection(
+      "Protocol Health",
+      protocolHealth || "## Protocol Health\n\nProtocol Health was not evaluated.",
+      OBSERVER_PROTOCOL_HEALTH_MAX_CHARS,
+    ),
+    compactObserverSection("task.md", task, 2_800),
+    compactObserverSection("spec.md", spec, 4_000),
+    compactObserverSection("interfaces.md", interfaces, 3_500),
+    compactObserverSection("progress.md", progress, 5_000),
+    compactObserverSection("blockers.md", blockers, 2_000),
+    compactObserverSection("api-probes summary", apiProbes, 3_000),
+    compactObserverSection("snippet summary", snippets, 3_000),
+    compactObserverSection("session-log summary", sessionLog, OBSERVER_SESSION_LOG_MAX_CHARS),
+  ].join("\n\n");
+
+  const prompt = `You are the observer agent for Aegis Codex Orchestrator.
 
 Goal:
 Review the latest run traces and extract practical lessons for next runs.
@@ -363,31 +387,9 @@ If the Protocol Health section below lists issues, mention them in lessons.md wi
 
 Observed artifacts:
 
-${protocolHealth || "## Protocol Health\n\nProtocol Health was not evaluated."}
+${observedArtifacts}`;
 
-task.md:
-${task}
-
-spec.md:
-${spec}
-
-interfaces.md:
-${interfaces}
-
-progress.md:
-${progress}
-
-blockers.md:
-${blockers}
-
-api-probes summary:
-${apiProbes}
-
-snippet summary:
-${snippets}
-
-session-log summary:
-${sessionLog}`;
+  return compactObserverText("observer prompt", prompt, OBSERVER_PROMPT_MAX_CHARS);
 }
 
 async function readOptional(runDir: string, file: string): Promise<string> {
@@ -460,8 +462,8 @@ async function readSessionLogSummary(runDir: string): Promise<string> {
       return "session-log exists but is empty.";
     }
 
-    const chunks: string[] = [];
-    const sorted = entries.filter((entry) => entry.endsWith(".json")).sort().slice(-12);
+    const readableEntries: SessionLogEntrySummary[] = [];
+    const sorted = entries.filter((entry) => entry.endsWith(".json")).sort();
 
     for (const entry of sorted) {
       const filePath = path.join(sessionLogDir, entry);
@@ -469,15 +471,139 @@ async function readSessionLogSummary(runDir: string): Promise<string> {
       if (!info.isFile()) continue;
 
       const content = await readFile(filePath, "utf8");
-      chunks.push(`--- session-log/${entry} ---\n${truncate(content, 3600)}`);
+      readableEntries.push(parseSessionLogEntry(entry, content));
+    }
+
+    const limitedEntries = readableEntries
+      .sort((left, right) => left.time - right.time)
+      .slice(-OBSERVER_SESSION_LOG_MAX_ENTRIES);
+    const omitted = Math.max(0, readableEntries.length - limitedEntries.length);
+    const chunks = limitedEntries.map(formatSessionLogEntry);
+
+    if (omitted > 0) {
+      chunks.unshift(`[${OBSERVER_TRUNCATION_MARKER} session-log: ${omitted} older entries omitted]`);
     }
 
     return chunks.length > 0
-      ? chunks.join("\n\n")
+      ? compactObserverText("session-log summary", chunks.join("\n\n"), OBSERVER_SESSION_LOG_MAX_CHARS)
       : "session-log is present but has no readable JSON files.";
   } catch {
     return "session-log is missing.";
   }
+}
+
+type SessionLogEntrySummary = {
+  file: string;
+  role: string;
+  model?: string;
+  threadId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  finalResponse?: string;
+  reason?: string;
+  error?: string;
+  time: number;
+  malformed?: boolean;
+};
+
+function parseSessionLogEntry(file: string, content: string): SessionLogEntrySummary {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const startedAt = stringValue(parsed.startedAt);
+    const endedAt = stringValue(parsed.endedAt);
+    const reason = stringValue(parsed.reason) ?? stringValue(parsed.errorReason) ?? stringValue(parsed.errorSummary);
+    const error = formatSessionError(parsed.error);
+
+    return {
+      file,
+      role: stringValue(parsed.role) ?? "unknown",
+      model: stringValue(parsed.model),
+      threadId: stringValue(parsed.threadId),
+      startedAt,
+      endedAt,
+      finalResponse: stringValue(parsed.finalResponse),
+      reason,
+      error,
+      time: timestampValue(endedAt ?? startedAt ?? file),
+    };
+  } catch (error) {
+    return {
+      file,
+      role: "unknown",
+      reason: error instanceof Error ? error.message : "Could not parse session-log JSON.",
+      time: timestampValue(file),
+      malformed: true,
+    };
+  }
+}
+
+function formatSessionLogEntry(entry: SessionLogEntrySummary): string {
+  const lines = [
+    `- role: ${entry.role}`,
+    `  file: session-log/${entry.file}`,
+    entry.startedAt ? `  startedAt: ${entry.startedAt}` : undefined,
+    entry.endedAt ? `  endedAt: ${entry.endedAt}` : undefined,
+    entry.model ? `  model: ${entry.model}` : undefined,
+    entry.threadId ? `  threadId: ${entry.threadId}` : undefined,
+    entry.reason ? `  reason: ${compactInline(entry.reason, 220)}` : undefined,
+    entry.error ? `  error: ${compactInline(entry.error, 220)}` : undefined,
+    entry.finalResponse ? `  finalResponse: ${compactInline(entry.finalResponse, 360)}` : "  finalResponse: (empty)",
+    entry.malformed ? "  malformed: true" : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return compactObserverText(entry.file, lines.join("\n"), OBSERVER_SESSION_LOG_ENTRY_MAX_CHARS);
+}
+
+function compactObserverSection(label: string, value: string, maxChars = OBSERVER_SECTION_MAX_CHARS): string {
+  if (label === "Protocol Health") {
+    return compactObserverText(label, value, maxChars);
+  }
+
+  return `${label}:\n${compactObserverText(label, value, maxChars)}`;
+}
+
+export function compactObserverText(label: string, value: string, maxChars = OBSERVER_SECTION_MAX_CHARS): string {
+  if (maxChars <= 0) return "";
+
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const marker = `\n[${OBSERVER_TRUNCATION_MARKER} ${label}: ${normalized.length - maxChars} chars omitted]`;
+  if (marker.length >= maxChars) return marker.slice(0, maxChars);
+
+  return `${normalized.slice(0, maxChars - marker.length)}${marker}`;
+}
+
+function compactInline(value: string, maxChars: number): string {
+  return compactObserverText("inline", value.replace(/\s+/g, " ").trim(), maxChars).replace(/\n/g, " ");
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function formatSessionError(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const name = stringValue(record.name);
+    const message = stringValue(record.message);
+    if (name && message) return `${name}: ${message}`;
+    if (message) return message;
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return "Unserializable error object.";
+    }
+  }
+  return String(value);
+}
+
+function timestampValue(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function truncate(value: string, maxChars: number): string {
