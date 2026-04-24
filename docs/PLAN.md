@@ -92,6 +92,7 @@ runs/<timestamp>/
   interfaces.md
   progress.md
   blockers.md
+  run-summary.json
   session-log/
   api-probes/
   workspace/
@@ -101,6 +102,8 @@ runs/<timestamp>/
 可选未来增强:
 
 - `lessons.md`（v0.4 起）用于 observer 提炼的经验。
+
+`run-summary.json` 当前记录终态 `status` / `reason`、`failureCategory`、`terminalRole`、`metrics.roleTurns`、SDK health、observer 结果和 snippet candidates。`report` 会聚合这些 summary，并兼容旧 summary 中缺失的新字段。
 
 ### 3.3 当前主循环
 
@@ -119,7 +122,7 @@ while not done:
 
 - `maxLoops` 配合 `turnTimeoutMs` 控制循环与单轮超时，但 discovery 非交互环境下仍需用户决定是否使用 `--skip-discovery`。
 - role 失败已统一落盘到 `blockers.md` / `progress.md` / `session-log/<timestamp>-<role>-error.json`，并按轮次超时中断。
-- `ask_user` 路径尚未用真实 blocker task 验证。
+- `ask_user` 路径已用缺少外部 API key/账号的 blocker task 验证；后续需要更多真实任务样本来校准失败分类。
 
 ---
 
@@ -171,7 +174,7 @@ TODO:
   - `progress.md`
   - `session-log/<timestamp>-<role>-error.json`
 - 已完成: CLI 在端到端失败时返回非零退出码（`ask_user` 与 `max_loops_reached` 视为失败终态）
-- 增加 blocker 路径验收 task（待实施）
+- 已完成: 增加 blocker 路径验收 task。
 - 规范 `progress.md` 最小状态字段
 
 ### v0.2 — API 可靠性强化
@@ -213,7 +216,8 @@ TODO:
 - 基于现有 run 的 `session-log` 产出 `lessons.md`
 - 已完成: 在主循环增加可配置的自动 observer 触发（`run --observe`）
 - 新增 `run-summary.json`
-- 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、平均耗时、SDK monitor failures、observer failures
+- 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、failure categories、平均耗时、SDK monitor failures、observer failures
+- 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
 
 待补:
 

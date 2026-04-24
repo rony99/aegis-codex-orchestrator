@@ -35,8 +35,14 @@ async function writeSummary(runsDir, id, overrides = {}) {
       skipDiscovery: false,
     },
     snippetCandidates: [],
+    failureCategory: "none",
     metrics: {
       sessionLogEntries: 3,
+      roleTurns: {
+        manager: 1,
+        tester: 1,
+        developer: 1,
+      },
     },
     ...overrides,
   });
@@ -101,6 +107,7 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
     await writeSummary(runsDir, "run-b", {
       status: "ask_user",
       reason: "missing key",
+      failureCategory: "sdk_failed",
       endedAt: "2026-04-23T00:00:02.000Z",
       durationMs: 1000,
       sdkMonitor: {
@@ -115,6 +122,7 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
     await writeSummary(runsDir, "run-c", {
       status: "max_loops_reached",
       reason: "loop limit",
+      failureCategory: "max_loops",
       endedAt: "2026-04-23T00:00:01.000Z",
       durationMs: 2000,
       observer: {
@@ -134,6 +142,11 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
     assert.match(result.stdout, /Average duration: 2s/);
     assert.match(result.stdout, /SDK monitor failures: 1/);
     assert.match(result.stdout, /Observer failures: 1/);
+    assert.match(result.stdout, /Failure categories:/);
+    assert.match(result.stdout, /none: 1/);
+    assert.match(result.stdout, /sdk_failed: 1/);
+    assert.match(result.stdout, /max_loops: 1/);
+    assert.match(result.stdout, /ask_user\/sdk_failed/);
     assert.match(result.stdout, /run-a/);
     assert.match(result.stdout, /run-b/);
     assert.doesNotMatch(result.stdout, /run-c/);
@@ -167,8 +180,13 @@ test("run summary captures machine-readable terminal state", () => {
       checkedAt: "2026-04-23T00:00:00.100Z",
     },
     snippetCandidates: [],
+    terminalRole: "manager",
+    failureCategory: "blocker",
     metrics: {
       sessionLogEntries: 2,
+      roleTurns: {
+        manager: 2,
+      },
     },
   });
 
@@ -177,7 +195,10 @@ test("run summary captures machine-readable terminal state", () => {
   assert.equal(summary.model, "gpt-5.3-codex-spark");
   assert.equal(summary.options.skipDiscovery, true);
   assert.equal(summary.sdkMonitor?.passed, true);
+  assert.equal(summary.terminalRole, "manager");
+  assert.equal(summary.failureCategory, "blocker");
   assert.equal(summary.metrics.sessionLogEntries, 2);
+  assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
 });

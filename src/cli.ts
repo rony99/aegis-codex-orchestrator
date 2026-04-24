@@ -167,6 +167,12 @@ function printReport(report: RunReport): void {
   console.log(`Average duration: ${formatDuration(report.averageDurationMs)}`);
   console.log(`SDK monitor failures: ${report.sdkMonitorFailures}`);
   console.log(`Observer failures: ${report.observerFailures}`);
+  console.log("Failure categories:");
+  for (const [category, count] of Object.entries(report.failureCategories)) {
+    if (count > 0) {
+      console.log(`- ${category}: ${count}`);
+    }
+  }
 
   if (report.recentRuns.length === 0) {
     console.log("Recent runs: none");
@@ -176,7 +182,7 @@ function printReport(report: RunReport): void {
   console.log("Recent runs:");
   for (const run of report.recentRuns) {
     const reason = run.reason ? ` - ${run.reason}` : "";
-    console.log(`- ${run.endedAt} ${run.status} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${reason}`);
+    console.log(`- ${run.endedAt} ${run.status}/${run.failureCategory} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${reason}`);
   }
 }
 

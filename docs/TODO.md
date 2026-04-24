@@ -73,10 +73,13 @@
   - `sdkMonitor` / `observer`
   - `snippetCandidates`
   - `sessionLogEntries`
+  - `terminalRole`
+  - `failureCategory`
+  - `metrics.roleTurns`
 - [x] 本地 report:
   - 读取 `run-summary.json`
   - 汇总 `done` / `ask_user` / `max_loops_reached`
-  - 汇总平均耗时、SDK monitor failures、observer failures
+  - 汇总平均耗时、failure categories、SDK monitor failures、observer failures
   - 输出最近 N 次 run
 
 ## 验证记录
@@ -119,6 +122,18 @@
   - 汇总 1 条真实 `ask_user` run
   - SDK monitor failures: `0`
   - Observer failures: `0`
+- [x] local outcome metrics verification:
+  - `npm run test:local`
+  - fake summary 覆盖 `failureCategory` / `terminalRole` / `metrics.roleTurns`
+  - report 输出 failure category 聚合，并兼容旧 summary 的 `unknown`
+- [x] real SDK outcome metrics verification:
+  - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
+  - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
+  - SDK monitor: `ok`
+  - status: `ask_user`
+  - `failureCategory`: `blocker`
+  - `terminalRole`: `manager`
+  - `metrics.roleTurns`: researcher `1`, manager `1`
 
 ## 与最终目标的差距
 
@@ -165,8 +180,10 @@
 
 - [x] 实现 `observe` 命令。
 - [x] 产出 `lessons.md`（基于现有 run 的 `session-log`）。
-- [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 - [x] 决定 observer 挂接策略（`run --observe` 自动触发）。
+- [x] `run-summary.json` 增加终态失败分类、terminal role、role turn counts。
+- [x] `report` 增加 failure category 聚合。
+- [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 
 ## v0.5 TODO — Snippet 自增长
 
@@ -176,6 +193,6 @@
 
 ## 当前判断
 
-v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、版本与文档同步都已打通。
+v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、run summary/report 指标化、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先补 blocker 路径验收和非交互场景下 discovery 可靠性。
+但它仍未完全闭环。下一步优先补 `progress.md` 机器可读化、更多 run-local 协议测试，以及基于真实任务 trace 的失败模式沉淀。

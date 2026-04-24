@@ -47,7 +47,7 @@ spec.md            # functional requirements, acceptance criteria, non-goals
 interfaces.md      # frozen contract for implementation and testing
 progress.md        # current status and executed commands
 blockers.md        # issues that require user attention or cannot be self-resolved
-run-summary.json   # machine-readable terminal state and basic metrics
+run-summary.json   # machine-readable terminal state, failure category, and role metrics
 session-log/       # raw Codex turn traces for future observer/reflection work
 api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
@@ -68,7 +68,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
 
-Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs.
+Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
 The manager decides one next action at a time:
 
@@ -91,7 +91,7 @@ The manager decides one next action at a time:
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
-- Report command (`codex-gtd report`) for done/ask-user/max-loop counts and recent run summaries.
+- Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, and recent run summaries.
 - Included pilot task: Markdown TODO exporter.
 
 ## Quick Start
@@ -134,7 +134,7 @@ They also validate the machine-readable `run-summary.json` shape.
 node dist/cli.js report --runs-dir runs --limit 10
 ```
 
-The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, SDK monitor failures, observer failures, and recent runs.
+The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, failure categories, SDK monitor failures, observer failures, and recent runs.
 
 ### Run the included pilot task
 
@@ -237,6 +237,8 @@ runs/2026-04-23T08-27-29Z/
   sdk-health.json    # optional, SDK smoke/health trace for this run
 ```
 
+`run-summary.json` includes `failureCategory`, `terminalRole`, and per-role turn counts under `metrics.roleTurns`. Older summaries without these fields still load in `report` and are categorized as `unknown`.
+
 The v0.1 pilot run completed the full chain:
 
 ```text
@@ -264,10 +266,9 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Add per-turn timeout control for Codex SDK calls.
-- Persist role failures into `blockers.md`, `progress.md`, and error session logs.
-- Add a real blocker-path test for `ask_user`.
 - Normalize `progress.md` into a more machine-readable status format.
+- Add more local tests around run directory creation and manager decision parsing.
+- Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 
 Planned versions:
 

@@ -46,6 +46,16 @@ export const RUN_PROTOCOL_ENTRIES = [
 
 type Role = "discovery" | "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
 type CodexTurn = Awaited<ReturnType<Thread["run"]>>;
+export type FailureCategory =
+  | "none"
+  | "sdk_failed"
+  | "discovery_needed"
+  | "blocker"
+  | "max_loops"
+  | "observer_failed"
+  | "role_failed"
+  | "invalid_manager_decision"
+  | "unknown";
 
 export type RunOptions = {
   taskFile: string;
@@ -90,12 +100,14 @@ export type RunReport = {
   runsDir: string;
   totalRuns: number;
   statuses: Record<RunResult["status"], number>;
+  failureCategories: Record<FailureCategory, number>;
   averageDurationMs: number;
   sdkMonitorFailures: number;
   observerFailures: number;
   recentRuns: Array<{
     runDir: string;
     status: RunResult["status"];
+    failureCategory: FailureCategory;
     reason?: string;
     model: string;
     durationMs: number;
@@ -134,8 +146,11 @@ export type RunSummary = {
   sdkMonitor?: SdkHealthResult;
   observer?: ObserveResult;
   snippetCandidates: string[];
+  terminalRole?: string;
+  failureCategory: FailureCategory;
   metrics: {
     sessionLogEntries: number;
+    roleTurns: Record<string, number>;
   };
   protocol: {
     requiredEntries: readonly string[];
@@ -154,6 +169,12 @@ type RunMeta = {
 };
 
 type RunSummaryInput = Omit<RunSummary, "schemaVersion" | "protocol">;
+
+type SessionLogMetrics = {
+  sessionLogEntries: number;
+  roleTurns: Record<string, number>;
+  terminalRole?: string;
+};
 
 type ManagerDecision = {
   next_action: "develop" | "test" | "done" | "ask_user";
@@ -692,6 +713,8 @@ export function buildRunSummary(input: RunSummaryInput): RunSummary {
     sdkMonitor: input.sdkMonitor,
     observer: input.observer,
     snippetCandidates: input.snippetCandidates,
+    terminalRole: input.terminalRole,
+    failureCategory: input.failureCategory,
     metrics: input.metrics,
     protocol: {
       requiredEntries: RUN_PROTOCOL_ENTRIES,
@@ -710,12 +733,15 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     ask_user: 0,
     max_loops_reached: 0,
   };
+  const failureCategories = createFailureCategoryCounts();
   let totalDurationMs = 0;
   let sdkMonitorFailures = 0;
   let observerFailures = 0;
 
   for (const summary of summaries) {
     statuses[summary.status] += 1;
+    const failureCategory = normalizeFailureCategory(summary.failureCategory);
+    failureCategories[failureCategory] += 1;
     totalDurationMs += summary.durationMs;
     if (summary.sdkMonitor && !summary.sdkMonitor.passed) {
       sdkMonitorFailures += 1;
@@ -729,12 +755,14 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     runsDir,
     totalRuns: summaries.length,
     statuses,
+    failureCategories,
     averageDurationMs: summaries.length === 0 ? 0 : Math.round(totalDurationMs / summaries.length),
     sdkMonitorFailures,
     observerFailures,
     recentRuns: summaries.slice(0, limit).map((summary) => ({
       runDir: summary.runDir,
       status: summary.status,
+      failureCategory: normalizeFailureCategory(summary.failureCategory),
       reason: summary.reason,
       model: summary.model,
       durationMs: summary.durationMs,
@@ -786,6 +814,8 @@ async function finishRun(
 ): Promise<RunResult> {
   const endedAtMs = Date.now();
   const endedAt = new Date(endedAtMs).toISOString();
+  const sessionMetrics = await readSessionLogMetrics(context.runDir);
+  const failureCategory = classifyFailure(result, sessionMetrics.terminalRole);
   const summary = buildRunSummary({
     runDir: result.runDir,
     status: result.status,
@@ -805,8 +835,11 @@ async function finishRun(
     sdkMonitor: result.sdkMonitor,
     observer: result.observer,
     snippetCandidates: result.snippetCandidates ?? [],
+    terminalRole: sessionMetrics.terminalRole,
+    failureCategory,
     metrics: {
-      sessionLogEntries: await countSessionLogEntries(context.runDir),
+      sessionLogEntries: sessionMetrics.sessionLogEntries,
+      roleTurns: sessionMetrics.roleTurns,
     },
   });
 
@@ -814,13 +847,114 @@ async function finishRun(
   return result;
 }
 
-async function countSessionLogEntries(runDir: string): Promise<number> {
-  try {
-    const entries = await readdir(path.join(runDir, "session-log"));
-    return entries.filter((entry) => entry.endsWith(".json")).length;
-  } catch {
-    return 0;
+function createFailureCategoryCounts(): Record<FailureCategory, number> {
+  return {
+    none: 0,
+    sdk_failed: 0,
+    discovery_needed: 0,
+    blocker: 0,
+    max_loops: 0,
+    observer_failed: 0,
+    role_failed: 0,
+    invalid_manager_decision: 0,
+    unknown: 0,
+  };
+}
+
+function normalizeFailureCategory(value: unknown): FailureCategory {
+  if (
+    value === "none"
+    || value === "sdk_failed"
+    || value === "discovery_needed"
+    || value === "blocker"
+    || value === "max_loops"
+    || value === "observer_failed"
+    || value === "role_failed"
+    || value === "invalid_manager_decision"
+    || value === "unknown"
+  ) {
+    return value;
   }
+
+  return "unknown";
+}
+
+function classifyFailure(result: RunResult, terminalRole?: string): FailureCategory {
+  if (result.observer?.status === "failed") return "observer_failed";
+  if (result.sdkMonitor && !result.sdkMonitor.passed) return "sdk_failed";
+  if (result.status === "done") return "none";
+  if (result.status === "max_loops_reached") return "max_loops";
+
+  const reason = (result.reason ?? "").toLowerCase();
+  if (reason.includes("discovery")) return "discovery_needed";
+  if (reason.includes("invalid decision") || reason.includes("invalid next_action")) {
+    return "invalid_manager_decision";
+  }
+  if (reason.includes("failed")) return "role_failed";
+  if (
+    reason.includes("missing")
+    || reason.includes("credential")
+    || reason.includes("secret")
+    || reason.includes("api key")
+    || reason.includes("blocked")
+    || reason.includes("blocker")
+    || reason.includes("ask_user")
+    || result.status === "ask_user"
+  ) {
+    return "blocker";
+  }
+  if (terminalRole === "discovery") return "discovery_needed";
+
+  return "unknown";
+}
+
+async function readSessionLogMetrics(runDir: string): Promise<SessionLogMetrics> {
+  try {
+    const sessionLogDir = path.join(runDir, "session-log");
+    const entries = (await readdir(sessionLogDir)).filter((entry) => entry.endsWith(".json")).sort();
+    const roleTurns: Record<string, number> = {};
+    let terminalRole: string | undefined;
+    let terminalStartedAt = "";
+
+    for (const entry of entries) {
+      let role = inferRoleFromSessionLogName(entry);
+      let startedAt = entry;
+
+      try {
+        const raw = await readFile(path.join(sessionLogDir, entry), "utf8");
+        const parsed = JSON.parse(raw) as { role?: unknown; startedAt?: unknown };
+        if (typeof parsed.role === "string" && parsed.role.trim().length > 0) {
+          role = parsed.role;
+        }
+        if (typeof parsed.startedAt === "string" && parsed.startedAt.trim().length > 0) {
+          startedAt = parsed.startedAt;
+        }
+      } catch {
+        startedAt = entry;
+      }
+
+      roleTurns[role] = (roleTurns[role] ?? 0) + 1;
+      if (startedAt >= terminalStartedAt) {
+        terminalStartedAt = startedAt;
+        terminalRole = role;
+      }
+    }
+
+    return {
+      sessionLogEntries: entries.length,
+      roleTurns,
+      terminalRole,
+    };
+  } catch {
+    return { sessionLogEntries: 0, roleTurns: {} };
+  }
+}
+
+function inferRoleFromSessionLogName(entry: string): string {
+  const baseName = entry.replace(/\.json$/, "");
+  const markerIndex = baseName.lastIndexOf("Z-");
+  const rawRole = markerIndex >= 0 ? baseName.slice(markerIndex + 2) : baseName;
+  return rawRole.replace(/-error$/, "") || "unknown";
 }
 
 async function safeRunObserver(options: ObserveOptions): Promise<ObserveResult> {
