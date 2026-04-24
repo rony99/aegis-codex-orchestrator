@@ -66,6 +66,12 @@
   - invalid/missing `api-probes/README.md` sections count
   - progress/run-summary drift count
   - recent run compact protocol flags
+- [x] observer protocol health context:
+  - clean state wording when no issues exist
+  - missing protocol entries
+  - missing `api-probes/README.md` sections
+  - progress/run-summary drift details
+  - explicit instruction to mention protocol health issues in `lessons.md`
 - [x] manager / developer / tester prompts 会读取并注入 `api-probes/` 摘要。
 - [x] manager 使用 structured JSON output:
   - `develop`
@@ -181,6 +187,24 @@
   - 覆盖 missing protocol entries aggregation
   - 覆盖 invalid API probe README aggregation
   - 覆盖 progress/run-summary drift aggregation
+- [x] self-dogfood observer protocol health run:
+  - `node dist/cli.js run --task tmp/selfdogfood-observer-protocol-health-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --runs-dir runs-selfdogfood-observer-health`
+  - run: `runs-selfdogfood-observer-health/2026-04-24T05-51-53Z`
+  - status: `done`
+  - SDK monitor: `ok`
+- [x] real SDK observer protocol health smoke:
+  - small run: `node dist/cli.js observe --run-dir runs-metrics-verify/2026-04-24T03-13-13Z --model codex-5.3-spark --turn-timeout-ms 300000`
+  - status: `done`
+  - observer prompt included `## Protocol Health`
+  - `lessons.md` mentioned protocol health issue and repair suggestion
+- [ ] observer scaling issue:
+  - medium self-dogfood run observe timed out at 300000ms with `AbortError`
+  - likely cause: observer prompt includes too much session-log/protocol context
+  - next hardening: compact observer input or summarize session trace before SDK observer turn
+- [x] local observer protocol health verification:
+  - `npm run test:local`
+  - 覆盖 clean/unhealthy protocol health section
+  - 覆盖 observer prompt 注入 protocol health context
 - [x] real SDK outcome metrics verification:
   - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
   - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
@@ -248,6 +272,7 @@
 - [x] 决定 observer 挂接策略（`run --observe` 自动触发）。
 - [x] `run-summary.json` 增加终态失败分类、terminal role、role turn counts。
 - [x] `report` 增加 failure category 聚合。
+- [x] observer prompt 注入 protocol health context。
 - [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 
 ## v0.5 TODO — Snippet 自增长

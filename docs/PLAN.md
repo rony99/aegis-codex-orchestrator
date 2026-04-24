@@ -225,10 +225,12 @@ TODO:
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
+- 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 
 待补:
 
 - 从 5-10 个真实任务里提炼更稳定的失败模式
+- 压缩 observer 输入，避免中等 run 的 session trace 导致 SDK observer turn 超时
 
 ### v0.5 — Snippet 自增长
 

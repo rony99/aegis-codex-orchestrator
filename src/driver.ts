@@ -159,6 +159,12 @@ export type ProtocolDriftReport = {
   details: string[];
 };
 
+export type ObserverProtocolHealthInput = {
+  runProtocol: RunProtocolValidation;
+  apiProbesReadme: ApiProbeReadmeValidation;
+  progressDrift: ProtocolDriftReport;
+};
+
 type SdkHealthResult = {
   status: "ok" | "failed" | "degraded";
   model: string;
@@ -1072,6 +1078,74 @@ export async function compareProgressRunSummary(runDir: string): Promise<Protoco
   };
 }
 
+export function buildObserverProtocolHealthSection(input: ObserverProtocolHealthInput): string {
+  const lines = ["## Protocol Health", ""];
+  const hasIssues = !input.runProtocol.ok || !input.apiProbesReadme.ok || !input.progressDrift.ok;
+
+  if (!hasIssues) {
+    lines.push("Protocol Health is clean.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  if (!input.runProtocol.ok) {
+    lines.push("Missing required protocol entries:");
+    for (const entry of input.runProtocol.missing) {
+      lines.push(`- ${entry}`);
+    }
+    lines.push("");
+  }
+
+  if (!input.apiProbesReadme.ok) {
+    lines.push("Missing api-probes/README.md sections:");
+    for (const section of input.apiProbesReadme.missingSections) {
+      lines.push(`- ${section}`);
+    }
+    lines.push("");
+  }
+
+  if (!input.progressDrift.ok) {
+    if (input.progressDrift.mismatches.length > 0) {
+      lines.push("Progress/run-summary drift:");
+      for (const mismatch of input.progressDrift.mismatches) {
+        lines.push(`- ${mismatch.key}: progress=${JSON.stringify(mismatch.progressValue)} summary=${JSON.stringify(mismatch.summaryValue)}`);
+      }
+      lines.push("");
+    }
+    if (input.progressDrift.details.length > 0) {
+      lines.push("Protocol health details:");
+      for (const detail of input.progressDrift.details) {
+        lines.push(`- ${detail}`);
+      }
+      lines.push("");
+    }
+  }
+
+  lines.push("Mention these protocol health issues in lessons.md.");
+  lines.push("Include concrete repair suggestions.");
+  return `${lines.join("\n")}\n`;
+}
+
+async function buildObserverProtocolHealthSectionForRun(runDir: string): Promise<string> {
+  try {
+    const [runProtocol, apiProbesReadme, progressDrift] = await Promise.all([
+      validateRunProtocol(runDir),
+      validateApiProbesReadme(runDir),
+      compareProgressRunSummary(runDir),
+    ]);
+    return buildObserverProtocolHealthSection({
+      runProtocol,
+      apiProbesReadme,
+      progressDrift,
+    });
+  } catch (error) {
+    return `## Protocol Health
+
+Protocol health evaluation failed: ${summarizeError(error)}
+Mention this protocol health evaluation failure in lessons.md.
+`;
+  }
+}
+
 function progressStateFromSummary(summary: RunSummary): Pick<ProgressState, "status" | "terminal" | "lastRole" | "loop" | "reason"> {
   return {
     status: progressStatusForSummary(summary),
@@ -1239,7 +1313,8 @@ export async function runObserver(options: ObserveOptions): Promise<ObserveResul
     threads: new Map<Role, Thread>(),
   };
 
-  const observerResult = await runObserverRole(context, await observerPrompt(runDir, context.snippetsDir));
+  const protocolHealth = await buildObserverProtocolHealthSectionForRun(runDir);
+  const observerResult = await runObserverRole(context, await observerPrompt(runDir, context.snippetsDir, protocolHealth));
   if (!observerResult.ok) {
     return { runDir, status: "failed", reason: `Observer failed: ${observerResult.reason}` };
   }

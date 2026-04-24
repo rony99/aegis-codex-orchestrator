@@ -327,7 +327,7 @@ progress.md:
 ${progress}`;
 }
 
-export async function observerPrompt(runDir: string, snippetsDir: string): Promise<string> {
+export async function observerPrompt(runDir: string, snippetsDir: string, protocolHealth = ""): Promise<string> {
   const [task, spec, interfaces, progress, blockers, apiProbes, sessionLog, snippets] = await Promise.all([
     readOptional(runDir, "task.md"),
     readOptional(runDir, "spec.md"),
@@ -356,10 +356,14 @@ Required ./lessons.md sections:
 3. Missed discovery/clarification opportunities
 4. Agent-specific improvements
 5. Reusable snippets candidates
+6. Protocol health
 
 Use evidence phrases with timestamps/roles from session-log when possible.
+If the Protocol Health section below lists issues, mention them in lessons.md with concrete repair suggestions.
 
 Observed artifacts:
+
+${protocolHealth || "## Protocol Health\n\nProtocol Health was not evaluated."}
 
 task.md:
 ${task}

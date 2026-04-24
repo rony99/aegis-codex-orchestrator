@@ -91,7 +91,7 @@ The manager decides one next action at a time:
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
-- Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
+- Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries.
 - Included pilot task: Markdown TODO exporter.
 
@@ -267,7 +267,8 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Feed protocol health details into observer lessons.
+- Compact observer input for medium/large runs.
+- Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 
 Planned versions:

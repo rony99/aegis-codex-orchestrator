@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   buildProgressDocument,
   buildRunSummary,
+  buildObserverProtocolHealthSection,
   initializeRunProtocol,
   parseManagerDecision,
   parseProgressState,
@@ -17,6 +18,7 @@ import {
   validateRunProtocol,
   compareProgressRunSummary,
 } from "../dist/driver.js";
+import { observerPrompt } from "../dist/prompts.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const VALID_API_PROBES_README = `# API Probes
@@ -649,6 +651,66 @@ test("compareProgressRunSummary reports consistency and drift", async () => {
       ],
       details: [],
     });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("observer protocol health section describes clean and unhealthy runs", () => {
+  const clean = buildObserverProtocolHealthSection({
+    runProtocol: { ok: true, missing: [], found: ["task.md"] },
+    apiProbesReadme: {
+      ok: true,
+      missingSections: [],
+      presentSections: ["Probe Decision", "External Dependencies"],
+    },
+    progressDrift: { ok: true, mismatches: [], details: [] },
+  });
+  assert.match(clean, /## Protocol Health/);
+  assert.match(clean, /Protocol Health is clean\./);
+  assert.doesNotMatch(clean, /Mention these protocol health issues in lessons\.md\./);
+
+  const unhealthy = buildObserverProtocolHealthSection({
+    runProtocol: { ok: false, missing: ["interfaces.md", "run-summary.json"], found: ["task.md"] },
+    apiProbesReadme: {
+      ok: false,
+      missingSections: ["Recorded Results"],
+      presentSections: ["Probe Decision"],
+    },
+    progressDrift: {
+      ok: false,
+      mismatches: [
+        { key: "status", progressValue: "running", summaryValue: "done" },
+      ],
+      details: ["progress.md missing valid progress state block"],
+    },
+  });
+  assert.match(unhealthy, /Missing required protocol entries:/);
+  assert.match(unhealthy, /- interfaces\.md/);
+  assert.match(unhealthy, /Missing api-probes\/README\.md sections:/);
+  assert.match(unhealthy, /- Recorded Results/);
+  assert.match(unhealthy, /Progress\/run-summary drift:/);
+  assert.match(unhealthy, /- status: progress="running" summary="done"/);
+  assert.match(unhealthy, /Protocol health details:/);
+  assert.match(unhealthy, /- progress\.md missing valid progress state block/);
+  assert.match(unhealthy, /Mention these protocol health issues in lessons\.md\./);
+});
+
+test("observer prompt includes protocol health context", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-observer-prompt-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    const prompt = await observerPrompt(runDir, path.join(runsDir, "snippets"), "## Protocol Health\n\nProtocol Health is clean.\n");
+    assert.match(prompt, /## Protocol Health/);
+    assert.match(prompt, /Protocol Health is clean\./);
+    assert.match(prompt, /Required \.\/lessons\.md sections:/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
