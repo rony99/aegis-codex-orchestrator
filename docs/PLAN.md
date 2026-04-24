@@ -224,6 +224,7 @@ TODO:
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
+- 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
 
 待补:
 

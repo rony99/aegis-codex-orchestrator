@@ -61,6 +61,11 @@
 - [x] protocol drift helper:
   - 比较 `progress.md` state 与 `run-summary.json`
   - 返回 structured mismatches, 不抛异常
+- [x] report protocol health aggregation:
+  - missing required protocol entries count
+  - invalid/missing `api-probes/README.md` sections count
+  - progress/run-summary drift count
+  - recent run compact protocol flags
 - [x] manager / developer / tester prompts 会读取并注入 `api-probes/` 摘要。
 - [x] manager 使用 structured JSON output:
   - `develop`
@@ -165,6 +170,17 @@
   - 覆盖 missing protocol entries
   - 覆盖 valid/missing `api-probes/README.md` sections
   - 覆盖 progress/run-summary consistency and drift
+- [x] self-dogfood report validator run:
+  - `node dist/cli.js run --task tmp/selfdogfood-report-validator-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --runs-dir runs-selfdogfood-report-validator`
+  - run: `runs-selfdogfood-report-validator/2026-04-24T03-57-50Z`
+  - status: `done`
+  - SDK monitor: `ok`
+  - duration: about 4m 50s
+- [x] local report protocol health verification:
+  - `npm run test:local`
+  - 覆盖 missing protocol entries aggregation
+  - 覆盖 invalid API probe README aggregation
+  - 覆盖 progress/run-summary drift aggregation
 - [x] real SDK outcome metrics verification:
   - `node dist/cli.js run --task examples/blocker-api-key-task.md --model codex-5.3-spark --skip-discovery --max-loops 2 --runs-dir runs-metrics-verify`
   - run: `runs-metrics-verify/2026-04-24T03-13-13Z`
@@ -215,7 +231,8 @@
 - [x] 扩展本地测试:
   - researcher 产出的 `api-probes/README.md` 结构
   - protocol drift 检测
-- [ ] 将 API probe artifact / protocol drift helper 接入 observer 或 report 输出。
+- [x] 将 API probe artifact / protocol drift helper 接入 report 输出。
+- [ ] 将 protocol health details 接入 observer lessons。
 
 ## v0.3 TODO — Snippet 池
 
@@ -243,4 +260,4 @@
 
 v0.3 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、版本与文档同步都已打通。
 
-但它仍未完全闭环。下一步优先把 API probe artifact / protocol drift helper 接入 observer 或 report 输出，并继续基于真实任务 trace 沉淀失败模式。
+但它仍未完全闭环。下一步优先把 protocol health details 接入 observer lessons，并继续基于真实任务 trace 沉淀失败模式。

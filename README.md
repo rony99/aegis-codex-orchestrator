@@ -92,7 +92,7 @@ The manager decides one next action at a time:
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md`, or use `--observe` with `run` to auto-run it.
-- Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, and recent run summaries.
+- Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries.
 - Included pilot task: Markdown TODO exporter.
 
 ## Quick Start
@@ -135,7 +135,7 @@ They also validate the machine-readable `run-summary.json` shape.
 node dist/cli.js report --runs-dir runs --limit 10
 ```
 
-The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, failure categories, SDK monitor failures, observer failures, and recent runs.
+The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, failure categories, SDK monitor failures, observer failures, protocol health counts, and recent runs.
 
 ### Run the included pilot task
 
@@ -267,7 +267,7 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Feed API probe/protocol drift helpers into observer/report output.
+- Feed protocol health details into observer lessons.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
 
 Planned versions:

@@ -114,6 +114,11 @@ export type RunReport = {
   averageDurationMs: number;
   sdkMonitorFailures: number;
   observerFailures: number;
+  protocolHealth: {
+    missingRequiredProtocolEntriesCount: number;
+    invalidOrMissingApiProbesReadmeSectionsCount: number;
+    progressRunSummaryDriftCount: number;
+  };
   recentRuns: Array<{
     runDir: string;
     status: RunResult["status"];
@@ -122,6 +127,11 @@ export type RunReport = {
     model: string;
     durationMs: number;
     endedAt: string;
+    protocolHealth: {
+      missingRequiredEntries: boolean;
+      invalidApiProbesReadmeSections: boolean;
+      progressRunSummaryDrift: boolean;
+    };
   }>;
 };
 
@@ -797,6 +807,12 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
   let totalDurationMs = 0;
   let sdkMonitorFailures = 0;
   let observerFailures = 0;
+  const protocolHealthByRunDir = new Map<string, RunReport["recentRuns"][number]["protocolHealth"]>();
+  const protocolHealth = {
+    missingRequiredProtocolEntriesCount: 0,
+    invalidOrMissingApiProbesReadmeSectionsCount: 0,
+    progressRunSummaryDriftCount: 0,
+  };
 
   for (const summary of summaries) {
     statuses[summary.status] += 1;
@@ -809,6 +825,25 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     if (summary.observer?.status === "failed") {
       observerFailures += 1;
     }
+
+    const runProtocol = await validateRunProtocol(summary.runDir);
+    const apiProbesReadme = await validateApiProbesReadme(summary.runDir);
+    const progressDrift = await compareProgressRunSummary(summary.runDir);
+    const runProtocolHealth = {
+      missingRequiredEntries: !runProtocol.ok,
+      invalidApiProbesReadmeSections: !apiProbesReadme.ok,
+      progressRunSummaryDrift: !progressDrift.ok,
+    };
+    protocolHealthByRunDir.set(summary.runDir, runProtocolHealth);
+    if (runProtocolHealth.missingRequiredEntries) {
+      protocolHealth.missingRequiredProtocolEntriesCount += 1;
+    }
+    if (runProtocolHealth.invalidApiProbesReadmeSections) {
+      protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount += 1;
+    }
+    if (runProtocolHealth.progressRunSummaryDrift) {
+      protocolHealth.progressRunSummaryDriftCount += 1;
+    }
   }
 
   return {
@@ -819,6 +854,7 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     averageDurationMs: summaries.length === 0 ? 0 : Math.round(totalDurationMs / summaries.length),
     sdkMonitorFailures,
     observerFailures,
+    protocolHealth,
     recentRuns: summaries.slice(0, limit).map((summary) => ({
       runDir: summary.runDir,
       status: summary.status,
@@ -827,6 +863,11 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
       model: summary.model,
       durationMs: summary.durationMs,
       endedAt: summary.endedAt,
+      protocolHealth: protocolHealthByRunDir.get(summary.runDir) ?? {
+        missingRequiredEntries: true,
+        invalidApiProbesReadmeSections: true,
+        progressRunSummaryDrift: true,
+      },
     })),
   };
 }

@@ -10,6 +10,7 @@ import {
   initializeRunProtocol,
   parseManagerDecision,
   parseProgressState,
+  runReport,
   RUN_PROTOCOL_ENTRIES,
   updateProgressDocument,
   validateApiProbesReadme,
@@ -18,6 +19,23 @@ import {
 } from "../dist/driver.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+const VALID_API_PROBES_README = `# API Probes
+
+## Probe Decision
+No external dependency.
+
+## External Dependencies
+None.
+
+## Probe Artifacts
+None.
+
+## Recorded Results
+Not required.
+
+## Known Limitations
+None.
+`;
 
 function runCli(args) {
   return spawnSync(process.execPath, [CLI, ...args], {
@@ -58,6 +76,45 @@ async function writeSummary(runsDir, id, overrides = {}) {
     ...overrides,
   });
   await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  return summary;
+}
+
+async function writeHealthyRunSummary(runsDir, id, overrides = {}) {
+  const runDir = path.join(runsDir, id);
+  await initializeRunProtocol({
+    runDir,
+    task: "# Task\n\nBuild a local CLI.",
+    model: "gpt-5.4",
+    startedAt: "2026-04-24T00:00:00.000Z",
+  });
+  await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nNo-op implementation.\n", "utf8");
+  await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nNo-op interface.\n", "utf8");
+  await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+
+  const summary = await writeSummary(runsDir, id, {
+    status: "done",
+    failureCategory: "none",
+    terminalRole: "manager",
+    reason: "protocol health check",
+    endedAt: "2026-04-24T00:00:01.000Z",
+    durationMs: 1000,
+    metrics: {
+      sessionLogEntries: 1,
+      roleTurns: {
+        manager: 2,
+      },
+    },
+    ...overrides,
+  });
+  const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+    status: "done",
+    lastUpdatedAt: summary.endedAt,
+    lastRole: summary.terminalRole ?? "manager",
+    loop: summary.metrics.roleTurns.manager ?? 0,
+    terminal: true,
+    reason: summary.reason,
+  });
+  await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
   return summary;
 }
 
@@ -161,6 +218,72 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
     assert.match(result.stdout, /run-a/);
     assert.match(result.stdout, /run-b/);
     assert.doesNotMatch(result.stdout, /run-c/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("report aggregates protocol health without invoking Codex SDK", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-protocol-report-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-healthy", {
+      endedAt: "2026-04-24T00:00:04.000Z",
+      durationMs: 1000,
+    });
+
+    await writeHealthyRunSummary(runsDir, "run-missing-required", {
+      endedAt: "2026-04-24T00:00:03.000Z",
+      durationMs: 1000,
+    });
+    await rm(path.join(runsDir, "run-missing-required", "interfaces.md"), { force: true });
+
+    await writeHealthyRunSummary(runsDir, "run-invalid-api-probes", {
+      endedAt: "2026-04-24T00:00:02.000Z",
+      durationMs: 1000,
+    });
+    await writeFile(path.join(runsDir, "run-invalid-api-probes", "api-probes", "README.md"), `# API Probes
+
+## Probe Decision
+No external dependency.
+
+## Probe Artifacts
+None.
+
+## Known Limitations
+None.
+`, "utf8");
+
+    await writeHealthyRunSummary(runsDir, "run-drift", {
+      endedAt: "2026-04-24T00:00:01.000Z",
+      durationMs: 1000,
+    });
+    const driftProgress = updateProgressDocument(await readFile(path.join(runsDir, "run-drift", "progress.md"), "utf8"), {
+      status: "running",
+      lastRole: "driver",
+      loop: 0,
+      terminal: false,
+      reason: "not finished",
+    });
+    await writeFile(path.join(runsDir, "run-drift", "progress.md"), driftProgress, "utf8");
+
+    const report = await runReport({ runsDir, limit: 4 });
+    assert.deepEqual(report.protocolHealth, {
+      missingRequiredProtocolEntriesCount: 1,
+      invalidOrMissingApiProbesReadmeSectionsCount: 1,
+      progressRunSummaryDriftCount: 1,
+    });
+    assert.equal(report.recentRuns[0].protocolHealth.missingRequiredEntries, false);
+    assert.equal(report.recentRuns[1].protocolHealth.missingRequiredEntries, true);
+    assert.equal(report.recentRuns[2].protocolHealth.invalidApiProbesReadmeSections, true);
+    assert.equal(report.recentRuns[3].protocolHealth.progressRunSummaryDrift, true);
+
+    const result = runCli(["report", "--runs-dir", runsDir, "--limit", "4"]);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Protocol health: missing-required-entries=1/);
+    assert.match(result.stdout, /Protocol health: invalid-or-missing-api-probes-readme-sections=1/);
+    assert.match(result.stdout, /Protocol health: progress-run-summary-drift=1/);
+    assert.match(result.stdout, /protocolHealth=/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
