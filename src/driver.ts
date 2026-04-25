@@ -1420,7 +1420,9 @@ async function runObserverRole(
     const turn = await thread.run(prompt, { signal: abortController.signal });
     const endedAt = new Date().toISOString();
     const lessonFile = path.join(context.runDir, "lessons.md");
-    await writeFile(lessonFile, `${turn.finalResponse}\n`, "utf8");
+    const existingLessons = await readOptionalFile(lessonFile);
+    const lessons = selectObserverLessonsContent(existingLessons, turn.finalResponse);
+    await writeFile(lessonFile, `${lessons}\n`, "utf8");
 
     await writeSessionLog(context, {
       role: "observer",
@@ -1449,6 +1451,39 @@ async function runObserverRole(
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+const OBSERVER_LESSONS_REQUIRED_SECTIONS = [
+  "Root-cause summary",
+  "Recurring failure patterns",
+  "Missed discovery/clarification opportunities",
+  "Agent-specific improvements",
+  "Reusable snippets candidates",
+  "Protocol health",
+] as const;
+
+export function selectObserverLessonsContent(existingLessons: string, finalResponse: string): string {
+  const existing = existingLessons.trimEnd();
+  if (hasObserverLessonsRequiredSections(existing)) {
+    return existing;
+  }
+
+  return finalResponse.trimEnd();
+}
+
+function hasObserverLessonsRequiredSections(markdown: string): boolean {
+  return OBSERVER_LESSONS_REQUIRED_SECTIONS.every((section) => {
+    const sectionRegex = new RegExp(`^#{1,6}\\s+${escapeRegExp(section)}\\s*$`, "im");
+    return sectionRegex.test(markdown);
+  });
+}
+
+async function readOptionalFile(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return "";
   }
 }
 
@@ -2038,8 +2073,15 @@ function formatPromotedSnippet(params: {
 
 ## Content
 
-${params.candidateContent.trim()}
+${sanitizePromotedSnippetContent(params.candidateContent).trim()}
 `;
+}
+
+function sanitizePromotedSnippetContent(content: string): string {
+  return content.replace(
+    /^(Source run:\s+)\/(?:Users|home|tmp)\/[^\n]*\/([^/\n]+)$/gm,
+    "$1(redacted local path)/$2",
+  );
 }
 
 function addSnippetToIndex(index: string, params: { title: string; slug: string }): string {

@@ -296,6 +296,10 @@
 - [x] `report` 增加 failure category 聚合。
 - [x] observer prompt 注入 protocol health context。
 - [x] observer prompt 输入压缩，避免中等 run 的原始 session trace 直接进入 SDK turn。
+- [x] observer lessons 写入契约修复:
+  - 真实复测发现 observer 可能先用工具写出完整 `lessons.md`，随后 driver 用状态型 `finalResponse` 覆盖文件。
+  - `runObserverRole` 现在会优先保留包含六个 required sections 的工具写入版 lessons。
+  - `observerPrompt` 现在明确要求不使用工具、不编辑文件，直接返回完整 markdown，由 driver 写入。
 - [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 
 ## v0.5 TODO — Snippet 自增长
@@ -319,10 +323,25 @@
   - first run: `created`
   - second run: `unchanged`
   - verified no duplicate `INDEX.md` entry
-- [ ] 用 3-5 个真实 candidate promotion 验证 snippets 后续命中质量。
+- [x] real candidate generation after observer contract fix:
+  - `node dist/cli.js run --task tmp/selfdogfood-snippet-hit-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-hit-lessons-fixed`
+  - run: `runs-selfdogfood-snippet-hit-lessons-fixed/2026-04-25T00-41-28Z`
+  - status: `done`
+  - observer: `done`
+  - snippet candidates: `1`
+- [x] first real candidate promoted:
+  - source: `snippets/_candidates/2026_04_25T00_41_28Z-candidates.md`
+  - promoted: `snippets/parser-edge-case-validation.md`
+  - command: `node dist/cli.js promote-snippet --candidate snippets/_candidates/2026_04_25T00_41_28Z-candidates.md --slug parser-edge-case-validation --title "Parser edge-case validation"`
+  - promotion sanitizes local `Source run` paths before writing official snippets.
+- [x] first promoted snippet prompt-hit verification:
+  - generated `researcherPrompt(...)` locally after promotion
+  - prompt contained `Parser edge-case validation`
+  - prompt contained `Parser edge-case unit block for CLI validation scripts`
+- [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断
 
 v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report 指标化、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
 
-但它仍需要更多真实 run 数据。下一步优先继续跑中等/大型 `--observe` dogfood，检查 promoted snippets 是否在后续任务中真实命中并提升开发质量。
+但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量。

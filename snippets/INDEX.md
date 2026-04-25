@@ -4,6 +4,7 @@ This directory is the v0.5 cross-run snippet pool.
 
 ## Available snippets
 
+- [Parser edge-case validation](./parser-edge-case-validation.md)
 - [HTTP JSON fetch + summary](./http-json-summary.md)
 - [Markdown TODO exporter implementation pattern](./markdown-todo-exporter.md)
 

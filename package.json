@@ -24,7 +24,7 @@
     "src/",
     "docs/",
     "examples/",
-    "snippets/",
+    "snippets/*.md",
     "test/",
     "README.md",
     "LICENSE",

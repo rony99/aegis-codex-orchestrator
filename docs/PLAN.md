@@ -241,10 +241,11 @@ TODO:
 
 - 通过 observer 提取 `Reusable snippets candidates`，并自动生成 `snippets/_candidates/` 候选文件（`run --observe` + `done` + observer 成功）。
 - 新增 `promote-snippet` 命令，把人工审核通过的候选文件提升为 `snippets/<slug>.md`，并幂等更新 `snippets/INDEX.md`。
+- 已完成首个真实闭环验证：`run --observe` 生成候选、promotion 脱敏入库、后续 `researcherPrompt` 可读取 promoted snippet。
 
 待实现:
 
-- 补充更多真实候选片段，验证 promoted snippets 在后续 researcher/developer prompt 中的命中质量。
+- 补充更多真实候选片段，验证 promoted snippets 在后续 researcher/developer prompt 中的实际质量收益。
 
 ### v0.6+ — 并行与更大任务
 

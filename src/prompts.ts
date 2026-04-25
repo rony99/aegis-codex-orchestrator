@@ -369,10 +369,12 @@ Goal:
 Review the latest run traces and extract practical lessons for next runs.
 
 Hard constraints:
-- Write only ./lessons.md.
+- Do not use tools or edit files.
+- Return the complete markdown content for ./lessons.md as your final response; the driver will write it to disk.
+- Your final response must begin exactly with "# Root-cause summary".
 - Keep lessons concrete and evidence-based from session-log and protocol files.
 - Include what to change in future loops, not only a generic summary.
-- Do not edit task.md/spec.md/interfaces.md/progress.md/blockers.md/workspace.
+- Do not claim that lessons.md has already been written; provide the actual lessons markdown.
 
 Required ./lessons.md sections:
 1. Root-cause summary

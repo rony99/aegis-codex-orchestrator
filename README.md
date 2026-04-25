@@ -273,7 +273,7 @@ and produced a working Markdown TODO exporter with a passing shell test.
 
 The repository is configured to publish only code and documentation:
 
-- `runs/`, `node_modules/`, build caches, logs, archives, and `.env*` files are ignored.
+- `runs/`, `snippets/_candidates/`, `node_modules/`, build caches, logs, archives, and `.env*` files are ignored.
 - `package.json` uses a `files` allowlist for npm packaging.
 - No credentials are required in the repository; use your normal Codex environment/auth setup locally.
 

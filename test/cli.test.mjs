@@ -13,6 +13,7 @@ import {
   parseProgressState,
   promoteSnippetCandidate,
   runReport,
+  selectObserverLessonsContent,
   RUN_PROTOCOL_ENTRIES,
   updateProgressDocument,
   validateApiProbesReadme,
@@ -736,9 +737,47 @@ test("observer prompt includes protocol health context", async () => {
     assert.match(prompt, /## Protocol Health/);
     assert.match(prompt, /Protocol Health is clean\./);
     assert.match(prompt, /Required \.\/lessons\.md sections:/);
+    assert.match(prompt, /Do not use tools or edit files/);
+    assert.match(prompt, /final response must begin exactly with "# Root-cause summary"/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
+});
+
+test("observer lessons selection preserves tool-written lessons over status final response", () => {
+  const writtenLessons = `# Root-cause summary
+
+Evidence.
+
+# Recurring failure patterns
+
+Pattern.
+
+# Missed discovery/clarification opportunities
+
+Opportunity.
+
+# Agent-specific improvements
+
+Improvement.
+
+# Reusable snippets candidates
+
+- Reusable parser snippet.
+
+# Protocol health
+
+Clean.
+`;
+  const finalResponse = "`./lessons.md` has been written as the only modified artifact.";
+
+  assert.equal(selectObserverLessonsContent(writtenLessons, finalResponse), writtenLessons.trimEnd());
+});
+
+test("observer lessons selection falls back to final response when no valid lessons file exists", () => {
+  const finalResponse = "# Root-cause summary\n\nFallback content.\n";
+
+  assert.equal(selectObserverLessonsContent("placeholder", finalResponse), finalResponse.trimEnd());
 });
 
 test("observer text compaction uses a deterministic truncation marker", () => {
@@ -826,7 +865,7 @@ Keep snippets focused.
 `, "utf8");
     await writeFile(candidatePath, `# Snippet candidates
 
-Source run: /tmp/run-a
+Source run: /tmp/codex-gtd-test/repo/runs/run-a
 
 ## Candidates extracted from observer lessons
 
@@ -857,6 +896,8 @@ Use a small parser and keep tests local.
     assert.match(snippet, /<!-- snippet-promotion: \{"slug":"approved-parser","title":"Approved parser"/);
     assert.match(snippet, /Source candidate:/);
     assert.match(snippet, /Use a small parser and keep tests local\./);
+    assert.doesNotMatch(snippet, /\/tmp\/codex-gtd-test/);
+    assert.match(snippet, /Source run: \(redacted local path\)\/run-a/);
     assert.equal((index.match(/approved-parser\.md/g) ?? []).length, 1);
     assert.match(index, /- \[Approved parser\]\(\.\/approved-parser\.md\)/);
   } finally {
