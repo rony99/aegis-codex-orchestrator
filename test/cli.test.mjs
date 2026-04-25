@@ -995,6 +995,18 @@ test("snippet candidate parser ignores unstructured bullet lists", () => {
   assert.deepEqual(parseSnippetCandidateEntries(section), []);
 });
 
+test("published snippets are focused reusable snippets, not raw candidate bundles", async () => {
+  const snippetsDir = path.join(new URL("..", import.meta.url).pathname, "snippets");
+  const files = (await readdir(snippetsDir)).filter((file) => file.endsWith(".md") && file !== "INDEX.md");
+
+  assert.ok(files.length > 0);
+  for (const file of files) {
+    const content = await readFile(path.join(snippetsDir, file), "utf8");
+    assert.doesNotMatch(content, /^# Snippet candidates/m, `${file} should not embed raw candidate bundles`);
+    assert.doesNotMatch(content, /^## Candidates extracted from observer lessons/m, `${file} should not embed candidate extraction sections`);
+  }
+});
+
 test("observer text compaction uses a deterministic truncation marker", () => {
   const compacted = compactObserverText("task.md", "x".repeat(1200), 160);
 

@@ -379,6 +379,18 @@
   - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`
   - observer generated structured candidates: `protocol-closeout-validator`, `line-parser-verification-contract`, `progress-state-mirror-check`
   - dogfood finding fixed: report initially flagged `invalid-or-missing-api-probes-readme-sections=1` because validator only accepted `##` headings; validator now accepts `#` through `######` and report returns `0`.
+- [x] parser snippet curation:
+  - `snippets/parser-edge-case-validation.md` was rewritten from an early raw candidate bundle into a focused reusable parser verification snippet.
+  - local guard added: published snippets must not embed `# Snippet candidates` or `## Candidates extracted from observer lessons`.
+  - prompt-hit check confirmed researcher prompt includes the curated title and verification skeleton, without raw candidate bundle text.
+  - real curated snippet dogfood:
+    - `node dist/cli.js run --task tmp/selfdogfood-curated-parser-snippet-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-curated-parser-snippet`
+    - run: `runs-selfdogfood-curated-parser-snippet/2026-04-25T11-17-41Z`
+    - status: `done`
+    - observer: `done`
+    - SDK monitor: `ok`
+    - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`
+    - `report` showed clean protocol health and `Snippet usage: used=1 rejected=0 none=0 unknown=0`
 - [x] markdown snippet quality dogfood:
   - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-quality-todo`
   - run: `runs-selfdogfood-snippet-quality-todo/2026-04-25T01-16-48Z`

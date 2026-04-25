@@ -1,58 +1,91 @@
 # Snippet: Parser edge-case validation
 
-<!-- snippet-promotion: {"slug":"parser-edge-case-validation","title":"Parser edge-case validation","source":"2026_04_25T00_41_28Z-candidates.md","status":"approved","createdBy":"promote-snippet"} -->
+<!-- snippet-promotion: {"slug":"parser-edge-case-validation","title":"Parser edge-case validation","source":"2026_04_25T01_13_17Z-candidates.md","status":"approved","createdBy":"manual-curation"} -->
 
-## Promotion
+## Purpose
 
-- Status: approved
-- Slug: parser-edge-case-validation
-- Source candidate: 2026_04_25T00_41_28Z-candidates.md
-- Promoted by: codex-gtd promote-snippet
+Enforce deterministic behavior for small line-oriented parser CLIs, especially env/config/ini-like formats.
 
-## Content
+Use this when a task asks for a local parser that must reject malformed input, preserve line-numbered errors, and handle repeated or typed values predictably.
 
-# Snippet candidates (Aegis v0.5)
+## Dependencies
 
-Source run: (redacted local path)/2026-04-25T00-41-28Z
-Generated at: 2026-04-25T00:42:51.343Z
+- Node.js for parser implementations.
+- Bash for verification scripts.
+- No external API dependencies.
 
-## Candidates extracted from observer lessons
+## Pattern
 
-### 1
+Create a verification script with one explicit section per parser contract:
 
-**Run-summary health-check script**
-- Purpose: prevent missing/unreadable `run-summary.json` at closeout.
-- Pattern:
-- `test -f run-summary.json`
-- `node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('run-summary.json')); ..."`
-- assert required keys + non-empty values.
-- Apply when: every loop finish.
+- valid parse and whitespace trimming
+- blank line and comment skipping
+- duplicate key behavior
+- exact boolean coercion, if the task requires it
+- malformed line failure
+- stderr contains the 1-based source line number for malformed input
 
-### 2
+Prefer exact JSON assertions over substring checks for successful parse cases.
 
-**API-probe README section validator**
-- Purpose: enforce protocol section completeness.
-- Pattern:
-- grep for exact section headers:
-- `^# Probe Decision`
-- `^# External Dependencies`
-- `^# Probe Artifacts`
-- `^# Recorded Results`
-- `^# Known Limitations`
-- Apply when: no external dependencies and when probe section is intentionally minimal.
+## Example Verification Skeleton
 
-### 3
+```bash
+#!/usr/bin/env bash
+set -u
 
-**Parser edge-case unit block for CLI validation scripts**
-- Purpose: reusable input parsing sanity checks:
-- comment/blank handling
-- duplicate key accumulation order
-- boolean coercion only for exact `true|false`
-- invalid line fails with line number.
-- Can be adapted from this run’s verify expectations to future local parsers.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARSER="${SCRIPT_DIR}/your-parser.js"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-## Acceptance before promotion
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
 
-- Run tests on the extracted snippet in your repo context.
-- Validate assumptions against current tech stack (runtime, dependencies, error contract).
-- Move approved snippets to `snippets/` and add to `snippets/INDEX.md`.
+assert_json_eq() {
+  local input_file="$1"
+  local expected_json="$2"
+  local desc="$3"
+  local output_file="${TMP_DIR}/output.json"
+  local error_file="${TMP_DIR}/error.log"
+
+  if ! node "$PARSER" "$input_file" > "$output_file" 2> "$error_file"; then
+    fail "$desc expected success: $(cat "$error_file")"
+  fi
+
+  node -e "
+const fs = require('node:fs');
+const actual = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const expected = JSON.parse(process.argv[2]);
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  console.error('Expected:', JSON.stringify(expected));
+  console.error('Got:', JSON.stringify(actual));
+  process.exit(1);
+}
+" "$output_file" "$expected_json" || fail "$desc output mismatch"
+}
+
+assert_malformed_line() {
+  local input_file="$1"
+  local expected_line="$2"
+  local desc="$3"
+  local output_file="${TMP_DIR}/malformed-output.json"
+  local error_file="${TMP_DIR}/malformed-error.log"
+
+  if node "$PARSER" "$input_file" > "$output_file" 2> "$error_file"; then
+    fail "$desc expected parser failure"
+  fi
+
+  grep -q "line ${expected_line}" "$error_file" \
+    || fail "$desc missing line number ${expected_line}: $(cat "$error_file")"
+}
+```
+
+## Common Pitfalls
+
+- Only checking "command succeeds" instead of asserting exact parsed JSON.
+- Forgetting negative tests for malformed non-empty lines.
+- Reporting parse errors without source line numbers.
+- Handling duplicate keys accidentally through object assignment without documenting whether first or last value wins.
+- Coercing values too broadly, such as treating `True`, `TRUE`, or `true-ish` as booleans when the contract only allows exact `true` / `false`.

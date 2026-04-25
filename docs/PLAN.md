@@ -249,6 +249,7 @@ TODO:
 - 已完成首个真实闭环验证：`run --observe` 生成候选、promotion 脱敏入库、后续 `researcherPrompt` 可读取 promoted snippet。
 - 已完成 snippet usage tracking：researcher 在 `spec.md` 记录 `Snippet Decision`，`report` 聚合 used/rejected/none/unknown，并在 recent run 输出具体命中 snippet。
 - 已完成两轮 snippet quality dogfood：parser task 命中 `parser-edge-case-validation`，Markdown TODO task 命中 `markdown-todo-exporter`；两轮均 `done`、observer `done`、SDK monitor `ok`，并生成结构化 candidates。
+- 已完成 parser snippet curation：`parser-edge-case-validation` 已从早期 raw candidate bundle 清理为聚焦的 parser verification snippet，并增加 published snippet guard；curated snippet 已通过真实 parser dogfood 再次命中验证。
 
 待实现:
 
