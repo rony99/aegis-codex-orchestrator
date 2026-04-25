@@ -284,8 +284,8 @@
 
 - [ ] 增加 snippets 分类与标签。
 - [ ] 补齐常见 API/CLI 场景模板。
-- [ ] 记录并追踪 snippet 命中率。
-- [ ] researcher 写入选用 snippet 的原因和替代决策。
+- [x] 记录并追踪 snippet 命中率。
+- [x] researcher 写入选用 snippet 的原因和替代决策。
 
 ## v0.4 TODO — Observer 与 lessons
 
@@ -338,6 +338,22 @@
   - generated `researcherPrompt(...)` locally after promotion
   - prompt contained `Parser edge-case validation`
   - prompt contained `Parser edge-case unit block for CLI validation scripts`
+- [x] snippet usage tracking:
+  - researcher prompt now requires a `Snippet Decision` section in `spec.md`
+  - `parseSnippetDecision` reads `Status`, `Snippet`, and `Reason`
+  - `report` aggregates `Snippet usage: used/rejected/none/unknown`
+  - recent run report lines include `snippet=<status>` or `snippet=<status>:<snippet>`
+- [x] real snippet usage dogfood:
+  - `node dist/cli.js run --task tmp/selfdogfood-snippet-usage-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-usage`
+  - run: `runs-selfdogfood-snippet-usage/2026-04-25T00-51-22Z`
+  - status: `done`
+  - observer: `done`
+  - SDK monitor: `ok`
+  - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`, and a concrete reason
+  - `report` showed `Snippet usage: used=1 rejected=0 none=0 unknown=0`
+- [ ] Improve observer candidate extraction quality:
+  - real dogfood showed `_candidates` can over-split top-level bullet lists into many weak candidates
+  - next fix should require/parse a stricter candidate format, e.g. `### Candidate: <name>` with Purpose/Pattern/Apply when
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断

@@ -118,7 +118,8 @@ Hard constraints:
 - Keep the task small; no UI, no speculative features, and no unrelated systems.
 - The developer phase must not need to change public interfaces later.
 - Acceptance criteria must be testable.
-- Reuse a matching snippet when possible; if a snippet is used, explicitly note it in spec.md assumptions.
+- Reuse a matching snippet when possible.
+- Always write a ./spec.md "Snippet Decision" section with exact fields: Status, Snippet, Reason. Status must be one of used, rejected, none.
 - If the task is ambiguous, choose the smallest reasonable behavior and record the assumption in spec.md.
 - If the task has no external API/SDK dependency, explicitly write that no probes are needed in ./api-probes/README.md.
 - If the task depends on an external API/SDK, create the smallest executable probe script or command note under ./api-probes/, plus a response sample or failure note.
@@ -140,6 +141,7 @@ Required ./spec.md sections:
 3. Acceptance Criteria
 4. Non-goals
 5. Assumptions
+6. Snippet Decision
 
 Required ./interfaces.md sections:
 1. CLI Contract

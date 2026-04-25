@@ -10,6 +10,7 @@ import {
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
   parseManagerDecision,
+  parseSnippetDecision,
   parseProgressState,
   promoteSnippetCandidate,
   runReport,
@@ -200,6 +201,13 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
         checkedAt: "2026-04-23T00:00:00.100Z",
       },
     });
+    await writeFile(path.join(runsDir, "run-a", "spec.md"), `# Spec
+
+## Snippet Decision
+Status: used
+Snippet: Parser edge-case validation
+Reason: Parser validation checks match the task.
+`, "utf8");
     await writeSummary(runsDir, "run-b", {
       status: "ask_user",
       reason: "missing key",
@@ -215,6 +223,13 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
         checkedAt: "2026-04-23T00:00:00.100Z",
       },
     });
+    await writeFile(path.join(runsDir, "run-b", "spec.md"), `# Spec
+
+## Snippet Decision
+Status: none
+Snippet: none
+Reason: No matching snippet.
+`, "utf8");
     await writeSummary(runsDir, "run-c", {
       status: "max_loops_reached",
       reason: "loop limit",
@@ -227,6 +242,24 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
         reason: "observer failed",
       },
     });
+    await writeFile(path.join(runsDir, "run-c", "spec.md"), `# Spec
+
+## Snippet Decision
+Status: rejected
+Snippet: HTTP JSON fetch + summary
+Reason: Task has no HTTP dependency.
+`, "utf8");
+
+    const report = await runReport({ runsDir, limit: 2 });
+    assert.deepEqual(report.snippetUsage, {
+      used: 1,
+      rejected: 1,
+      none: 1,
+      unknown: 0,
+    });
+    assert.equal(report.recentRuns[0].snippetDecision.status, "used");
+    assert.equal(report.recentRuns[0].snippetDecision.snippet, "Parser edge-case validation");
+    assert.equal(report.recentRuns[1].snippetDecision.status, "none");
 
     const result = runCli(["report", "--runs-dir", runsDir, "--limit", "2"]);
 
@@ -239,16 +272,49 @@ test("report summarizes run-summary files without invoking Codex SDK", async () 
     assert.match(result.stdout, /SDK monitor failures: 1/);
     assert.match(result.stdout, /Observer failures: 1/);
     assert.match(result.stdout, /Failure categories:/);
+    assert.match(result.stdout, /Snippet usage: used=1 rejected=1 none=1 unknown=0/);
     assert.match(result.stdout, /none: 1/);
     assert.match(result.stdout, /sdk_failed: 1/);
     assert.match(result.stdout, /max_loops: 1/);
     assert.match(result.stdout, /ask_user\/sdk_failed/);
+    assert.match(result.stdout, /snippet=used:Parser edge-case validation/);
+    assert.match(result.stdout, /snippet=none/);
     assert.match(result.stdout, /run-a/);
     assert.match(result.stdout, /run-b/);
     assert.doesNotMatch(result.stdout, /run-c/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
+});
+
+test("parseSnippetDecision reads structured spec decisions", () => {
+  assert.deepEqual(parseSnippetDecision(`# Spec
+
+## Snippet Decision
+Status: used
+Snippet: Parser edge-case validation
+Reason: Reuses parser edge cases.
+`), {
+    status: "used",
+    snippet: "Parser edge-case validation",
+    reason: "Reuses parser edge cases.",
+  });
+
+  assert.deepEqual(parseSnippetDecision(`# Spec
+
+## Snippet Decision
+- Status: rejected
+- Snippet: HTTP JSON fetch + summary
+- Reason: No HTTP dependency.
+`), {
+    status: "rejected",
+    snippet: "HTTP JSON fetch + summary",
+    reason: "No HTTP dependency.",
+  });
+
+  assert.deepEqual(parseSnippetDecision("# Spec\n\nNo decision.\n"), {
+    status: "unknown",
+  });
 });
 
 test("report aggregates protocol health without invoking Codex SDK", async () => {

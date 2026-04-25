@@ -192,6 +192,7 @@ function printReport(report: RunReport): void {
   console.log(`Average duration: ${formatDuration(report.averageDurationMs)}`);
   console.log(`SDK monitor failures: ${report.sdkMonitorFailures}`);
   console.log(`Observer failures: ${report.observerFailures}`);
+  console.log(`Snippet usage: used=${report.snippetUsage.used} rejected=${report.snippetUsage.rejected} none=${report.snippetUsage.none} unknown=${report.snippetUsage.unknown}`);
   console.log(`Protocol health: missing-required-entries=${report.protocolHealth.missingRequiredProtocolEntriesCount}`);
   console.log(`Protocol health: invalid-or-missing-api-probes-readme-sections=${report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount}`);
   console.log(`Protocol health: progress-run-summary-drift=${report.protocolHealth.progressRunSummaryDriftCount}`);
@@ -210,11 +211,14 @@ function printReport(report: RunReport): void {
   console.log("Recent runs:");
   for (const run of report.recentRuns) {
     const reason = run.reason ? ` - ${run.reason}` : "";
+    const snippet = run.snippetDecision.snippet
+      ? ` snippet=${run.snippetDecision.status}:${run.snippetDecision.snippet}`
+      : ` snippet=${run.snippetDecision.status}`;
     const hasProtocolIssue = run.protocolHealth.missingRequiredEntries
       || run.protocolHealth.invalidApiProbesReadmeSections
       || run.protocolHealth.progressRunSummaryDrift;
     const protocolHealth = hasProtocolIssue ? ` protocolHealth=${JSON.stringify(run.protocolHealth)}` : "";
-    console.log(`- ${run.endedAt} ${run.status}/${run.failureCategory} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${protocolHealth}${reason}`);
+    console.log(`- ${run.endedAt} ${run.status}/${run.failureCategory} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${snippet}${protocolHealth}${reason}`);
   }
 }
 

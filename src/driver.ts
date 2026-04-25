@@ -111,6 +111,7 @@ export type RunReport = {
   totalRuns: number;
   statuses: Record<RunResult["status"], number>;
   failureCategories: Record<FailureCategory, number>;
+  snippetUsage: Record<SnippetDecisionStatus, number>;
   averageDurationMs: number;
   sdkMonitorFailures: number;
   observerFailures: number;
@@ -127,12 +128,21 @@ export type RunReport = {
     model: string;
     durationMs: number;
     endedAt: string;
+    snippetDecision: SnippetDecision;
     protocolHealth: {
       missingRequiredEntries: boolean;
       invalidApiProbesReadmeSections: boolean;
       progressRunSummaryDrift: boolean;
     };
   }>;
+};
+
+export type SnippetDecisionStatus = "used" | "rejected" | "none" | "unknown";
+
+export type SnippetDecision = {
+  status: SnippetDecisionStatus;
+  snippet?: string;
+  reason?: string;
 };
 
 export type RunProtocolValidation = {
@@ -814,6 +824,8 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
   let sdkMonitorFailures = 0;
   let observerFailures = 0;
   const protocolHealthByRunDir = new Map<string, RunReport["recentRuns"][number]["protocolHealth"]>();
+  const snippetDecisionByRunDir = new Map<string, SnippetDecision>();
+  const snippetUsage = createSnippetUsageCounts();
   const protocolHealth = {
     missingRequiredProtocolEntriesCount: 0,
     invalidOrMissingApiProbesReadmeSectionsCount: 0,
@@ -831,6 +843,10 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     if (summary.observer?.status === "failed") {
       observerFailures += 1;
     }
+
+    const snippetDecision = await readRunSnippetDecision(summary.runDir);
+    snippetDecisionByRunDir.set(summary.runDir, snippetDecision);
+    snippetUsage[snippetDecision.status] += 1;
 
     const runProtocol = await validateRunProtocol(summary.runDir);
     const apiProbesReadme = await validateApiProbesReadme(summary.runDir);
@@ -857,6 +873,7 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     totalRuns: summaries.length,
     statuses,
     failureCategories,
+    snippetUsage,
     averageDurationMs: summaries.length === 0 ? 0 : Math.round(totalDurationMs / summaries.length),
     sdkMonitorFailures,
     observerFailures,
@@ -869,6 +886,7 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
       model: summary.model,
       durationMs: summary.durationMs,
       endedAt: summary.endedAt,
+      snippetDecision: snippetDecisionByRunDir.get(summary.runDir) ?? { status: "unknown" },
       protocolHealth: protocolHealthByRunDir.get(summary.runDir) ?? {
         missingRequiredEntries: true,
         invalidApiProbesReadmeSections: true,
@@ -1181,6 +1199,58 @@ function createFailureCategoryCounts(): Record<FailureCategory, number> {
     invalid_manager_decision: 0,
     unknown: 0,
   };
+}
+
+function createSnippetUsageCounts(): Record<SnippetDecisionStatus, number> {
+  return {
+    used: 0,
+    rejected: 0,
+    none: 0,
+    unknown: 0,
+  };
+}
+
+async function readRunSnippetDecision(runDir: string): Promise<SnippetDecision> {
+  try {
+    const spec = await readFile(path.join(runDir, "spec.md"), "utf8");
+    return parseSnippetDecision(spec);
+  } catch {
+    return { status: "unknown" };
+  }
+}
+
+export function parseSnippetDecision(spec: string): SnippetDecision {
+  const section = extractMarkdownSection(spec, "Snippet Decision");
+  if (!section.trim()) {
+    return { status: "unknown" };
+  }
+
+  const status = normalizeSnippetDecisionStatus(readLabeledLine(section, "Status"));
+  if (status === "unknown") {
+    return { status };
+  }
+
+  const snippet = readLabeledLine(section, "Snippet");
+  const reason = readLabeledLine(section, "Reason");
+  return {
+    status,
+    ...(snippet && snippet.toLowerCase() !== "none" ? { snippet } : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function normalizeSnippetDecisionStatus(value: string | undefined): SnippetDecisionStatus {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "used" || normalized === "rejected" || normalized === "none") {
+    return normalized;
+  }
+
+  return "unknown";
+}
+
+function readLabeledLine(text: string, label: string): string | undefined {
+  const labelRegex = new RegExp(`^\\s*(?:-\\s*)?${escapeRegExp(label)}\\s*:\\s*(.+?)\\s*$`, "im");
+  return text.match(labelRegex)?.[1]?.trim();
 }
 
 function normalizeFailureCategory(value: unknown): FailureCategory {
