@@ -84,6 +84,7 @@ The manager decides one next action at a time:
 - Real Codex SDK integration through `@openai/codex-sdk`.
 - Pre-development research artifact generation through the researcher role.
 - Per-run `api-probes/` artifacts for API/SDK dependency grounding.
+- Optional Codex SDK web search for open-source framework and current documentation discovery (`--web-search live`).
 - Global `snippets/INDEX.md` prompt-time retrieval before implementation.
 - Independent Codex thread per role to reduce context pollution.
 - File-based protocol that is inspectable, checkpointable, and replay-friendly.
@@ -214,11 +215,11 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ## CLI
 
 ```text
-codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
-codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
-codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
-codex-gtd report [--runs-dir <dir>] [--limit <n>]
-codex-gtd smoke [--model <model>]
+  codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
+  codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd report [--runs-dir <dir>] [--limit <n>]
+  codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
 Defaults:
@@ -227,6 +228,7 @@ Defaults:
 - runs directory: `runs`
 - snippets directory: `snippets`
 - turn timeout: `300000` ms (5 分钟), or `CODEX_GTD_TURN_TIMEOUT_MS`
+- web search: `CODEX_GTD_WEB_SEARCH` or `--web-search`, one of `disabled`, `cached`, `live`
 - loops: `8`
 - sdk monitor: `CODEX_GTD_MONITOR_SDK` (`true` by default, set to `0`/`false`/`off` to disable)
 

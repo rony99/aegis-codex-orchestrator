@@ -144,6 +144,7 @@ while not done:
 - `codex-gtd smoke`
 - 模型配置:默认 `gpt-5.4`,支持 `CODEX_GTD_MODEL` 和 `--model`
 - `codex-5.3-spark` alias → `gpt-5.3-codex-spark`
+- Web search 配置:支持 `CODEX_GTD_WEB_SEARCH` 和 `--web-search disabled|cached|live`，用于 researcher 检索开源框架官方文档/仓库 URL
 - researcher / manager / developer / tester prompts
 - run 目录文件协议
 - session log 保存
@@ -225,6 +226,7 @@ TODO:
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
 - 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
+- 已完成: Codex SDK web search 能力核查与接入；本机真实 smoke 证实 `webSearchMode: "live"` 会产生 `web_search` items。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason

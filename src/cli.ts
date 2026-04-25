@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunReport } from "./driver.js";
+import { promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunReport, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -15,6 +15,7 @@ type ParsedArgs = {
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
+  webSearchMode?: WebSearchMode;
   turnTimeoutMs?: number;
   maxLoops?: number;
   limit?: number;
@@ -49,6 +50,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--model") {
       if (!next) throw new Error("--model requires a model name");
       parsed.model = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--web-search") {
+      if (!next) throw new Error("--web-search requires a mode");
+      if (!isWebSearchMode(next)) {
+        throw new Error("--web-search must be one of: disabled, cached, live");
+      }
+      parsed.webSearchMode = next;
       i += 1;
       continue;
     }
@@ -152,21 +163,26 @@ function parseArgs(argv: string[]): ParsedArgs {
   return parsed;
 }
 
+function isWebSearchMode(value: string): value is WebSearchMode {
+  return value === "disabled" || value === "cached" || value === "live";
+}
+
 function printHelp(): void {
   console.log(`codex-gtd v0.5
 
 Usage:
-  codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
-  codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
+  codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
+  codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
-  codex-gtd smoke [--model <model>]
+  codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
   model: CODEX_GTD_MODEL or gpt-5.4
   runs-dir: runs
   snippets-dir: snippets
   turn-timeout-ms: 300000
+  web-search: CODEX_GTD_WEB_SEARCH or Codex SDK default
   sdk monitor: CODEX_GTD_MONITOR_SDK (default: true)
 
 Model aliases:
@@ -231,7 +247,7 @@ async function main(): Promise<void> {
   }
 
   if (args.command === "smoke") {
-    const result = await runSmokeTest({ model: args.model });
+    const result = await runSmokeTest({ model: args.model, webSearchMode: args.webSearchMode });
     console.log(result.finalResponse);
     return;
   }
@@ -249,6 +265,7 @@ async function main(): Promise<void> {
       observe: args.observe,
       monitorSdk: args.monitorSdk,
       skipDiscovery: args.skipDiscovery,
+      webSearchMode: args.webSearchMode,
       turnTimeoutMs: args.turnTimeoutMs,
       maxLoops: args.maxLoops,
     });
@@ -289,6 +306,7 @@ async function main(): Promise<void> {
       runDir: args.runDir,
       model: args.model,
       snippetsDir: args.snippetsDir,
+      webSearchMode: args.webSearchMode,
       turnTimeoutMs: args.turnTimeoutMs,
     });
 

@@ -9,13 +9,19 @@
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
-  - `codex-gtd run --task <task-file> [--model <model>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
+  - `codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
-  - `codex-gtd smoke [--model <model>]`
+  - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
+- [x] Codex SDK web search 接入:
+  - CLI 支持 `--web-search disabled|cached|live`
+  - 环境变量支持 `CODEX_GTD_WEB_SEARCH`
+  - `run` / `observe` / `smoke` 会把 web search mode 传入 Codex SDK thread options
+  - researcher prompt 会在外部开源框架/快速变化文档场景中要求使用 web search 并记录官方 docs/repo URL
+  - real SDK smoke: `webSearchMode: "live"` 产生 `web_search` items，并搜索到 Hono 官方站点 `https://hono.dev/`
 - [x] 本地测试脚本:
   - `npm run test:local`
-  - 覆盖 CLI help、必填 task、非法 numeric flags、未知 flags 的 fast-fail 路径
+  - 覆盖 CLI help、必填 task、非法 numeric flags、非法 web search mode、未知 flags 的 fast-fail 路径
 - [x] 模型配置:
   - 默认 `gpt-5.4`
   - `CODEX_GTD_MODEL`

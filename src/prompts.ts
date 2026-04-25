@@ -123,6 +123,7 @@ Hard constraints:
 - If the task is ambiguous, choose the smallest reasonable behavior and record the assumption in spec.md.
 - If the task has no external API/SDK dependency, explicitly write that no probes are needed in ./api-probes/README.md.
 - If the task depends on an external API/SDK, create the smallest executable probe script or command note under ./api-probes/, plus a response sample or failure note.
+- If the task depends on an unfamiliar or fast-moving open-source framework and web search is enabled, use web search for official docs/repository URLs and record source URLs in ./api-probes/README.md.
 - Do not require OAuth, paid accounts, or user secrets for v0.2 probes. Prefer public no-key endpoints for sample probes.
 
 Files/directories available:

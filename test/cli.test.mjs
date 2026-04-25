@@ -141,6 +141,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
+  assert.match(output, /--web-search <disabled\|cached\|live>/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
 
@@ -159,6 +160,13 @@ test("invalid numeric flags fail fast before any SDK call", () => {
   const loopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "0"]);
   assert.equal(loopResult.status, 1);
   assert.match(loopResult.stderr, /--max-loops must be a positive integer/);
+});
+
+test("invalid web search mode fails fast before any SDK call", () => {
+  const result = runCli(["run", "--task", "examples/todo-exporter-task.md", "--web-search", "auto"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--web-search must be one of: disabled, cached, live/);
 });
 
 test("unknown flags fail fast before any SDK call", () => {

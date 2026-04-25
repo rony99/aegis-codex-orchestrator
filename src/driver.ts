@@ -1,4 +1,4 @@
-import { Codex, type Thread } from "@openai/codex-sdk";
+import { Codex, type Thread, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -32,6 +32,9 @@ const PROGRESS_STATE_END = "<!-- codex-gtd:progress-state:end -->";
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
+const WEB_SEARCH_MODES = ["disabled", "cached", "live"] as const;
+
+export type WebSearchMode = CodexWebSearchMode;
 
 export const RUN_PROTOCOL_ENTRIES = [
   "task.md",
@@ -75,6 +78,7 @@ export type RunOptions = {
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
+  webSearchMode?: WebSearchMode;
   turnTimeoutMs?: number;
   maxLoops?: number;
 };
@@ -93,6 +97,7 @@ export type ObserveOptions = {
   model?: string;
   snippetsDir?: string;
   turnTimeoutMs?: number;
+  webSearchMode?: WebSearchMode;
 };
 
 export type ReportOptions = {
@@ -202,6 +207,7 @@ export type RunSummary = {
     observe: boolean;
     monitorSdk: boolean;
     skipDiscovery: boolean;
+    webSearchMode?: WebSearchMode;
   };
   sdkMonitor?: SdkHealthResult;
   observer?: ObserveResult;
@@ -226,6 +232,7 @@ type RunMeta = {
   observe: boolean;
   monitorSdk: boolean;
   skipDiscovery: boolean;
+  webSearchMode?: WebSearchMode;
 };
 
 type RunSummaryInput = Omit<RunSummary, "schemaVersion" | "protocol">;
@@ -284,6 +291,7 @@ type RunContext = {
   workspaceDir: string;
   snippetsDir: string;
   task: string;
+  webSearchMode?: WebSearchMode;
   threads: Map<Role, Thread>;
 };
 
@@ -293,18 +301,20 @@ type ObserverContext = {
   turnTimeoutMs: number;
   runDir: string;
   snippetsDir: string;
+  webSearchMode?: WebSearchMode;
   threads: Map<Role, Thread>;
 };
 
 export async function runSmokeTest(
-  options: { model?: string; turnTimeoutMs?: number } = {},
+  options: { model?: string; turnTimeoutMs?: number; webSearchMode?: WebSearchMode } = {},
 ): Promise<CodexTurn> {
   const resolvedModel = resolveModel(options.model);
   const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs);
-  return runSmokeTestWithSignal(resolvedModel, turnTimeoutMs);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode);
+  return runSmokeTestWithSignal(resolvedModel, turnTimeoutMs, webSearchMode);
 }
 
-async function runSmokeTestWithSignal(model: string, turnTimeoutMs: number): Promise<CodexTurn> {
+async function runSmokeTestWithSignal(model: string, turnTimeoutMs: number, webSearchMode?: WebSearchMode): Promise<CodexTurn> {
   const codex = new Codex();
   const abortController = new AbortController();
   const timer = setTimeout(() => {
@@ -316,6 +326,7 @@ async function runSmokeTestWithSignal(model: string, turnTimeoutMs: number): Pro
     skipGitRepoCheck: true,
     sandboxMode: "read-only",
     approvalPolicy: "never",
+    webSearchMode,
   });
 
   try {
@@ -409,6 +420,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const workspaceDir = path.join(runDir, "workspace");
   const apiProbesDir = path.join(runDir, "api-probes");
   const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode);
   const task = await readFile(path.resolve(options.taskFile), "utf8");
 
   await ensureSnippetCatalog(snippetsDir);
@@ -427,6 +439,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     workspaceDir,
     snippetsDir,
     task,
+    webSearchMode,
     threads: new Map<Role, Thread>(),
   };
 
@@ -442,6 +455,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     observe: Boolean(options.observe),
     monitorSdk: runMonitorSdk,
     skipDiscovery: Boolean(options.skipDiscovery),
+    webSearchMode,
   };
   let sdkMonitor: SdkHealthResult | undefined;
 
@@ -451,6 +465,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       model: monitorModel,
       turnTimeoutMs,
       runDir,
+      webSearchMode,
     });
     await writeFile(path.join(context.runDir, SDK_MONITOR_RUN_FILE), `${JSON.stringify(health, null, 2)}\n`, "utf8");
     sdkMonitor = health;
@@ -703,6 +718,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       model: options.model,
       snippetsDir: options.snippetsDir,
       turnTimeoutMs: options.turnTimeoutMs,
+      webSearchMode,
     })
     : undefined;
 
@@ -727,6 +743,7 @@ async function runSdkHealthCheck(options: {
   model?: string;
   turnTimeoutMs: number;
   runDir: string;
+  webSearchMode?: WebSearchMode;
 }): Promise<SdkHealthResult> {
   const model = resolveModel(options.model);
   const checkedAt = new Date().toISOString();
@@ -745,7 +762,7 @@ async function runSdkHealthCheck(options: {
 
   let smokeError: string | undefined;
   try {
-    await runSmokeTestWithSignal(model, options.turnTimeoutMs);
+    await runSmokeTestWithSignal(model, options.turnTimeoutMs, options.webSearchMode);
   } catch (error) {
     smokeError = summarizeError(error);
   }
@@ -966,6 +983,7 @@ async function finishRun(
       observe: meta.observe,
       monitorSdk: meta.monitorSdk,
       skipDiscovery: meta.skipDiscovery,
+      webSearchMode: meta.webSearchMode,
     },
     sdkMonitor: result.sdkMonitor,
     observer: result.observer,
@@ -1361,6 +1379,7 @@ export async function runObserver(options: ObserveOptions): Promise<ObserveResul
   const runDir = path.resolve(options.runDir);
   const model = resolveModel(options.model);
   const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode);
 
   try {
     const sessionLogDir = path.join(runDir, "session-log");
@@ -1380,6 +1399,7 @@ export async function runObserver(options: ObserveOptions): Promise<ObserveResul
     turnTimeoutMs: resolveTurnTimeout(options.turnTimeoutMs),
     runDir,
     snippetsDir,
+    webSearchMode,
     threads: new Map<Role, Thread>(),
   };
 
@@ -1574,6 +1594,7 @@ function getThread(context: RunContext, role: Role): Thread {
     sandboxMode: role === "smoke" ? "read-only" : "workspace-write",
     approvalPolicy: "never",
     networkAccessEnabled: true,
+    webSearchMode: context.webSearchMode,
   });
   context.threads.set(role, thread);
   return thread;
@@ -1590,6 +1611,7 @@ function getObserverThread(context: ObserverContext): Thread {
     sandboxMode: "read-only",
     approvalPolicy: "never",
     networkAccessEnabled: true,
+    webSearchMode: context.webSearchMode,
   });
   context.threads.set("observer", thread);
   return thread;
@@ -1759,6 +1781,17 @@ export async function initializeRunProtocol(options: RunProtocolInitOptions): Pr
 function resolveModel(model?: string): string {
   const requested = model ?? process.env.CODEX_GTD_MODEL ?? DEFAULT_MODEL;
   return MODEL_ALIASES[requested] ?? requested;
+}
+
+function resolveWebSearchMode(mode?: WebSearchMode): WebSearchMode | undefined {
+  const requested = mode ?? process.env.CODEX_GTD_WEB_SEARCH;
+  if (requested === undefined || requested === "") return undefined;
+  if (isWebSearchMode(requested)) return requested;
+  throw new Error("CODEX_GTD_WEB_SEARCH must be one of: disabled, cached, live");
+}
+
+function isWebSearchMode(value: string): value is WebSearchMode {
+  return (WEB_SEARCH_MODES as readonly string[]).includes(value);
 }
 
 function initialProgress(model: string, startedAt: string): string {
