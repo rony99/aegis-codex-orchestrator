@@ -227,6 +227,7 @@ TODO:
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
+- 已完成: observer re-run stale lessons 修复，避免已有 run 的旧 `lessons.md` 阻止新一轮 observer final response 写入
 
 待补:
 
@@ -240,6 +241,7 @@ TODO:
 已交付:
 
 - 通过 observer 提取 `Reusable snippets candidates`，并自动生成 `snippets/_candidates/` 候选文件（`run --observe` + `done` + observer 成功）。
+- 已完成 candidate extraction 收敛：observer 只能用 `### Candidate: <name>` + `Purpose/Pattern/Apply when` 结构输出候选，driver 只解析该结构，避免把普通 bullet 过度拆成弱候选。
 - 新增 `promote-snippet` 命令，把人工审核通过的候选文件提升为 `snippets/<slug>.md`，并幂等更新 `snippets/INDEX.md`。
 - 已完成首个真实闭环验证：`run --observe` 生成候选、promotion 脱敏入库、后续 `researcherPrompt` 可读取 promoted snippet。
 - 已完成 snippet usage tracking：researcher 在 `spec.md` 记录 `Snippet Decision`，`report` 聚合 used/rejected/none/unknown，并在 recent run 输出具体命中 snippet。

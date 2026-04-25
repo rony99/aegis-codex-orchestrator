@@ -1487,11 +1487,12 @@ async function runObserverRole(
   }, context.turnTimeoutMs);
 
   try {
+    const lessonFile = path.join(context.runDir, "lessons.md");
+    const previousLessons = await readOptionalFile(lessonFile);
     const turn = await thread.run(prompt, { signal: abortController.signal });
     const endedAt = new Date().toISOString();
-    const lessonFile = path.join(context.runDir, "lessons.md");
     const existingLessons = await readOptionalFile(lessonFile);
-    const lessons = selectObserverLessonsContent(existingLessons, turn.finalResponse);
+    const lessons = selectObserverLessonsContent(existingLessons, turn.finalResponse, previousLessons);
     await writeFile(lessonFile, `${lessons}\n`, "utf8");
 
     await writeSessionLog(context, {
@@ -1533,9 +1534,14 @@ const OBSERVER_LESSONS_REQUIRED_SECTIONS = [
   "Protocol health",
 ] as const;
 
-export function selectObserverLessonsContent(existingLessons: string, finalResponse: string): string {
+export function selectObserverLessonsContent(
+  existingLessons: string,
+  finalResponse: string,
+  previousLessons = "",
+): string {
   const existing = existingLessons.trimEnd();
-  if (hasObserverLessonsRequiredSections(existing)) {
+  const previous = previousLessons.trimEnd();
+  if (existing !== previous && hasObserverLessonsRequiredSections(existing)) {
     return existing;
   }
 
@@ -1916,6 +1922,11 @@ type SnippetCandidateOptions = {
   snippetsDir: string;
 };
 
+export type SnippetCandidateEntry = {
+  title: string;
+  body: string;
+};
+
 export type PromoteSnippetOptions = {
   candidateFile: string;
   snippetsDir: string;
@@ -1997,7 +2008,7 @@ async function generateSnippetCandidates(options: SnippetCandidateOptions): Prom
     return generated;
   }
 
-  const entries = parseBulletEntries(sectionText);
+  const entries = parseSnippetCandidateEntries(sectionText);
   if (entries.length === 0) {
     return generated;
   }
@@ -2046,38 +2057,43 @@ function extractMarkdownSection(markdown: string, heading: string): string {
   return section.join("\n").trim();
 }
 
-function parseBulletEntries(sectionText: string): string[] {
+export function parseSnippetCandidateEntries(sectionText: string): SnippetCandidateEntry[] {
   const lines = sectionText.split("\n");
-  const entries: string[] = [];
-  let current: string[] = [];
-  const bulletStart = /^(?:-|\d+\.)\s+/;
+  const entries: SnippetCandidateEntry[] = [];
+  let currentTitle = "";
+  let currentBody: string[] = [];
+  const candidateHeading = /^#{3,6}\s+Candidate:\s+(.+?)\s*$/i;
+
+  const flush = () => {
+    const body = currentBody.join("\n").trim();
+    if (currentTitle && body) {
+      entries.push({ title: currentTitle, body });
+    }
+    currentTitle = "";
+    currentBody = [];
+  };
 
   for (const line of lines) {
-    if (bulletStart.test(line)) {
-      if (current.length > 0) {
-        entries.push(current.join("\n").trim());
-      }
-      current = [line.replace(/^\s*(?:-|\d+\.)\s+/, "").trim()];
+    const match = line.match(candidateHeading);
+    if (match) {
+      flush();
+      currentTitle = match[1].trim();
       continue;
     }
 
-    if (line.trim() === "") {
+    if (!currentTitle) {
       continue;
     }
 
-    if (current.length > 0) {
-      current.push(line.trim());
-    }
+    currentBody.push(line);
   }
 
-  if (current.length > 0) {
-    entries.push(current.join("\n").trim());
-  }
+  flush();
 
-  return entries.filter((entry) => entry.length > 0);
+  return entries;
 }
 
-function formatSnippetCandidateDocument(params: { runDir: string; entries: string[] }): string {
+function formatSnippetCandidateDocument(params: { runDir: string; entries: SnippetCandidateEntry[] }): string {
   const lines = [
     "# Snippet candidates (Aegis v0.5)",
     "",
@@ -2088,10 +2104,10 @@ function formatSnippetCandidateDocument(params: { runDir: string; entries: strin
     "",
   ];
 
-  for (const [index, entry] of params.entries.entries()) {
-    lines.push(`### ${index + 1}`);
+  for (const entry of params.entries) {
+    lines.push(`### Candidate: ${entry.title}`);
     lines.push("");
-    lines.push(entry);
+    lines.push(entry.body);
     lines.push("");
   }
 

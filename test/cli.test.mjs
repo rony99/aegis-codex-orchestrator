@@ -10,6 +10,7 @@ import {
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
   parseManagerDecision,
+  parseSnippetCandidateEntries,
   parseSnippetDecision,
   parseProgressState,
   promoteSnippetCandidate,
@@ -805,6 +806,9 @@ test("observer prompt includes protocol health context", async () => {
     assert.match(prompt, /Required \.\/lessons\.md sections:/);
     assert.match(prompt, /Do not use tools or edit files/);
     assert.match(prompt, /final response must begin exactly with "# Root-cause summary"/);
+    assert.match(prompt, /### Candidate: <name>/);
+    assert.match(prompt, /Purpose:/);
+    assert.match(prompt, /Apply when:/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -840,10 +844,119 @@ Clean.
   assert.equal(selectObserverLessonsContent(writtenLessons, finalResponse), writtenLessons.trimEnd());
 });
 
+test("observer lessons selection ignores stale pre-existing lessons on re-observe", () => {
+  const staleLessons = `# Root-cause summary
+
+Old evidence.
+
+# Recurring failure patterns
+
+Old pattern.
+
+# Missed discovery/clarification opportunities
+
+Old opportunity.
+
+# Agent-specific improvements
+
+Old improvement.
+
+# Reusable snippets candidates
+
+- Old candidate.
+
+# Protocol health
+
+Old health.
+`;
+  const finalResponse = `# Root-cause summary
+
+Fresh evidence.
+
+# Recurring failure patterns
+
+Fresh pattern.
+
+# Missed discovery/clarification opportunities
+
+Fresh opportunity.
+
+# Agent-specific improvements
+
+Fresh improvement.
+
+# Reusable snippets candidates
+
+### Candidate: fresh-candidate
+Purpose: Fresh purpose.
+Pattern: Fresh pattern.
+Apply when: Future runs need it.
+
+# Protocol health
+
+Fresh health.
+`;
+
+  assert.equal(
+    selectObserverLessonsContent(staleLessons, finalResponse, staleLessons),
+    finalResponse.trimEnd(),
+  );
+});
+
 test("observer lessons selection falls back to final response when no valid lessons file exists", () => {
   const finalResponse = "# Root-cause summary\n\nFallback content.\n";
 
   assert.equal(selectObserverLessonsContent("placeholder", finalResponse), finalResponse.trimEnd());
+});
+
+test("snippet candidate parser keeps structured candidate blocks intact", () => {
+  const section = `Intro text that should not become a candidate.
+
+### Candidate: Parser edge-case validation
+
+Purpose: Catch edge cases in parser-like CLI helpers.
+Pattern:
+- duplicate keys use the last explicit value
+- empty values are ignored
+Apply when: The task introduces markdown or key-value parsing.
+
+### Candidate: API probe validator
+
+Purpose: Verify API probe artifacts before manager decisions.
+Pattern:
+1. Check required headings.
+2. Report missing sections.
+Apply when: The run depends on an external SDK or API.
+`;
+
+  assert.deepEqual(parseSnippetCandidateEntries(section), [
+    {
+      title: "Parser edge-case validation",
+      body: `Purpose: Catch edge cases in parser-like CLI helpers.
+Pattern:
+- duplicate keys use the last explicit value
+- empty values are ignored
+Apply when: The task introduces markdown or key-value parsing.`,
+    },
+    {
+      title: "API probe validator",
+      body: `Purpose: Verify API probe artifacts before manager decisions.
+Pattern:
+1. Check required headings.
+2. Report missing sections.
+Apply when: The run depends on an external SDK or API.`,
+    },
+  ]);
+});
+
+test("snippet candidate parser ignores unstructured bullet lists", () => {
+  const section = `- Reusable run-summary comparison helper.
+- Purpose: detect drift.
+- Pattern: compare protocol fields.
+- Apply when: report needs consistency checks.
+`;
+
+  assert.deepEqual(parseSnippetCandidateEntries(section), []);
 });
 
 test("observer text compaction uses a deterministic truncation marker", () => {

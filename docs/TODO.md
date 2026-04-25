@@ -300,6 +300,9 @@
   - 真实复测发现 observer 可能先用工具写出完整 `lessons.md`，随后 driver 用状态型 `finalResponse` 覆盖文件。
   - `runObserverRole` 现在会优先保留包含六个 required sections 的工具写入版 lessons。
   - `observerPrompt` 现在明确要求不使用工具、不编辑文件，直接返回完整 markdown，由 driver 写入。
+- [x] observer re-run stale lessons 修复:
+  - 真实复测发现对已有 run 再执行 `observe` 时，旧 `lessons.md` 会因为包含六个 required sections 被误当成本轮结果保留。
+  - `runObserverRole` 现在会在 SDK turn 前记录旧文件，只有当 observer 本轮实际改写 `lessons.md` 且结构有效时才优先保留；否则使用本轮 `finalResponse`。
 - [ ] 输入多轮真实任务 trace，提炼更稳定的错误模式和改进建议。
 
 ## v0.5 TODO — Snippet 自增长
@@ -351,9 +354,15 @@
   - SDK monitor: `ok`
   - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`, and a concrete reason
   - `report` showed `Snippet usage: used=1 rejected=0 none=0 unknown=0`
-- [ ] Improve observer candidate extraction quality:
+- [x] Improve observer candidate extraction quality:
   - real dogfood showed `_candidates` can over-split top-level bullet lists into many weak candidates
-  - next fix should require/parse a stricter candidate format, e.g. `### Candidate: <name>` with Purpose/Pattern/Apply when
+  - `observerPrompt` now requires `### Candidate: <name>` with `Purpose`, `Pattern`, and `Apply when`
+  - `parseSnippetCandidateEntries` ignores unstructured bullet lists and preserves nested bullets inside candidate bodies
+  - candidate files now preserve the candidate title instead of numbering split bullet fragments
+  - real re-observe smoke:
+    - `node dist/cli.js observe --run-dir runs-selfdogfood-snippet-usage/2026-04-25T00-51-22Z --model codex-5.3-spark --turn-timeout-ms 300000`
+    - status: `done`
+    - parsed structured candidates from refreshed `lessons.md`: `parser-edge-case-validation`, `evidence-packet-gate`
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断

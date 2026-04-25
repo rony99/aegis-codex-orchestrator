@@ -386,6 +386,17 @@ Required ./lessons.md sections:
 5. Reusable snippets candidates
 6. Protocol health
 
+In "Reusable snippets candidates", use only this format for each candidate:
+
+### Candidate: <name>
+
+Purpose: <what reusable problem this solves>
+Pattern: <the reusable implementation or protocol pattern>
+Apply when: <conditions where future runs should use it>
+
+If there are no reusable candidates, write "None." under that section.
+Do not use top-level bullets or numbered lists as candidate boundaries.
+
 Use evidence phrases with timestamps/roles from session-log when possible.
 If the Protocol Health section below lists issues, mention them in lessons.md with concrete repair suggestions.
 
