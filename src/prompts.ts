@@ -156,6 +156,13 @@ Required ./api-probes/README.md sections:
 4. Recorded Results
 5. Known Limitations
 
+Use these exact markdown headings in ./api-probes/README.md:
+- ## Probe Decision
+- ## External Dependencies
+- ## Probe Artifacts
+- ## Recorded Results
+- ## Known Limitations
+
 After writing these files, update ./progress.md with a short researcher status.
 
 Original task:

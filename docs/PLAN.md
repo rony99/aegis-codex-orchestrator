@@ -224,6 +224,7 @@ TODO:
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
+- 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
@@ -245,6 +246,7 @@ TODO:
 - 新增 `promote-snippet` 命令，把人工审核通过的候选文件提升为 `snippets/<slug>.md`，并幂等更新 `snippets/INDEX.md`。
 - 已完成首个真实闭环验证：`run --observe` 生成候选、promotion 脱敏入库、后续 `researcherPrompt` 可读取 promoted snippet。
 - 已完成 snippet usage tracking：researcher 在 `spec.md` 记录 `Snippet Decision`，`report` 聚合 used/rejected/none/unknown，并在 recent run 输出具体命中 snippet。
+- 已完成两轮 snippet quality dogfood：parser task 命中 `parser-edge-case-validation`，Markdown TODO task 命中 `markdown-todo-exporter`；两轮均 `done`、observer `done`、SDK monitor `ok`，并生成结构化 candidates。
 
 待实现:
 

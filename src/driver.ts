@@ -1036,7 +1036,7 @@ export async function validateApiProbesReadme(
   }
 
   const headings = new Set<string>();
-  for (const match of markdown.matchAll(/^##\s+(.+?)\s*$/gm)) {
+  for (const match of markdown.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)) {
     const heading = match[1]?.trim();
     if (heading) headings.add(heading);
   }

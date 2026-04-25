@@ -59,6 +59,7 @@
   - `Probe Artifacts`
   - `Recorded Results`
   - `Known Limitations`
+  - accepts markdown heading levels `#` through `######`, while prompts ask researcher to use exact `##` headings
 - [x] protocol drift helper:
   - 比较 `progress.md` state 与 `run-summary.json`
   - 返回 structured mismatches, 不抛异常
@@ -361,8 +362,26 @@
   - candidate files now preserve the candidate title instead of numbering split bullet fragments
   - real re-observe smoke:
     - `node dist/cli.js observe --run-dir runs-selfdogfood-snippet-usage/2026-04-25T00-51-22Z --model codex-5.3-spark --turn-timeout-ms 300000`
-    - status: `done`
-    - parsed structured candidates from refreshed `lessons.md`: `parser-edge-case-validation`, `evidence-packet-gate`
+  - status: `done`
+  - parsed structured candidates from refreshed `lessons.md`: `parser-edge-case-validation`, `evidence-packet-gate`
+- [x] parser snippet quality dogfood:
+  - `node dist/cli.js run --task tmp/selfdogfood-snippet-quality-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-quality`
+  - run: `runs-selfdogfood-snippet-quality/2026-04-25T01-13-17Z`
+  - status: `done`
+  - observer: `done`
+  - SDK monitor: `ok`
+  - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`
+  - observer generated structured candidates: `protocol-closeout-validator`, `line-parser-verification-contract`, `progress-state-mirror-check`
+  - dogfood finding fixed: report initially flagged `invalid-or-missing-api-probes-readme-sections=1` because validator only accepted `##` headings; validator now accepts `#` through `######` and report returns `0`.
+- [x] markdown snippet quality dogfood:
+  - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-quality-todo`
+  - run: `runs-selfdogfood-snippet-quality-todo/2026-04-25T01-16-48Z`
+  - status: `done`
+  - observer: `done`
+  - SDK monitor: `ok`
+  - `spec.md` recorded `Status: used`, `Snippet: snippets/markdown-todo-exporter.md`
+  - `report` showed clean protocol health and `Snippet usage: used=1 rejected=0 none=0 unknown=0`
+  - observer generated structured candidates: `Protocol closeout guard`, `Line-number-safe TODO extraction loop`, `Deterministic fixture validation command block`
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断

@@ -598,6 +598,7 @@ test("validateRunProtocol reports missing required entries without invoking Code
 test("validateApiProbesReadme reports valid and missing sections", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-api-probes-"));
   const validRunDir = path.join(runsDir, "valid");
+  const mixedHeadingRunDir = path.join(runsDir, "mixed-heading");
   const invalidRunDir = path.join(runsDir, "invalid");
 
   try {
@@ -619,6 +620,22 @@ Not required.
 ## Known Limitations
 None.
 `);
+    await mkdir(path.join(mixedHeadingRunDir, "api-probes"), { recursive: true });
+    await writeFile(path.join(mixedHeadingRunDir, "api-probes", "README.md"), `# Probe Decision
+No external dependency.
+
+### External Dependencies
+None.
+
+#### Probe Artifacts
+None.
+
+##### Recorded Results
+Not required.
+
+###### Known Limitations
+None.
+`);
     await mkdir(path.join(invalidRunDir, "api-probes"), { recursive: true });
     await writeFile(path.join(invalidRunDir, "api-probes", "README.md"), `# API Probes
 
@@ -633,6 +650,17 @@ None.
 `);
 
     assert.deepEqual(await validateApiProbesReadme(validRunDir), {
+      ok: true,
+      missingSections: [],
+      presentSections: [
+        "Probe Decision",
+        "External Dependencies",
+        "Probe Artifacts",
+        "Recorded Results",
+        "Known Limitations",
+      ],
+    });
+    assert.deepEqual(await validateApiProbesReadme(mixedHeadingRunDir), {
       ok: true,
       missingSections: [],
       presentSections: [
