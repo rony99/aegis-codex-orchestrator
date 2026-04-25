@@ -57,6 +57,8 @@ export const API_PROBE_README_SECTIONS = [
   "Known Limitations",
 ] as const;
 
+const CLOSEOUT_PROTOCOL_ENTRIES = RUN_PROTOCOL_ENTRIES.filter((entry) => entry !== RUN_SUMMARY_FILE);
+
 type Role = "discovery" | "researcher" | "manager" | "developer" | "tester" | "smoke" | "observer";
 type CodexTurn = Awaited<ReturnType<Thread["run"]>>;
 export type FailureCategory =
@@ -109,6 +111,11 @@ export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
   reason?: string;
+};
+
+export type CloseoutGateResult = {
+  ok: boolean;
+  issues: string[];
 };
 
 export type RunReport = {
@@ -667,6 +674,35 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     }
 
     if (decision.next_action === "done") {
+      const closeoutGate = await evaluateCloseoutGate(context.runDir);
+      if (!closeoutGate.ok) {
+        const reason = `Closeout gate failed: ${closeoutGate.issues.join("; ")}`;
+        await appendProgress(context.runDir, `\n## Closeout Gate\n\n${reason}\n`);
+
+        if (loop >= maxLoops) {
+          await appendBlocker(context.runDir, reason);
+          finalStatus = "ask_user";
+          finalReason = reason;
+          break;
+        }
+
+        const testerRoleResult = await runRole(context, "tester", await testerPrompt({
+          next_action: "test",
+          target: "closeout",
+          instructions: `Resolve closeout gate issues before completion: ${closeoutGate.issues.join("; ")}`,
+          reason,
+        }, context.runDir, context.snippetsDir));
+        if (!testerRoleResult.ok) {
+          const testerReason = `Tester failed after closeout gate: ${testerRoleResult.reason}`;
+          await appendProgress(context.runDir, `\n## Failed\n\n${testerReason}\n`);
+          await appendBlocker(context.runDir, testerReason);
+          finalStatus = "ask_user";
+          finalReason = testerReason;
+          break;
+        }
+        continue;
+      }
+
       await appendProgress(context.runDir, `\n## Final\n\nDone: ${decision.reason}\n`);
       finalStatus = "done";
       finalReason = decision.reason;
@@ -1065,6 +1101,49 @@ export async function validateApiProbesReadme(
     ok: missingSections.length === 0,
     missingSections,
     presentSections,
+  };
+}
+
+export async function evaluateCloseoutGate(runDir: string): Promise<CloseoutGateResult> {
+  const issues: string[] = [];
+
+  const runProtocol = await validateRunProtocol(runDir, CLOSEOUT_PROTOCOL_ENTRIES);
+  if (!runProtocol.ok) {
+    issues.push(`missing protocol entries: ${runProtocol.missing.join(", ")}`);
+  }
+
+  const apiProbesReadme = await validateApiProbesReadme(runDir);
+  if (!apiProbesReadme.ok) {
+    issues.push(`missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
+  }
+
+  try {
+    const workspaceEntries = await readdir(path.join(runDir, "workspace"));
+    if (workspaceEntries.length === 0) {
+      issues.push("workspace is empty");
+    }
+  } catch {
+    issues.push("workspace is missing or unreadable");
+  }
+
+  let progress = "";
+  try {
+    progress = await readFile(path.join(runDir, "progress.md"), "utf8");
+  } catch {
+    issues.push("progress.md is missing or unreadable");
+  }
+
+  if (progress) {
+    const hasCommandEvidence = /(?:verification command|test command|ran `?|executed verification command|command:)/i.test(progress);
+    const hasResultEvidence = /(?:verification result|pass\b|passed|successfully|exit code\s*[:=]?\s*0|matching structural output|acceptance[^.\n]*verified)/i.test(progress);
+    if (!hasCommandEvidence || !hasResultEvidence) {
+      issues.push("progress.md missing verification evidence");
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
   };
 }
 

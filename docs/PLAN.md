@@ -117,7 +117,7 @@ researcher writes spec.md/interfaces.md
 while not done:
   manager decides next_action
   if next_action == ask_user: stop and write blocker
-  if next_action == done: stop
+  if next_action == done: run closeout gate, then stop only if protocol/evidence passes
   if next_action == develop: run developer
   if next_action == test: run tester
 ```
@@ -225,6 +225,7 @@ TODO:
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
+- 已完成: driver-level closeout gate，manager `done` 后会检查 pre-closeout 协议、api-probes sections、workspace 非空、progress 验证证据；不通过时触发 tester 补验证或阻断结束。
 - 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
 - 已完成: Codex SDK web search 能力核查与接入；本机真实 smoke 证实 `webSearchMode: "live"` 会产生 `web_search` items。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags

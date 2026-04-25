@@ -89,6 +89,7 @@ The manager decides one next action at a time:
 - Independent Codex thread per role to reduce context pollution.
 - File-based protocol that is inspectable, checkpointable, and replay-friendly.
 - Structured manager decisions using JSON schema output.
+- Driver-level closeout gate before accepting `done`, checking protocol files, API probe sections, workspace output, and verification evidence.
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   buildProgressDocument,
   buildRunSummary,
+  evaluateCloseoutGate,
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
   parseManagerDecision,
@@ -780,6 +781,64 @@ test("compareProgressRunSummary reports consistency and drift", async () => {
       ],
       details: [],
     });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("evaluateCloseoutGate accepts protocol-complete runs with verification evidence", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-closeout-ok-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-25T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nAcceptance criteria.\n");
+    await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nCLI contract.\n");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+    await writeFile(path.join(runDir, "workspace", "cli.js"), "console.log('ok');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "001-manager.json"), "{}\n", "utf8");
+    await writeFile(path.join(runDir, "progress.md"), buildProgressDocument({
+      schemaVersion: 1,
+      status: "running",
+      model: "gpt-5.4",
+      startedAt: "2026-04-25T00:00:00.000Z",
+      lastUpdatedAt: "2026-04-25T00:00:01.000Z",
+      lastRole: "tester",
+      loop: 1,
+      terminal: false,
+    }, "- Verification command: `bash workspace/verify.sh`\n- Verification result: PASS\n"));
+
+    assert.deepEqual(await evaluateCloseoutGate(runDir), { ok: true, issues: [] });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("evaluateCloseoutGate blocks done without verification evidence", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-closeout-missing-evidence-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-25T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nAcceptance criteria.\n");
+    await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nCLI contract.\n");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+    await writeFile(path.join(runDir, "workspace", "cli.js"), "console.log('ok');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "001-manager.json"), "{}\n", "utf8");
+
+    const gate = await evaluateCloseoutGate(runDir);
+    assert.equal(gate.ok, false);
+    assert.match(gate.issues.join("\n"), /progress\.md missing verification evidence/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

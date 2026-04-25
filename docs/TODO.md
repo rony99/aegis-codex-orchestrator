@@ -86,6 +86,11 @@
   - `test`
   - `done`
   - `ask_user`
+- [x] driver-level closeout gate:
+  - manager 返回 `done` 后，driver 会先检查 pre-closeout 文件协议、`api-probes/README.md` 必需章节、workspace 非空、`progress.md` 验证命令/结果证据
+  - gate 失败且仍有 loop budget 时会触发 tester 补验证，而不是直接结束
+  - gate 失败且无剩余 loop budget 时会写入 `blockers.md` 并以 `ask_user` 结束
+  - 本地测试覆盖 gate 通过路径和缺少验证证据的阻断路径
 - [x] manager decision parser 已本地测试:
   - plain JSON
   - fenced JSON
@@ -391,6 +396,14 @@
     - SDK monitor: `ok`
     - `spec.md` recorded `Status: used`, `Snippet: parser-edge-case-validation`
     - `report` showed clean protocol health and `Snippet usage: used=1 rejected=0 none=0 unknown=0`
+- [x] closeout gate dogfood attempt:
+  - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --skip-sdk-monitor --max-loops 4 --observe --runs-dir runs-selfdogfood-closeout-gate`
+  - run: `runs-selfdogfood-closeout-gate/2026-04-25T12-19-35Z`
+  - status: `ask_user`
+  - reason: second manager turn timed out with `AbortError`
+  - local `evaluateCloseoutGate(runDir)` returned `ok:true`, so failure was SDK/model turn instability, not gate rejection
+  - retry with `--turn-timeout-ms 600000` reached a spark model/tool error: `Tool 'image_generation' is not supported with gpt-5.3-codex-spark-1p-codexswic-ev3`
+  - follow-up smoke with `node dist/cli.js smoke --model codex-5.3-spark --web-search disabled` passed, suggesting intermittent SDK/model/tool instability
 - [x] markdown snippet quality dogfood:
   - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-quality-todo`
   - run: `runs-selfdogfood-snippet-quality-todo/2026-04-25T01-16-48Z`
