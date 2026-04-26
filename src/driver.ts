@@ -32,6 +32,7 @@ const PROGRESS_STATE_END = "<!-- codex-gtd:progress-state:end -->";
 const MODEL_ALIASES: Record<string, string> = {
   "codex-5.3-spark": "gpt-5.3-codex-spark",
 };
+const ROLE_FALLBACK_MODEL = "gpt-5.4";
 const WEB_SEARCH_MODES = ["disabled", "cached", "live"] as const;
 
 export type WebSearchMode = CodexWebSearchMode;
@@ -1548,12 +1549,35 @@ type RunRoleResult =
       reason: string;
     };
 
+export function resolveRoleFallbackModel(model: string, reason: string): string | undefined {
+  const normalizedReason = reason.toLowerCase();
+  if (
+    model.includes("codex-spark")
+    && normalizedReason.includes("not supported")
+    && normalizedReason.includes("tool")
+  ) {
+    return ROLE_FALLBACK_MODEL;
+  }
+
+  return undefined;
+}
+
 async function runRole(
   context: RunContext,
   role: Role,
   prompt: string,
 ): Promise<RunRoleResult> {
-  const thread = getThread(context, role);
+  return runRoleWithModel(context, role, prompt, context.model, false);
+}
+
+async function runRoleWithModel(
+  context: RunContext,
+  role: Role,
+  prompt: string,
+  model: string,
+  isFallback: boolean,
+): Promise<RunRoleResult> {
+  const thread = isFallback ? createRoleThread(context, role, model) : getThread(context, role);
   const startedAt = new Date().toISOString();
   const abortController = new AbortController();
   const timer = setTimeout(() => {
@@ -1567,7 +1591,8 @@ async function runRole(
     const endedAt = new Date().toISOString();
 
     await writeSessionLog(context, {
-      role,
+      role: isFallback ? `${role}-fallback` : role,
+      model,
       prompt,
       turn,
       startedAt,
@@ -1579,9 +1604,11 @@ async function runRole(
   } catch (error) {
     const endedAt = new Date().toISOString();
     const reason = summarizeError(error);
+    const fallbackModel = isFallback ? undefined : resolveRoleFallbackModel(model, reason);
 
     await writeRoleErrorLog(context, {
-      role,
+      role: isFallback ? `${role}-fallback` : role,
+      model,
       prompt,
       reason,
       error,
@@ -1589,6 +1616,14 @@ async function runRole(
       endedAt,
       threadId: thread.id,
     });
+
+    if (fallbackModel) {
+      await appendProgress(
+        context.runDir,
+        `\n## Role Fallback\n\n${role} failed on ${model}: ${reason}\nRetrying ${role} with ${fallbackModel}.\n`,
+      );
+      return runRoleWithModel(context, role, prompt, fallbackModel, true);
+    }
 
     return { ok: false, reason };
   } finally {
@@ -1688,8 +1723,14 @@ function getThread(context: RunContext, role: Role): Thread {
   const existing = context.threads.get(role);
   if (existing) return existing;
 
+  const thread = createRoleThread(context, role, context.model);
+  context.threads.set(role, thread);
+  return thread;
+}
+
+function createRoleThread(context: RunContext, role: Role, model: string): Thread {
   const thread = context.codex.startThread({
-    model: context.model,
+    model,
     workingDirectory: context.runDir,
     skipGitRepoCheck: true,
     sandboxMode: role === "smoke" ? "read-only" : "workspace-write",
@@ -1697,7 +1738,6 @@ function getThread(context: RunContext, role: Role): Thread {
     networkAccessEnabled: true,
     webSearchMode: context.webSearchMode,
   });
-  context.threads.set(role, thread);
   return thread;
 }
 
@@ -1721,7 +1761,8 @@ function getObserverThread(context: ObserverContext): Thread {
 async function writeSessionLog(
   context: RunContext | ObserverContext,
   entry: {
-      role: Role;
+    role: string;
+    model?: string;
     prompt: string;
     turn: CodexTurn;
     startedAt: string;
@@ -1741,7 +1782,7 @@ async function writeSessionLog(
     `${JSON.stringify(
       {
         role: entry.role,
-        model: context.model,
+        model: entry.model ?? context.model,
         threadId: entry.threadId,
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,
@@ -1759,7 +1800,8 @@ async function writeSessionLog(
 async function writeRoleErrorLog(
   context: RunContext | ObserverContext,
   entry: {
-    role: Role;
+    role: string;
+    model?: string;
     prompt: string;
     reason: string;
     error: unknown;
@@ -1780,7 +1822,7 @@ async function writeRoleErrorLog(
     `${JSON.stringify(
       {
         role: entry.role,
-        model: context.model,
+        model: entry.model ?? context.model,
         threadId: entry.threadId,
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,

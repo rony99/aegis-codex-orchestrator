@@ -8,6 +8,7 @@ import {
   buildProgressDocument,
   buildRunSummary,
   evaluateCloseoutGate,
+  resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
   parseManagerDecision,
@@ -460,6 +461,24 @@ test("run summary captures machine-readable terminal state", () => {
   assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
+});
+
+test("resolveRoleFallbackModel falls back from spark on unsupported tool errors", () => {
+  assert.equal(
+    resolveRoleFallbackModel(
+      "gpt-5.3-codex-spark",
+      "Error: Tool 'image_generation' is not supported with gpt-5.3-codex-spark",
+    ),
+    "gpt-5.4",
+  );
+  assert.equal(
+    resolveRoleFallbackModel("gpt-5.4", "Error: Tool 'image_generation' is not supported"),
+    undefined,
+  );
+  assert.equal(
+    resolveRoleFallbackModel("gpt-5.3-codex-spark", "AbortError: The operation was aborted"),
+    undefined,
+  );
 });
 
 test("progress document keeps a machine-readable state block", () => {

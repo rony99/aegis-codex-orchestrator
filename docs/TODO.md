@@ -128,6 +128,10 @@
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
   - report reclassifies old `role_failed` summaries using their stored reason, so historical runs become more useful without rewriting artifacts
   - real closeout-gate report now separates `sdk_failed=1`, `turn_timeout=1`, `unsupported_tool=1`
+- [x] role fallback for unsupported spark tools:
+  - if a role running on `gpt-5.3-codex-spark` fails with an unsupported tool/model error, driver retries that same role once with `gpt-5.4`
+  - fallback is intentionally not used for `AbortError` / timeout, because timeouts need separate latency/context handling
+  - session-log records both the original role error and the fallback role turn with the actual fallback model
 
 ## 验证记录
 
