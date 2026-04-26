@@ -69,6 +69,8 @@ export type FailureCategory =
   | "max_loops"
   | "observer_failed"
   | "role_failed"
+  | "turn_timeout"
+  | "unsupported_tool"
   | "invalid_manager_decision"
   | "unknown";
 
@@ -887,7 +889,7 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
 
   for (const summary of summaries) {
     statuses[summary.status] += 1;
-    const failureCategory = normalizeFailureCategory(summary.failureCategory);
+    const failureCategory = normalizeSummaryFailureCategory(summary);
     failureCategories[failureCategory] += 1;
     totalDurationMs += summary.durationMs;
     if (summary.sdkMonitor && !summary.sdkMonitor.passed) {
@@ -934,7 +936,7 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     recentRuns: summaries.slice(0, limit).map((summary) => ({
       runDir: summary.runDir,
       status: summary.status,
-      failureCategory: normalizeFailureCategory(summary.failureCategory),
+      failureCategory: normalizeSummaryFailureCategory(summary),
       reason: summary.reason,
       model: summary.model,
       durationMs: summary.durationMs,
@@ -1293,6 +1295,8 @@ function createFailureCategoryCounts(): Record<FailureCategory, number> {
     max_loops: 0,
     observer_failed: 0,
     role_failed: 0,
+    turn_timeout: 0,
+    unsupported_tool: 0,
     invalid_manager_decision: 0,
     unknown: 0,
   };
@@ -1359,6 +1363,8 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
     || value === "max_loops"
     || value === "observer_failed"
     || value === "role_failed"
+    || value === "turn_timeout"
+    || value === "unsupported_tool"
     || value === "invalid_manager_decision"
     || value === "unknown"
   ) {
@@ -1366,6 +1372,20 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
   }
 
   return "unknown";
+}
+
+function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
+  const normalized = normalizeFailureCategory(summary.failureCategory);
+  if (normalized !== "role_failed") return normalized;
+
+  return classifyFailure({
+    runDir: summary.runDir,
+    status: summary.status,
+    reason: summary.reason,
+    observer: summary.observer,
+    snippetCandidates: summary.snippetCandidates,
+    sdkMonitor: summary.sdkMonitor,
+  }, summary.terminalRole);
 }
 
 function classifyFailure(result: RunResult, terminalRole?: string): FailureCategory {
@@ -1376,6 +1396,8 @@ function classifyFailure(result: RunResult, terminalRole?: string): FailureCateg
 
   const reason = (result.reason ?? "").toLowerCase();
   if (reason.includes("discovery")) return "discovery_needed";
+  if (reason.includes("aborterror") || reason.includes("operation was aborted")) return "turn_timeout";
+  if (reason.includes("not supported") && reason.includes("tool")) return "unsupported_tool";
   if (reason.includes("invalid decision") || reason.includes("invalid next_action")) {
     return "invalid_manager_decision";
   }

@@ -259,39 +259,60 @@ Status: rejected
 Snippet: HTTP JSON fetch + summary
 Reason: Task has no HTTP dependency.
 `, "utf8");
+    await writeSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      endedAt: "2026-04-23T00:00:00.500Z",
+      durationMs: 500,
+    });
+    await writeSummary(runsDir, "run-unsupported-tool", {
+      status: "ask_user",
+      reason: "Manager failed: Tool 'image_generation' is not supported with gpt-5.3-codex-spark",
+      failureCategory: "unsupported_tool",
+      endedAt: "2026-04-23T00:00:00.250Z",
+      durationMs: 250,
+    });
 
     const report = await runReport({ runsDir, limit: 2 });
     assert.deepEqual(report.snippetUsage, {
       used: 1,
       rejected: 1,
       none: 1,
-      unknown: 0,
+      unknown: 2,
     });
-    assert.equal(report.recentRuns[0].snippetDecision.status, "used");
-    assert.equal(report.recentRuns[0].snippetDecision.snippet, "Parser edge-case validation");
-    assert.equal(report.recentRuns[1].snippetDecision.status, "none");
+    assert.equal(report.failureCategories.turn_timeout, 1);
+    assert.equal(report.failureCategories.unsupported_tool, 1);
+    assert.equal(report.recentRuns[0].failureCategory, "none");
+    assert.equal(report.recentRuns[1].failureCategory, "sdk_failed");
 
-    const result = runCli(["report", "--runs-dir", runsDir, "--limit", "2"]);
+    const result = runCli(["report", "--runs-dir", runsDir, "--limit", "5"]);
 
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /Total runs: 3/);
+    assert.match(result.stdout, /Total runs: 5/);
     assert.match(result.stdout, /Done: 1/);
-    assert.match(result.stdout, /Ask user: 1/);
+    assert.match(result.stdout, /Ask user: 3/);
     assert.match(result.stdout, /Max loops reached: 1/);
-    assert.match(result.stdout, /Average duration: 2s/);
+    assert.match(result.stdout, /Average duration: 1s/);
     assert.match(result.stdout, /SDK monitor failures: 1/);
     assert.match(result.stdout, /Observer failures: 1/);
     assert.match(result.stdout, /Failure categories:/);
-    assert.match(result.stdout, /Snippet usage: used=1 rejected=1 none=1 unknown=0/);
+    assert.match(result.stdout, /Snippet usage: used=1 rejected=1 none=1 unknown=2/);
     assert.match(result.stdout, /none: 1/);
     assert.match(result.stdout, /sdk_failed: 1/);
+    assert.match(result.stdout, /turn_timeout: 1/);
+    assert.match(result.stdout, /unsupported_tool: 1/);
     assert.match(result.stdout, /max_loops: 1/);
     assert.match(result.stdout, /ask_user\/sdk_failed/);
+    assert.match(result.stdout, /ask_user\/turn_timeout/);
+    assert.match(result.stdout, /ask_user\/unsupported_tool/);
     assert.match(result.stdout, /snippet=used:Parser edge-case validation/);
     assert.match(result.stdout, /snippet=none/);
     assert.match(result.stdout, /run-a/);
     assert.match(result.stdout, /run-b/);
-    assert.doesNotMatch(result.stdout, /run-c/);
+    assert.match(result.stdout, /run-c/);
+    assert.match(result.stdout, /run-timeout/);
+    assert.match(result.stdout, /run-unsupported-tool/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

@@ -123,6 +123,11 @@
   - 汇总 `done` / `ask_user` / `max_loops_reached`
   - 汇总平均耗时、failure categories、SDK monitor failures、observer failures
   - 输出最近 N 次 run
+- [x] SDK/model failure classification:
+  - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
+  - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
+  - report reclassifies old `role_failed` summaries using their stored reason, so historical runs become more useful without rewriting artifacts
+  - real closeout-gate report now separates `sdk_failed=1`, `turn_timeout=1`, `unsupported_tool=1`
 
 ## 验证记录
 

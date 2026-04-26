@@ -95,7 +95,7 @@ The manager decides one next action at a time:
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
-- Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries.
+- Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 

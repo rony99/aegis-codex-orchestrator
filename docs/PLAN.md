@@ -223,6 +223,7 @@ TODO:
 - 新增 `run-summary.json`
 - 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、failure categories、平均耗时、SDK monitor failures、observer failures
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
+- 已完成: SDK/model failure 分类细化，`AbortError` 归为 `turn_timeout`，unsupported tool/model 错误归为 `unsupported_tool`，report 可对旧 `role_failed` summary 按 reason 再分类。
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
 - 已完成: driver-level closeout gate，manager `done` 后会检查 pre-closeout 协议、api-probes sections、workspace 非空、progress 验证证据；不通过时触发 tester 补验证或阻断结束。
