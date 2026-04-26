@@ -134,6 +134,19 @@ export type RunRepairPlan = {
   commands: string[];
 };
 
+export type ExportWorkspaceOptions = {
+  runDir: string;
+  outFile?: string;
+};
+
+export type ExportWorkspaceResult = {
+  runDir: string;
+  workspaceDir: string;
+  outFile: string;
+  fileCount: number;
+  byteCount: number;
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
@@ -1123,6 +1136,46 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
   };
 }
 
+export async function exportWorkspacePatch(options: ExportWorkspaceOptions): Promise<ExportWorkspaceResult> {
+  const runDir = path.resolve(options.runDir);
+  const workspaceDir = path.join(runDir, "workspace");
+  const outFile = path.resolve(options.outFile ?? path.join(runDir, "workspace.patch"));
+  const files = await collectWorkspaceTextFiles(workspaceDir);
+
+  if (files.length === 0) {
+    throw new Error("workspace is empty");
+  }
+
+  const chunks = [
+    `# Workspace export from ${runDir}`,
+    `# Review before applying. Generated files are relative to workspace/.`,
+    "",
+  ];
+  let byteCount = 0;
+
+  for (const file of files) {
+    const raw = await readFile(file.absolutePath);
+    if (isLikelyBinary(raw)) {
+      throw new Error(`workspace contains a binary or non-text file: ${file.relativePath}`);
+    }
+
+    const content = raw.toString("utf8");
+    byteCount += raw.byteLength;
+    chunks.push(formatNewFilePatch(file.relativePath, content));
+  }
+
+  await mkdir(path.dirname(outFile), { recursive: true });
+  await writeFile(outFile, chunks.join("\n"), "utf8");
+
+  return {
+    runDir,
+    workspaceDir,
+    outFile,
+    fileCount: files.length,
+    byteCount,
+  };
+}
+
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
   let entries: string[];
   try {
@@ -1156,6 +1209,72 @@ async function readRunSummary(runDir: string): Promise<RunSummary | undefined> {
   } catch {
     return undefined;
   }
+}
+
+type WorkspaceTextFile = {
+  absolutePath: string;
+  relativePath: string;
+};
+
+async function collectWorkspaceTextFiles(workspaceDir: string): Promise<WorkspaceTextFile[]> {
+  const files: WorkspaceTextFile[] = [];
+
+  async function visit(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      throw new Error("workspace is missing or unreadable");
+    }
+
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".DS_Store") {
+        continue;
+      }
+
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      files.push({
+        absolutePath,
+        relativePath: toPatchPath(path.relative(workspaceDir, absolutePath)),
+      });
+    }
+  }
+
+  await visit(workspaceDir);
+  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  return files;
+}
+
+function formatNewFilePatch(relativePath: string, content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.endsWith("\n")
+    ? normalized.slice(0, -1).split("\n")
+    : normalized.split("\n");
+  const hunkLineCount = lines.length === 1 && lines[0] === "" ? 0 : lines.length;
+  const body = hunkLineCount === 0 ? "" : `${lines.map((line) => `+${line}`).join("\n")}\n`;
+  const noNewlineMarker = normalized.endsWith("\n") || hunkLineCount === 0 ? "" : "\\ No newline at end of file\n";
+
+  return `diff --git a/${relativePath} b/${relativePath}
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/${relativePath}
+@@ -0,0 +1,${hunkLineCount} @@
+${body}${noNewlineMarker}`;
+}
+
+function toPatchPath(value: string): string {
+  return value.split(path.sep).join("/");
+}
+
+function isLikelyBinary(buffer: Buffer): boolean {
+  return buffer.includes(0);
 }
 
 function isRunSummary(value: unknown): value is RunSummary {

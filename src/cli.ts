@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { buildRunRepairPlan, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
+import { buildRunRepairPlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ExportWorkspaceResult, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -12,6 +12,7 @@ type ParsedArgs = {
   candidate?: string;
   slug?: string;
   title?: string;
+  outFile?: string;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
@@ -99,6 +100,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--out") {
+      if (!next) throw new Error("--out requires a patch file path");
+      parsed.outFile = next;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--observe") {
       parsed.observe = true;
       continue;
@@ -176,6 +184,7 @@ Usage:
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -263,6 +272,14 @@ function printRepairPlan(plan: RunRepairPlan): void {
       console.log(`- ${command}`);
     }
   }
+}
+
+function printWorkspaceExport(result: ExportWorkspaceResult): void {
+  console.log(`Workspace patch: ${result.outFile}`);
+  console.log(`Run directory: ${result.runDir}`);
+  console.log(`Workspace directory: ${result.workspaceDir}`);
+  console.log(`Files: ${result.fileCount}`);
+  console.log(`Bytes: ${result.byteCount}`);
 }
 
 async function main(): Promise<void> {
@@ -387,6 +404,19 @@ async function main(): Promise<void> {
     if (plan.action === "repair_protocol" || plan.action === "inspect") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (args.command === "export-workspace") {
+    if (!args.runDir) {
+      throw new Error("export-workspace requires --run-dir <run-dir>");
+    }
+
+    const result = await exportWorkspacePatch({
+      runDir: args.runDir,
+      outFile: args.outFile,
+    });
+    printWorkspaceExport(result);
     return;
   }
 

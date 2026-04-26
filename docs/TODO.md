@@ -12,6 +12,7 @@
   - `codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
   - `codex-gtd repair-plan --run-dir <run-dir>`
+  - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
 - [x] Codex SDK web search 接入:
@@ -130,6 +131,11 @@
   - 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect` / `none`
   - timeout 和 unsupported tool 失败会给出稳定模型重跑命令
   - 协议损坏时优先阻断恢复，要求先修协议
+- [x] workspace export:
+  - `export-workspace --run-dir <run-dir> [--out <patch-file>]`
+  - 递归导出 `workspace/` 文本文件为 git-style patch
+  - 空 workspace 和二进制文件会阻断导出
+  - 已用真实 self-dogfood run 导出 patch，并通过 `git apply --check`
 - [x] SDK/model failure classification:
   - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
@@ -444,6 +450,6 @@
 
 ## 当前判断
 
-v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan 指标化、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
+v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan 指标化、workspace patch 导出、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
 
-但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时把 `repair-plan` 推进为真正的 `resume` 命令。
+但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时把 `repair-plan` / `export-workspace` 推进为真正的 `resume/apply` 命令。

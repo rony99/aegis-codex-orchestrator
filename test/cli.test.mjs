@@ -9,6 +9,7 @@ import {
   buildRunRepairPlan,
   buildRunSummary,
   evaluateCloseoutGate,
+  exportWorkspacePatch,
   resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
@@ -145,6 +146,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
+  assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -497,6 +499,64 @@ test("repair-plan blocks resume when protocol health is broken", async () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /Action: repair_protocol/);
     assert.match(result.stdout, /Missing required protocol entries: interfaces\.md/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("export-workspace writes a reviewable patch without invoking Codex SDK", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-export-workspace-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-with-workspace", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-with-workspace");
+    await mkdir(path.join(runDir, "workspace", "src"), { recursive: true });
+    await writeFile(path.join(runDir, "workspace", "src", "cli.js"), "console.log('hello');\n", "utf8");
+    await writeFile(path.join(runDir, "workspace", "README.md"), "# Exported tool\n", "utf8");
+    const outFile = path.join(runsDir, "workspace.patch");
+
+    const result = await exportWorkspacePatch({ runDir, outFile });
+    const patch = await readFile(outFile, "utf8");
+
+    assert.equal(result.fileCount, 2);
+    assert.equal(result.outFile, outFile);
+    assert.match(patch, /diff --git a\/README\.md b\/README\.md/);
+    assert.match(patch, /\+\# Exported tool/);
+    assert.match(patch, /diff --git a\/src\/cli\.js b\/src\/cli\.js/);
+    assert.match(patch, /\+console\.log\('hello'\);/);
+
+    const cliResult = runCli(["export-workspace", "--run-dir", runDir, "--out", path.join(runsDir, "cli.patch")]);
+    assert.equal(cliResult.status, 0);
+    assert.match(cliResult.stdout, /Workspace patch:/);
+    assert.match(cliResult.stdout, /Files: 2/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("export-workspace rejects empty workspaces", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-export-empty-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-empty", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-empty");
+
+    await assert.rejects(
+      () => exportWorkspacePatch({ runDir }),
+      /workspace is empty/,
+    );
+
+    const cliResult = runCli(["export-workspace", "--run-dir", runDir]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stderr, /workspace is empty/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

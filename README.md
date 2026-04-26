@@ -68,6 +68,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
 - `codex-gtd repair-plan --run-dir <run-dir>`
+- `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -100,6 +101,7 @@ The manager decides one next action at a time:
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
+- Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -154,6 +156,14 @@ node dist/cli.js repair-plan --run-dir runs/<timestamp>
 ```
 
 This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`.
+
+### Export generated workspace output
+
+```bash
+node dist/cli.js export-workspace --run-dir runs/<timestamp> --out workspace.patch
+```
+
+This writes a git-style patch for text files under the run's `workspace/`. It is intentionally review-first: inspect the patch and run `git apply --check workspace.patch` in the target repository before applying it.
 
 ### Run the included pilot task
 
@@ -233,6 +243,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
@@ -302,6 +313,7 @@ Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
 - Turn `repair-plan` into actual `resume` once role checkpoints are precise enough.
+- Add a guarded apply flow on top of `export-workspace`.
 - Run more medium/large dogfood passes now that observer and manager input are compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.
