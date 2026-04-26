@@ -1551,11 +1551,11 @@ type RunRoleResult =
 
 export function resolveRoleFallbackModel(model: string, reason: string): string | undefined {
   const normalizedReason = reason.toLowerCase();
-  if (
-    model.includes("codex-spark")
-    && normalizedReason.includes("not supported")
-    && normalizedReason.includes("tool")
-  ) {
+  const isSparkModel = model.includes("codex-spark");
+  const isUnsupportedTool = normalizedReason.includes("not supported") && normalizedReason.includes("tool");
+  const isTurnTimeout = normalizedReason.includes("aborterror") || normalizedReason.includes("operation was aborted");
+
+  if (isSparkModel && (isUnsupportedTool || isTurnTimeout)) {
     return ROLE_FALLBACK_MODEL;
   }
 

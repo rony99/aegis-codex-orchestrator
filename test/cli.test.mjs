@@ -25,10 +25,12 @@ import {
   compareProgressRunSummary,
 } from "../dist/driver.js";
 import {
+  MANAGER_PROMPT_MAX_CHARS,
   OBSERVER_PROMPT_MAX_CHARS,
   OBSERVER_SESSION_LOG_MAX_ENTRIES,
   OBSERVER_TRUNCATION_MARKER,
   compactObserverText,
+  managerPrompt,
   observerPrompt,
 } from "../dist/prompts.js";
 
@@ -463,7 +465,7 @@ test("run summary captures machine-readable terminal state", () => {
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
 });
 
-test("resolveRoleFallbackModel falls back from spark on unsupported tool errors", () => {
+test("resolveRoleFallbackModel falls back from spark on unsupported tool and timeout errors", () => {
   assert.equal(
     resolveRoleFallbackModel(
       "gpt-5.3-codex-spark",
@@ -477,7 +479,7 @@ test("resolveRoleFallbackModel falls back from spark on unsupported tool errors"
   );
   assert.equal(
     resolveRoleFallbackModel("gpt-5.3-codex-spark", "AbortError: The operation was aborted"),
-    undefined,
+    "gpt-5.4",
   );
 });
 
@@ -1167,6 +1169,61 @@ test("observer prompt compacts medium runs while preserving protocol health and 
     assert.ok(roleMatches.length <= OBSERVER_SESSION_LOG_MAX_ENTRIES);
     assert.ok(!prompt.includes("large item payload ".repeat(20)));
     assert.ok(!prompt.includes("verbose trace item ".repeat(80)));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("manager prompt compacts large run context while preserving decision-critical state", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-manager-prompt-"));
+  const runDir = path.join(runsDir, "run-a");
+  const snippetsDir = path.join(runsDir, "snippets");
+
+  try {
+    await mkdir(path.join(runDir, "api-probes"), { recursive: true });
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(path.join(runDir, "task.md"), `# Task\n\n${"build todo exporter ".repeat(200)}\n`, "utf8");
+    await writeFile(path.join(runDir, "discovery.md"), `# Discovery\n\n${"confirmed scope ".repeat(200)}\n`, "utf8");
+    await writeFile(path.join(runDir, "spec.md"), `# Spec\n\n${"acceptance criterion ".repeat(500)}\n`, "utf8");
+    await writeFile(path.join(runDir, "interfaces.md"), `# Interfaces\n\n${"cli contract ".repeat(500)}\n`, "utf8");
+    await writeFile(path.join(runDir, "blockers.md"), `# Blockers\n\nNone.\n${"old blocker detail ".repeat(200)}\n`, "utf8");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), `${VALID_API_PROBES_README}\n${"probe details ".repeat(800)}\n`, "utf8");
+    await writeFile(path.join(snippetsDir, "INDEX.md"), `# Snippets\n\n${"snippet index ".repeat(800)}\n`, "utf8");
+    await writeFile(path.join(snippetsDir, "large.md"), `# Large snippet\n\n${"snippet implementation guidance ".repeat(800)}\n`, "utf8");
+    await writeFile(path.join(runDir, "progress.md"), `<!-- codex-gtd:progress-state
+status: testing
+lastUpdatedAt: 2026-04-24T00:00:00.000Z
+lastRole: tester
+loop: 2
+terminal: false
+reason: tests are still running
+-->
+
+# Progress
+
+## State
+
+Status: testing
+
+## Log
+
+${"old progress detail ".repeat(900)}
+
+## Latest Verification
+
+Command: npm test
+Result: pending
+`, "utf8");
+
+    const prompt = await managerPrompt(2, runDir, snippetsDir);
+
+    assert.ok(prompt.length <= MANAGER_PROMPT_MAX_CHARS);
+    assert.match(prompt, /codex-gtd:progress-state/);
+    assert.match(prompt, /Latest Verification/);
+    assert.match(prompt, /driver closeout gate/i);
+    assert.match(prompt, new RegExp(OBSERVER_TRUNCATION_MARKER));
+    assert.ok(!prompt.includes("acceptance criterion ".repeat(120)));
+    assert.ok(!prompt.includes("old progress detail ".repeat(120)));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

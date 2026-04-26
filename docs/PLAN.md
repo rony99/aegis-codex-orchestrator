@@ -224,7 +224,7 @@ TODO:
 - 新增 `report` 命令，汇总 `done` / `ask_user` / `max_loops_reached`、failure categories、平均耗时、SDK monitor failures、observer failures
 - 已完成: summary/report 增加 `failureCategory`、`terminalRole`、`metrics.roleTurns`
 - 已完成: SDK/model failure 分类细化，`AbortError` 归为 `turn_timeout`，unsupported tool/model 错误归为 `unsupported_tool`，report 可对旧 `role_failed` summary 按 reason 再分类。
-- 已完成: unsupported tool/model 错误的 role-level fallback；spark role 遇到该类错误时自动用 `gpt-5.4` 重试一次，timeout 不自动 fallback。
+- 已完成: role-level fallback；spark role 遇到 unsupported tool/model 错误或 turn timeout 时自动用 `gpt-5.4` 重试一次。
 - 已完成: run-local 协议与 manager decision parser 的本地测试覆盖
 - 已完成: API probe artifact validator 与 progress/run-summary protocol drift helper
 - 已完成: driver-level closeout gate，manager `done` 后会检查 pre-closeout 协议、api-probes sections、workspace 非空、progress 验证证据；不通过时触发 tester 补验证或阻断结束。
@@ -233,6 +233,7 @@ TODO:
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
+- 已完成: manager 输入压缩，第二轮及后续 manager prompt 对 `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets` 有确定性长度上限，并保留 progress state、最新验证证据和 closeout gate 约束。
 - 已完成: observer re-run stale lessons 修复，避免已有 run 的旧 `lessons.md` 阻止新一轮 observer final response 写入
 
 待补:

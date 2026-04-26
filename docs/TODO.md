@@ -128,10 +128,14 @@
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
   - report reclassifies old `role_failed` summaries using their stored reason, so historical runs become more useful without rewriting artifacts
   - real closeout-gate report now separates `sdk_failed=1`, `turn_timeout=1`, `unsupported_tool=1`
-- [x] role fallback for unsupported spark tools:
+- [x] role fallback for spark instability:
   - if a role running on `gpt-5.3-codex-spark` fails with an unsupported tool/model error, driver retries that same role once with `gpt-5.4`
-  - fallback is intentionally not used for `AbortError` / timeout, because timeouts need separate latency/context handling
+  - if a role running on `gpt-5.3-codex-spark` fails with `AbortError` / `operation was aborted`, driver also retries that role once with `gpt-5.4`
   - session-log records both the original role error and the fallback role turn with the actual fallback model
+- [x] manager prompt compaction:
+  - manager prompt has a deterministic max length before SDK calls
+  - per-section compaction covers `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets`
+  - progress compaction preserves the machine-readable state block and recent verification evidence
 
 ## 验证记录
 
@@ -413,6 +417,13 @@
   - local `evaluateCloseoutGate(runDir)` returned `ok:true`, so failure was SDK/model turn instability, not gate rejection
   - retry with `--turn-timeout-ms 600000` reached a spark model/tool error: `Tool 'image_generation' is not supported with gpt-5.3-codex-spark-1p-codexswic-ev3`
   - follow-up smoke with `node dist/cli.js smoke --model codex-5.3-spark --web-search disabled` passed, suggesting intermittent SDK/model/tool instability
+- [x] manager compaction dogfood attempt:
+  - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --skip-sdk-monitor --max-loops 4 --observe --runs-dir runs-selfdogfood-manager-compact`
+  - run: `runs-selfdogfood-manager-compact/2026-04-26T07-06-02Z`
+  - status: `ask_user`
+  - reason: researcher turn timed out with `AbortError`
+  - local prompt check on prior manager-failure runs now produces manager prompts around 9.3k chars with a 12k cap, down from about 13k chars
+  - follow-up change: spark `AbortError` / turn timeout now gets one role-level fallback retry on `gpt-5.4`, matching the unsupported-tool fallback path
 - [x] markdown snippet quality dogfood:
   - `node dist/cli.js run --task examples/todo-exporter-task.md --model codex-5.3-spark --skip-discovery --max-loops 4 --observe --runs-dir runs-selfdogfood-snippet-quality-todo`
   - run: `runs-selfdogfood-snippet-quality-todo/2026-04-25T01-16-48Z`

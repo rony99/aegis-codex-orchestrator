@@ -1,6 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+export const MANAGER_PROMPT_MAX_CHARS = 12_000;
+export const MANAGER_SECTION_MAX_CHARS = 3_000;
 export const OBSERVER_PROMPT_MAX_CHARS = 40_000;
 export const OBSERVER_SECTION_MAX_CHARS = 3_500;
 export const OBSERVER_PROTOCOL_HEALTH_MAX_CHARS = 5_000;
@@ -186,7 +188,7 @@ export async function managerPrompt(
     readSnippetsSummary(snippetsDir),
   ]);
 
-  return `You are the manager agent for Aegis Codex Orchestrator.
+  const prompt = `You are the manager agent for Aegis Codex Orchestrator.
 
 Loop: ${loop}
 
@@ -208,32 +210,35 @@ Decision rules:
 - If implementation exists but has not been verified against acceptance criteria, choose test.
 - If tests failed and the failure appears fixable, choose develop with repair instructions.
 - If tests passed and acceptance criteria are met, choose done.
+- The driver closeout gate runs after "done"; still only choose done when progress.md contains concrete verification evidence.
 
 Return JSON only. Match the provided schema.
 
 Current task.md:
-${task}
+${compactObserverText("task.md", task, 1_500)}
 
 Current discovery.md:
-${discovery}
+${compactObserverText("discovery.md", discovery, 1_200)}
 
 Current spec.md:
-${spec}
+${compactObserverText("spec.md", spec, 2_000)}
 
 Current interfaces.md:
-${interfaces}
+${compactObserverText("interfaces.md", interfaces, 1_800)}
 
 Current progress.md:
-${progress}
+${compactManagerProgress(progress, 3_000)}
 
 Current blockers.md:
-${blockers}
+${compactObserverText("blockers.md", blockers, 1_000)}
 
 Current api-probes summary:
-${apiProbes}
+${compactObserverText("api-probes summary", apiProbes, 1_500)}
 
 Current snippet summary:
-${snippets}`;
+${compactObserverText("snippet summary", snippets, 1_500)}`;
+
+  return compactObserverText("manager prompt", prompt, MANAGER_PROMPT_MAX_CHARS);
 }
 
 export async function developerPrompt(
@@ -583,6 +588,45 @@ function compactObserverSection(label: string, value: string, maxChars = OBSERVE
   }
 
   return `${label}:\n${compactObserverText(label, value, maxChars)}`;
+}
+
+function compactManagerProgress(value: string, maxChars = MANAGER_SECTION_MAX_CHARS): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const logMarker = "\n## Log\n";
+  const logIndex = normalized.indexOf(logMarker);
+  if (logIndex === -1) {
+    return compactHeadAndTail("progress.md", normalized, maxChars);
+  }
+
+  const headBudget = Math.min(1_800, Math.floor(maxChars * 0.45));
+  const tailBudget = Math.max(600, maxChars - headBudget);
+  const head = compactObserverText("progress.md head", normalized.slice(0, logIndex), headBudget);
+  const tail = compactTailText("progress.md recent log", normalized.slice(logIndex), tailBudget);
+  return compactObserverText("progress.md", `${head}\n\n${tail}`, maxChars);
+}
+
+function compactHeadAndTail(label: string, value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+
+  const marker = `\n[${OBSERVER_TRUNCATION_MARKER} ${label}: middle content omitted]\n`;
+  if (marker.length >= maxChars) return marker.slice(0, maxChars);
+
+  const remaining = maxChars - marker.length;
+  const headLength = Math.ceil(remaining * 0.45);
+  const tailLength = remaining - headLength;
+  return `${value.slice(0, headLength)}${marker}${value.slice(-tailLength)}`;
+}
+
+function compactTailText(label: string, value: string, maxChars: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const marker = `[${OBSERVER_TRUNCATION_MARKER} ${label}: ${normalized.length - maxChars} earlier chars omitted]\n`;
+  if (marker.length >= maxChars) return marker.slice(0, maxChars);
+
+  return `${marker}${normalized.slice(-(maxChars - marker.length))}`;
 }
 
 export function compactObserverText(label: string, value: string, maxChars = OBSERVER_SECTION_MAX_CHARS): string {
