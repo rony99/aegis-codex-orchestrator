@@ -67,6 +67,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
+- `codex-gtd repair-plan --run-dir <run-dir>`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -98,6 +99,7 @@ The manager decides one next action at a time:
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
+- Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -144,6 +146,14 @@ node dist/cli.js report --runs-dir runs --limit 10
 The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, failure categories, SDK monitor failures, observer failures, protocol health counts, and recent runs.
 
 It also reports snippet usage from each run's `spec.md` `Snippet Decision` section, so you can see whether promoted snippets are actually being reused.
+
+### Get a repair plan for a failed run
+
+```bash
+node dist/cli.js repair-plan --run-dir runs/<timestamp>
+```
+
+This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`.
 
 ### Run the included pilot task
 
@@ -222,6 +232,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
+  codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
@@ -290,6 +301,7 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
+- Turn `repair-plan` into actual `resume` once role checkpoints are precise enough.
 - Run more medium/large dogfood passes now that observer and manager input are compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.

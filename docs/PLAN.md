@@ -231,6 +231,7 @@ TODO:
 - 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
 - 已完成: Codex SDK web search 能力核查与接入；本机真实 smoke 证实 `webSearchMode: "live"` 会产生 `web_search` items。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
+- 已完成: `repair-plan --run-dir` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`。
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
 - 已完成: manager 输入压缩，第二轮及后续 manager prompt 对 `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets` 有确定性长度上限，并保留 progress state、最新验证证据和 closeout gate 约束。

@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildProgressDocument,
+  buildRunRepairPlan,
   buildRunSummary,
   evaluateCloseoutGate,
   resolveRoleFallbackModel,
@@ -143,6 +144,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
+  assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -412,6 +414,89 @@ None.
     assert.match(result.stdout, /Protocol health: invalid-or-missing-api-probes-readme-sections=1/);
     assert.match(result.stdout, /Protocol health: progress-run-summary-drift=1/);
     assert.match(result.stdout, /protocolHealth=/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("repair-plan recommends deterministic recovery for timeout runs without invoking Codex SDK", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-repair-plan-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Researcher failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "researcher",
+      model: "gpt-5.3-codex-spark",
+      taskFile: path.join(runsDir, "task.md"),
+      turnTimeoutMs: 300000,
+      metrics: {
+        sessionLogEntries: 1,
+        roleTurns: {
+          researcher: 1,
+        },
+      },
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "researcher",
+      loop: 0,
+      terminal: true,
+      reason: "Researcher failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const plan = await buildRunRepairPlan({ runDir });
+
+    assert.equal(plan.action, "rerun");
+    assert.equal(plan.resumable, false);
+    assert.equal(plan.failureCategory, "turn_timeout");
+    assert.match(plan.summary, /timed out/i);
+    assert.deepEqual(plan.issues, []);
+    assert.ok(plan.commands.some((command) => command.includes("--model gpt-5.4")));
+    assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms 600000")));
+
+    const result = runCli(["repair-plan", "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Repair plan:/);
+    assert.match(result.stdout, /Action: rerun/);
+    assert.match(result.stdout, /--model gpt-5\.4/);
+    assert.match(result.stdout, /--turn-timeout-ms 600000/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("repair-plan blocks resume when protocol health is broken", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-repair-protocol-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-broken", {
+      status: "ask_user",
+      reason: "Manager failed: invalid decision",
+      failureCategory: "invalid_manager_decision",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-broken");
+    await rm(path.join(runDir, "interfaces.md"), { force: true });
+
+    const plan = await buildRunRepairPlan({ runDir });
+
+    assert.equal(plan.action, "repair_protocol");
+    assert.equal(plan.resumable, false);
+    assert.match(plan.summary, /protocol health/i);
+    assert.ok(plan.issues.some((issue) => issue.includes("Missing required protocol entries: interfaces.md")));
+
+    const result = runCli(["repair-plan", "--run-dir", runDir]);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Action: repair_protocol/);
+    assert.match(result.stdout, /Missing required protocol entries: interfaces\.md/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

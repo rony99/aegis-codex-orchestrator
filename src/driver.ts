@@ -110,6 +110,30 @@ export type ReportOptions = {
   limit?: number;
 };
 
+export type RepairPlanOptions = {
+  runDir: string;
+};
+
+export type RepairPlanAction =
+  | "none"
+  | "rerun"
+  | "repair_protocol"
+  | "answer_user"
+  | "inspect";
+
+export type RunRepairPlan = {
+  runDir: string;
+  action: RepairPlanAction;
+  resumable: boolean;
+  status?: RunResult["status"];
+  failureCategory: FailureCategory;
+  terminalRole?: string;
+  reason?: string;
+  summary: string;
+  issues: string[];
+  commands: string[];
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
@@ -952,6 +976,153 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
   };
 }
 
+export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<RunRepairPlan> {
+  const runDir = path.resolve(options.runDir);
+  const [summary, runProtocol, apiProbesReadme, progressDrift] = await Promise.all([
+    readRunSummary(runDir),
+    validateRunProtocol(runDir),
+    validateApiProbesReadme(runDir),
+    compareProgressRunSummary(runDir),
+  ]);
+
+  const issues: string[] = [];
+  if (!runProtocol.ok) {
+    issues.push(`Missing required protocol entries: ${runProtocol.missing.join(", ")}`);
+  }
+  if (!apiProbesReadme.ok) {
+    issues.push(`Missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
+  }
+  if (!progressDrift.ok) {
+    issues.push(...progressDrift.details);
+    for (const mismatch of progressDrift.mismatches) {
+      issues.push(`Progress/run-summary drift: ${mismatch.key} progress=${JSON.stringify(mismatch.progressValue)} summary=${JSON.stringify(mismatch.summaryValue)}`);
+    }
+  }
+
+  if (!summary) {
+    return {
+      runDir,
+      action: "repair_protocol",
+      resumable: false,
+      failureCategory: "unknown",
+      summary: "Run is missing a readable run-summary.json; repair protocol files before attempting recovery.",
+      issues: issues.length > 0 ? issues : ["run-summary.json missing or unreadable"],
+      commands: [],
+    };
+  }
+
+  const failureCategory = normalizeSummaryFailureCategory(summary);
+  if (issues.length > 0) {
+    return {
+      runDir,
+      action: "repair_protocol",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Run has protocol health issues; repair the file protocol before rerunning or resuming.",
+      issues,
+      commands: [],
+    };
+  }
+
+  if (summary.status === "done" && failureCategory === "none") {
+    return {
+      runDir,
+      action: "none",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Run is already done; no repair action is needed.",
+      issues: [],
+      commands: [],
+    };
+  }
+
+  if (failureCategory === "turn_timeout") {
+    const timeoutMs = Math.max(summary.turnTimeoutMs * 2, 600_000);
+    return {
+      runDir,
+      action: "rerun",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "The last run timed out. Re-run the original task with the stable model and a longer turn timeout.",
+      issues: [],
+      commands: [
+        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --turn-timeout-ms ${timeoutMs} --skip-sdk-monitor`,
+      ],
+    };
+  }
+
+  if (failureCategory === "unsupported_tool") {
+    return {
+      runDir,
+      action: "rerun",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "The selected model hit an unsupported tool path. Re-run the task with the stable model.",
+      issues: [],
+      commands: [
+        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor`,
+      ],
+    };
+  }
+
+  if (failureCategory === "discovery_needed" || failureCategory === "blocker") {
+    return {
+      runDir,
+      action: "answer_user",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Run needs user input or external access before it can continue.",
+      issues: summary.reason ? [summary.reason] : [],
+      commands: [],
+    };
+  }
+
+  if (failureCategory === "max_loops") {
+    return {
+      runDir,
+      action: "rerun",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Run reached the loop limit. Inspect progress.md, then re-run with a higher loop budget if the remaining work is clear.",
+      issues: [],
+      commands: [
+        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${shellQuote(summary.model)} --max-loops ${summary.maxLoops + 2} --skip-sdk-monitor`,
+      ],
+    };
+  }
+
+  return {
+    runDir,
+    action: "inspect",
+    resumable: false,
+    status: summary.status,
+    failureCategory,
+    terminalRole: summary.terminalRole,
+    reason: summary.reason,
+    summary: "No deterministic automatic recovery is available yet. Inspect progress.md, blockers.md, and session-log/.",
+    issues: summary.reason ? [summary.reason] : [],
+    commands: [],
+  };
+}
+
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
   let entries: string[];
   try {
@@ -975,6 +1146,16 @@ async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
   }
 
   return summaries;
+}
+
+async function readRunSummary(runDir: string): Promise<RunSummary | undefined> {
+  try {
+    const raw = await readFile(path.join(runDir, RUN_SUMMARY_FILE), "utf8");
+    const parsed = JSON.parse(raw) as RunSummary;
+    return isRunSummary(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isRunSummary(value: unknown): value is RunSummary {
@@ -2082,6 +2263,11 @@ function summarizeError(error: unknown): string {
     return `${error.name}: ${error.message}`;
   }
   return String(error);
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) return value;
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function resolveMonitorSdk(flag?: boolean): boolean {

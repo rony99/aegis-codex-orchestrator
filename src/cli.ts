@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunReport, type WebSearchMode } from "./driver.js";
+import { buildRunRepairPlan, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -175,6 +175,7 @@ Usage:
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
+  codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -235,6 +236,32 @@ function printReport(report: RunReport): void {
       || run.protocolHealth.progressRunSummaryDrift;
     const protocolHealth = hasProtocolIssue ? ` protocolHealth=${JSON.stringify(run.protocolHealth)}` : "";
     console.log(`- ${run.endedAt} ${run.status}/${run.failureCategory} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${snippet}${protocolHealth}${reason}`);
+  }
+}
+
+function printRepairPlan(plan: RunRepairPlan): void {
+  console.log("Repair plan:");
+  console.log(`Run directory: ${plan.runDir}`);
+  console.log(`Action: ${plan.action}`);
+  console.log(`Resumable: ${plan.resumable ? "yes" : "no"}`);
+  console.log(`Failure category: ${plan.failureCategory}`);
+  if (plan.status) console.log(`Status: ${plan.status}`);
+  if (plan.terminalRole) console.log(`Terminal role: ${plan.terminalRole}`);
+  if (plan.reason) console.log(`Reason: ${plan.reason}`);
+  console.log(`Summary: ${plan.summary}`);
+
+  if (plan.issues.length > 0) {
+    console.log("Issues:");
+    for (const issue of plan.issues) {
+      console.log(`- ${issue}`);
+    }
+  }
+
+  if (plan.commands.length > 0) {
+    console.log("Suggested commands:");
+    for (const command of plan.commands) {
+      console.log(`- ${command}`);
+    }
   }
 }
 
@@ -347,6 +374,19 @@ async function main(): Promise<void> {
       limit: args.limit,
     });
     printReport(report);
+    return;
+  }
+
+  if (args.command === "repair-plan") {
+    if (!args.runDir) {
+      throw new Error("repair-plan requires --run-dir <run-dir>");
+    }
+
+    const plan = await buildRunRepairPlan({ runDir: args.runDir });
+    printRepairPlan(plan);
+    if (plan.action === "repair_protocol" || plan.action === "inspect") {
+      process.exitCode = 1;
+    }
     return;
   }
 
