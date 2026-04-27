@@ -232,7 +232,7 @@ TODO:
 - 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
 - 已完成: Codex SDK web search 能力核查与接入；本机真实 smoke 证实 `webSearchMode: "live"` 会产生 `web_search` items。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
-- 已完成: `repair-plan --run-dir` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`。
+- 已完成: `repair-plan --run-dir [--json]` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`，并支持机器可读恢复计划。
 - 已完成: `export-workspace --run-dir` 安全导出命令，把 run `workspace/` 文本文件生成可审查 git-style patch，为后续 guarded apply/resume 做准备。
 - 已完成: `apply-workspace --run-dir --target [--write]` guarded apply 命令；默认 dry-run，目标必须是干净 git repo，`git apply --check` 通过后才允许 `--write`。
 - 已完成: `resume --run-dir [--target] [--execute] [--write]` planner/executor。completed runs 继续路由到 `export_workspace` / `apply_workspace`；可恢复 failed runs（`turn_timeout` / `unsupported_tool` / `role_failed` / `invalid_manager_decision` / `max_loops`）在存在 saved role `threadId` 时路由到 `resume_sdk`，`--execute` 会用 Codex SDK `resumeThread()` 追加续跑原 run 目录。用户 blocker、discovery_needed、SDK health failure、observer failure、协议损坏或缺失 threadId 仍需 repair/user action/rerun。

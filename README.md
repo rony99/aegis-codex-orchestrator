@@ -68,7 +68,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
 - `codex-gtd status --run-dir <run-dir> [--json]`
-- `codex-gtd repair-plan --run-dir <run-dir>`
+- `codex-gtd repair-plan --run-dir <run-dir> [--json]`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
 - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
@@ -169,9 +169,10 @@ The status command is local-only. It reads `run-summary.json`, protocol health, 
 
 ```bash
 node dist/cli.js repair-plan --run-dir runs/<timestamp>
+node dist/cli.js repair-plan --run-dir runs/<timestamp> --json
 ```
 
-This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`. Rerun commands preserve recorded `--skip-discovery` and `--web-search` options when the failed run captured them.
+This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`. Rerun commands preserve recorded `--skip-discovery` and `--web-search` options when the failed run captured them. Use `--json` for machine-readable recovery plans.
 
 ### Export generated workspace output
 
@@ -282,7 +283,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd status --run-dir <run-dir> [--json]
-  codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd repair-plan --run-dir <run-dir> [--json]
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]

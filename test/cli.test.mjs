@@ -149,7 +149,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
-  assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
+  assert.match(output, /codex-gtd repair-plan --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
   assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\] \[--model <model>\] \[--web-search <disabled\|cached\|live>\] \[--snippets-dir <dir>\] \[--turn-timeout-ms <ms>\] \[--max-loops <n>\] \[--observe\]/);
@@ -784,6 +784,15 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
     assert.match(result.stdout, /--turn-timeout-ms 600000/);
     assert.match(result.stdout, /--skip-discovery/);
     assert.match(result.stdout, /--web-search live/);
+
+    const jsonResult = runCli(["repair-plan", "--run-dir", runDir, "--json"]);
+    assert.equal(jsonResult.status, 0);
+    assert.doesNotMatch(jsonResult.stdout, /Repair plan:/);
+    const parsed = JSON.parse(jsonResult.stdout);
+    assert.equal(parsed.action, "rerun");
+    assert.equal(parsed.failureCategory, "turn_timeout");
+    assert.ok(parsed.commands.some((command) => command.includes("--skip-discovery")));
+    assert.ok(parsed.commands.some((command) => command.includes("--web-search live")));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

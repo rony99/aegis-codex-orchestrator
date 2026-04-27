@@ -12,7 +12,7 @@
   - `codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
   - `codex-gtd status --run-dir <run-dir> [--json]`
-  - `codex-gtd repair-plan --run-dir <run-dir>`
+  - `codex-gtd repair-plan --run-dir <run-dir> [--json]`
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
   - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]`
@@ -141,6 +141,7 @@
   - 读取单个 run 的 `run-summary.json`
   - 检查 required protocol entries、api-probes README sections、progress/run-summary drift
   - 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect` / `none`
+  - 支持 `--json` 输出机器可读恢复计划
   - timeout 和 unsupported tool 失败会给出稳定模型重跑命令
   - 协议损坏时优先阻断恢复，要求先修协议
 - [x] workspace export:

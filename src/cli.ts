@@ -210,7 +210,7 @@ Usage:
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd status --run-dir <run-dir> [--json]
-  codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd repair-plan --run-dir <run-dir> [--json]
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
@@ -509,7 +509,11 @@ async function main(): Promise<void> {
     }
 
     const plan = await buildRunRepairPlan({ runDir: args.runDir });
-    printRepairPlan(plan);
+    if (args.json) {
+      console.log(JSON.stringify(plan, null, 2));
+    } else {
+      printRepairPlan(plan);
+    }
     if (plan.action === "repair_protocol" || plan.action === "inspect") {
       process.exitCode = 1;
     }
