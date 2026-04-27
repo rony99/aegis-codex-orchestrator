@@ -11,6 +11,7 @@
 - [x] CLI:
   - `codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
+  - `codex-gtd status --run-dir <run-dir>`
   - `codex-gtd repair-plan --run-dir <run-dir>`
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
@@ -131,6 +132,10 @@
   - 汇总 `done` / `ask_user` / `max_loops_reached`
   - 汇总平均耗时、failure categories、SDK monitor failures、observer failures
   - 输出最近 N 次 run
+- [x] 本地 status:
+  - 读取单个 run 的 `run-summary.json`、协议健康、progress drift 和 `session-log/inflight/`
+  - 输出终态、failure category、最新 inflight diagnosis 和 recommended action
+  - 当前 role turn 仍在运行时建议 `wait`，协议不健康时优先建议 `repair_protocol`
 - [x] 本地 repair plan:
   - 读取单个 run 的 `run-summary.json`
   - 检查 required protocol entries、api-probes README sections、progress/run-summary drift

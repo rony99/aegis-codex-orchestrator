@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -203,6 +203,7 @@ Usage:
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
+  codex-gtd status --run-dir <run-dir>
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
@@ -353,6 +354,37 @@ function printResumeExecution(result: ExecuteResumeResult): void {
   }
 }
 
+function printRunStatus(status: RunStatus): void {
+  console.log("Run status:");
+  console.log(`Run directory: ${status.runDir}`);
+  console.log(`Terminal status: ${status.terminalStatus}`);
+  console.log(`Failure category: ${status.failureCategory}`);
+  if (status.terminalRole) console.log(`Terminal role: ${status.terminalRole}`);
+  if (status.reason) console.log(`Reason: ${status.reason}`);
+  console.log(`Protocol health: ${status.protocolHealth}`);
+  if (status.protocolIssues.length > 0) {
+    console.log("Protocol issues:");
+    for (const issue of status.protocolIssues) {
+      console.log(`- ${issue}`);
+    }
+  }
+  if (status.diagnostic) {
+    console.log(`Current diagnosis: ${status.diagnostic.classification}`);
+    console.log(`Diagnostic detail: ${status.diagnostic.detail}`);
+    console.log(`Diagnostic role: ${status.diagnostic.role}`);
+    console.log(`Diagnostic idle: ${formatDuration(status.diagnostic.idleMs)}`);
+    if (status.diagnostic.lastEventType) console.log(`Diagnostic last event: ${status.diagnostic.lastEventType}`);
+  }
+  console.log(`Recommended action: ${status.recommendedAction}`);
+  console.log(`Summary: ${status.summary}`);
+  if (status.commands.length > 0) {
+    console.log("Suggested commands:");
+    for (const command of status.commands) {
+      console.log(`- ${command}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -475,6 +507,16 @@ async function main(): Promise<void> {
     if (plan.action === "repair_protocol" || plan.action === "inspect") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (args.command === "status") {
+    if (!args.runDir) {
+      throw new Error("status requires --run-dir <run-dir>");
+    }
+
+    const status = await buildRunStatus({ runDir: args.runDir });
+    printRunStatus(status);
     return;
   }
 

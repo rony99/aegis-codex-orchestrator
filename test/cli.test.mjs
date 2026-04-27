@@ -155,6 +155,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
+  assert.match(output, /codex-gtd status --run-dir <run-dir>/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
 
@@ -325,6 +326,72 @@ Reason: Task has no HTTP dependency.
     assert.match(result.stdout, /run-c/);
     assert.match(result.stdout, /run-timeout/);
     assert.match(result.stdout, /run-unsupported-tool/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends workspace export for a completed run", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-done-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      reason: "finished with verification",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Run status:/);
+    assert.match(result.stdout, /Terminal status: done/);
+    assert.match(result.stdout, /Failure category: none/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: export_workspace/);
+    assert.match(result.stdout, /codex-gtd export-workspace --run-dir/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status surfaces inflight diagnostics for a currently running turn", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-running-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-running");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await mkdir(path.join(runDir, "session-log", "inflight"), { recursive: true });
+    await writeFile(path.join(runDir, "session-log", "inflight", "2026-04-24T00-00-01-manager.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-running",
+      status: "running",
+      startedAt: "2026-04-24T00:00:01.000Z",
+      lastUpdatedAt: "2026-04-24T00:00:31.000Z",
+      lastEventAt: "2026-04-24T00:00:30.000Z",
+      idleMs: 1000,
+      classification: "command_running",
+      detail: "Command is still running: npm test",
+      lastEventType: "item.started",
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: running/);
+    assert.match(result.stdout, /Current diagnosis: command_running/);
+    assert.match(result.stdout, /Diagnostic detail: Command is still running: npm test/);
+    assert.match(result.stdout, /Recommended action: wait/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

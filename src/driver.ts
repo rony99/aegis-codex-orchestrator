@@ -216,6 +216,28 @@ export type ExecuteResumeResult = {
   runResult?: RunResult;
 };
 
+export type RunStatusOptions = {
+  runDir: string;
+};
+
+export type RunStatusAction =
+  | "wait"
+  | ResumePlanAction;
+
+export type RunStatus = {
+  runDir: string;
+  terminalStatus: RunResult["status"] | "running" | "unknown";
+  failureCategory: FailureCategory;
+  reason?: string;
+  terminalRole?: string;
+  protocolHealth: "clean" | "pending" | "unhealthy";
+  protocolIssues: string[];
+  diagnostic?: RoleRunDiagnostic;
+  recommendedAction: RunStatusAction;
+  summary: string;
+  commands: string[];
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
@@ -1216,6 +1238,99 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
     summary: "No deterministic automatic recovery is available yet. Inspect progress.md, blockers.md, and session-log/.",
     issues: summary.reason ? [summary.reason] : [],
     commands: [],
+  };
+}
+
+export async function buildRunStatus(options: RunStatusOptions): Promise<RunStatus> {
+  const runDir = path.resolve(options.runDir);
+  const [summary, runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
+    readRunSummary(runDir),
+    validateRunProtocol(runDir),
+    validateApiProbesReadme(runDir),
+    compareProgressRunSummary(runDir),
+    readLatestInflightDiagnostic(runDir),
+  ]);
+
+  const protocolIssues: string[] = [];
+  if (!runProtocol.ok) {
+    const missing = diagnostic?.status === "running"
+      ? runProtocol.missing.filter((entry) => entry !== RUN_SUMMARY_FILE)
+      : runProtocol.missing;
+    if (missing.length > 0) {
+      protocolIssues.push(`Missing required protocol entries: ${missing.join(", ")}`);
+    }
+  }
+  if (!apiProbesReadme.ok) {
+    protocolIssues.push(`Missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
+  }
+  if (!progressDrift.ok && summary) {
+    protocolIssues.push(...progressDrift.details);
+    for (const mismatch of progressDrift.mismatches) {
+      protocolIssues.push(`Progress/run-summary drift: ${mismatch.key} progress=${JSON.stringify(mismatch.progressValue)} summary=${JSON.stringify(mismatch.summaryValue)}`);
+    }
+  }
+
+  const protocolHealth: RunStatus["protocolHealth"] = protocolIssues.length === 0
+    ? (diagnostic?.status === "running" && !summary ? "pending" : "clean")
+    : "unhealthy";
+
+  if (diagnostic?.status === "running") {
+    return {
+      runDir,
+      terminalStatus: "running",
+      failureCategory: "none",
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "wait",
+      summary: "A Codex role turn is still running. Inspect the inflight diagnostic before deciding whether to wait or intervene.",
+      commands: [],
+    };
+  }
+
+  if (protocolHealth === "unhealthy") {
+    return {
+      runDir,
+      terminalStatus: summary?.status ?? "unknown",
+      failureCategory: summary ? normalizeSummaryFailureCategory(summary) : "unknown",
+      reason: summary?.reason,
+      terminalRole: summary?.terminalRole,
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "repair_protocol",
+      summary: "Run has protocol health issues; repair the file protocol before rerunning or resuming.",
+      commands: [],
+    };
+  }
+
+  if (!summary) {
+    return {
+      runDir,
+      terminalStatus: "unknown",
+      failureCategory: "unknown",
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "inspect",
+      summary: "Run has no terminal summary and no active inflight role diagnostic. Inspect progress.md and session-log/.",
+      commands: [],
+    };
+  }
+
+  const resumePlan = await buildResumePlan({ runDir });
+  return {
+    runDir,
+    terminalStatus: summary.status,
+    failureCategory: normalizeSummaryFailureCategory(summary),
+    reason: summary.reason,
+    terminalRole: summary.terminalRole,
+    protocolHealth,
+    protocolIssues,
+    diagnostic,
+    recommendedAction: resumePlan.action,
+    summary: resumePlan.summary,
+    commands: resumePlan.commands,
   };
 }
 
@@ -2494,7 +2609,7 @@ async function runObserverRole(
   }
 }
 
-type RoleRunDiagnostic = {
+export type RoleRunDiagnostic = {
   role: string;
   model: string;
   threadId: string | null;
@@ -2729,6 +2844,40 @@ function roleInflightDiagnosticPath(runDir: string, startedAt: string, role: str
 async function writeRoleInflightDiagnostic(file: string, diagnostic: RoleRunDiagnostic): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
+}
+
+async function readLatestInflightDiagnostic(runDir: string): Promise<RoleRunDiagnostic | undefined> {
+  const inflightDir = path.join(runDir, "session-log", "inflight");
+  let entries: string[];
+  try {
+    entries = (await readdir(inflightDir)).filter((entry) => entry.endsWith(".json")).sort();
+  } catch {
+    return undefined;
+  }
+
+  const diagnostics: RoleRunDiagnostic[] = [];
+  for (const entry of entries) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(inflightDir, entry), "utf8")) as RoleRunDiagnostic;
+      if (
+        typeof parsed.role === "string"
+        && typeof parsed.model === "string"
+        && (parsed.status === "running" || parsed.status === "completed" || parsed.status === "failed")
+        && typeof parsed.startedAt === "string"
+        && typeof parsed.lastUpdatedAt === "string"
+        && typeof parsed.classification === "string"
+        && typeof parsed.detail === "string"
+      ) {
+        diagnostics.push(parsed);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return diagnostics
+    .sort((left, right) => left.lastUpdatedAt.localeCompare(right.lastUpdatedAt))
+    .at(-1);
 }
 
 const OBSERVER_LESSONS_REQUIRED_SECTIONS = [

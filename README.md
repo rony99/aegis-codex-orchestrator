@@ -67,6 +67,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
+- `codex-gtd status --run-dir <run-dir>`
 - `codex-gtd repair-plan --run-dir <run-dir>`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
@@ -103,6 +104,7 @@ The manager decides one next action at a time:
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
+- Status command (`codex-gtd status`) for one-run diagnostics, including protocol health, latest inflight role diagnosis, and the recommended next operator action.
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
@@ -153,6 +155,14 @@ node dist/cli.js report --runs-dir runs --limit 10
 The report command is local-only. It reads `run-summary.json` files and prints aggregate counts, average duration, failure categories, SDK monitor failures, observer failures, protocol health counts, and recent runs.
 
 It also reports snippet usage from each run's `spec.md` `Snippet Decision` section, so you can see whether promoted snippets are actually being reused.
+
+### Inspect one run
+
+```bash
+node dist/cli.js status --run-dir runs/<timestamp>
+```
+
+The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`.
 
 ### Get a repair plan for a failed run
 
@@ -270,6 +280,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
+  codex-gtd status --run-dir <run-dir>
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]

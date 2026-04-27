@@ -236,6 +236,7 @@ TODO:
 - 已完成: `export-workspace --run-dir` 安全导出命令，把 run `workspace/` 文本文件生成可审查 git-style patch，为后续 guarded apply/resume 做准备。
 - 已完成: `apply-workspace --run-dir --target [--write]` guarded apply 命令；默认 dry-run，目标必须是干净 git repo，`git apply --check` 通过后才允许 `--write`。
 - 已完成: `resume --run-dir [--target] [--execute] [--write]` planner/executor。completed runs 继续路由到 `export_workspace` / `apply_workspace`；可恢复 failed runs（`turn_timeout` / `unsupported_tool` / `role_failed` / `invalid_manager_decision` / `max_loops`）在存在 saved role `threadId` 时路由到 `resume_sdk`，`--execute` 会用 Codex SDK `resumeThread()` 追加续跑原 run 目录。用户 blocker、discovery_needed、SDK health failure、observer failure、协议损坏或缺失 threadId 仍需 repair/user action/rerun。
+- 已完成: `status --run-dir` 本地单 run 诊断命令，读取 summary、协议健康、progress drift 和 `session-log/inflight/`，区分仍在运行、需等待、需修协议、可导出/应用/SDK 续跑或需要人工 inspect。
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
 - 已完成: manager 输入压缩，第二轮及后续 manager prompt 对 `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets` 有确定性长度上限，并保留 progress state、最新验证证据和 closeout gate 约束。
