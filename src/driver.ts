@@ -1479,12 +1479,14 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
     const command = `codex-gtd resume --run-dir ${shellQuote(runDir)} --execute`;
 
     if (!target) {
+      const summaryText = selection.blockedReason
+        ?? "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.";
       return {
         runDir,
         action,
         ready: false,
         source: "resume",
-        summary: "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.",
+        summary: summaryText,
         issues: [selection.blockedReason ?? "No resumable thread found for the recoverable failure. Re-run the original task if the local Codex session is unavailable."],
         commands: repairPlan.commands,
       };

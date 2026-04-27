@@ -563,7 +563,7 @@ test("status recommends rerun for timeout threads without completed sdk work", a
     const status = JSON.parse(result.stdout);
     assert.equal(status.protocolHealth, "clean");
     assert.equal(status.recommendedAction, "rerun");
-    assert.match(status.summary, /no resumable Codex SDK thread/);
+    assert.match(status.summary, /timed out before completing any SDK work/);
     assert.ok(status.commands.some((command) => command.includes("codex-gtd run --task")));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
