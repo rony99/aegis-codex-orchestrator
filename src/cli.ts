@@ -23,6 +23,7 @@ type ParsedArgs = {
   turnTimeoutMs?: number;
   maxLoops?: number;
   limit?: number;
+  json?: boolean;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -132,6 +133,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--json") {
+      parsed.json = true;
+      continue;
+    }
+
     if (arg === "--skip-discovery") {
       parsed.skipDiscovery = true;
       continue;
@@ -203,7 +209,7 @@ Usage:
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
-  codex-gtd status --run-dir <run-dir>
+  codex-gtd status --run-dir <run-dir> [--json]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
@@ -516,6 +522,10 @@ async function main(): Promise<void> {
     }
 
     const status = await buildRunStatus({ runDir: args.runDir });
+    if (args.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
     printRunStatus(status);
     return;
   }

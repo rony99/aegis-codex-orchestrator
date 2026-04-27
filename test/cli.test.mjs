@@ -156,7 +156,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
-  assert.match(output, /codex-gtd status --run-dir <run-dir>/);
+  assert.match(output, /codex-gtd status --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
 
@@ -355,6 +355,36 @@ test("status recommends workspace export for a completed run", async () => {
     assert.match(result.stdout, /Protocol health: clean/);
     assert.match(result.stdout, /Recommended action: export_workspace/);
     assert.match(result.stdout, /codex-gtd export-workspace --run-dir/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status can emit machine-readable json", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-json-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      reason: "finished with verification",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir, "--json"]);
+
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.stdout, /Run status:/);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.runDir, runDir);
+    assert.equal(parsed.terminalStatus, "done");
+    assert.equal(parsed.failureCategory, "none");
+    assert.equal(parsed.protocolHealth, "clean");
+    assert.equal(parsed.recommendedAction, "export_workspace");
+    assert.ok(parsed.commands.some((command) => command.includes("codex-gtd export-workspace")));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

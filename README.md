@@ -67,7 +67,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
-- `codex-gtd status --run-dir <run-dir>`
+- `codex-gtd status --run-dir <run-dir> [--json]`
 - `codex-gtd repair-plan --run-dir <run-dir>`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
@@ -160,9 +160,10 @@ It also reports snippet usage from each run's `spec.md` `Snippet Decision` secti
 
 ```bash
 node dist/cli.js status --run-dir runs/<timestamp>
+node dist/cli.js status --run-dir runs/<timestamp> --json
 ```
 
-The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`.
+The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`. Use `--json` when a script or monitor needs machine-readable output.
 
 ### Get a repair plan for a failed run
 
@@ -280,7 +281,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
-  codex-gtd status --run-dir <run-dir>
+  codex-gtd status --run-dir <run-dir> [--json]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
