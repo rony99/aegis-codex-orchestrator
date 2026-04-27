@@ -1335,6 +1335,24 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   }
 
   if (protocolHealth === "unhealthy") {
+    if (summary && normalizeSummaryFailureCategory(summary) === "sdk_failed") {
+      return {
+        runDir,
+        terminalStatus: summary.status,
+        failureCategory: "sdk_failed",
+        reason: summary.reason,
+        terminalRole: summary.terminalRole,
+        protocolHealth,
+        protocolIssues,
+        diagnostic,
+        recommendedAction: "inspect",
+        summary: "Codex SDK/CLI failed before required protocol artifacts were written. Check SDK health, then rerun the original task.",
+        commands: [
+          `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
+          buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
+        ],
+      };
+    }
     return {
       runDir,
       terminalStatus: summary?.status ?? "unknown",
@@ -2908,6 +2926,12 @@ function diagnoseThreadItem(item: ThreadItem): { classification: string; detail:
 }
 
 function diagnoseFailureReason(reason: string): { classification: string; detail: string } {
+  if (isSdkReconnectReason(reason)) {
+    return {
+      classification: "sdk_reconnect_failed",
+      detail: `Codex SDK stream reconnected or disconnected before the turn completed: ${reason}`,
+    };
+  }
   if (isPermissionOrApprovalReason(reason)) {
     return {
       classification: "permission_or_approval_blocked",
@@ -2915,6 +2939,14 @@ function diagnoseFailureReason(reason: string): { classification: string; detail
     };
   }
   return { classification: "sdk_error", detail: reason };
+}
+
+function isSdkReconnectReason(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  return normalized.includes("reconnecting")
+    || normalized.includes("stream disconnected")
+    || normalized.includes("connection reset")
+    || normalized.includes("timeout waiting for child process to exit");
 }
 
 function isPermissionOrApprovalReason(reason: string): boolean {

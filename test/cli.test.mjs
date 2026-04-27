@@ -596,6 +596,62 @@ test("status prioritizes protocol repair for broken runs", async () => {
   }
 });
 
+test("status gives sdk failure guidance when sdk fails before protocol artifacts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-early-sdk-failed-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-sdk-failed");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    const summary = await writeSummary(runsDir, "run-sdk-failed", {
+      status: "ask_user",
+      reason: "Researcher failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      failureCategory: "sdk_failed",
+      terminalRole: "researcher",
+      taskFile: path.join(runDir, "task.md"),
+      endedAt: "2026-04-24T00:00:03.000Z",
+      metrics: {
+        sessionLogEntries: 1,
+        roleTurns: {
+          researcher: 1,
+        },
+      },
+      options: {
+        observe: false,
+        monitorSdk: false,
+        skipDiscovery: true,
+      },
+    });
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "blocked",
+      lastUpdatedAt: summary.endedAt,
+      lastRole: "researcher",
+      loop: 0,
+      terminal: true,
+      reason: summary.reason,
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir, "--json"]);
+
+    assert.equal(result.status, 0);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.protocolHealth, "unhealthy");
+    assert.equal(status.failureCategory, "sdk_failed");
+    assert.equal(status.recommendedAction, "inspect");
+    assert.match(status.summary, /SDK\/CLI failed before required protocol artifacts/);
+    assert.ok(status.commands.some((command) => command.includes("codex-gtd smoke --model gpt-5.4")));
+    assert.ok(status.commands.some((command) => command.includes("codex-gtd run --task")));
+    assert.ok(status.commands.some((command) => command.includes("--skip-discovery")));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("status recommends inspect when no summary exists and no turn is running", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-inspect-"));
 
@@ -1626,6 +1682,71 @@ test("resume execute classifies permission waits as user-action blockers", async
 
     const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
     assert.equal(summary.failureCategory, "blocker");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute classifies sdk reconnect stream failures distinctly", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-reconnect-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-reconnect",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "error",
+                  message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "ask_user");
+
+    const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
+    const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
+    assert.equal(errorLog.diagnostic.classification, "sdk_reconnect_failed");
+    assert.match(errorLog.diagnostic.detail, /Codex SDK stream reconnected or disconnected/);
+
+    const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
+    assert.equal(statusResult.status, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.diagnostic.classification, "sdk_reconnect_failed");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
