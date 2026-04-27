@@ -476,6 +476,12 @@
   - `spec.md` recorded `Status: used`, `Snippet: snippets/markdown-todo-exporter.md`
   - `report` showed clean protocol health and `Snippet usage: used=1 rejected=0 none=0 unknown=0`
   - observer generated structured candidates: `Protocol closeout guard`, `Line-number-safe TODO extraction loop`, `Deterministic fixture validation command block`
+- [x] resume success-path dogfood attempt:
+  - `node dist/cli.js run --task examples/todo-exporter-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 1 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-resume-success-dogfood`
+  - run: `/tmp/codex-gtd-resume-success-dogfood/2026-04-27T10-12-39Z`
+  - status: `ask_user`
+  - reason: researcher SDK reconnect failure, `Reconnecting... 2/5 (timeout waiting for child process to exit)`
+  - finding: SDK failed before researcher wrote `spec.md`, `interfaces.md`, or `api-probes/README.md`; status now keeps protocol health `unhealthy` but recommends `inspect` with `smoke` and rerun commands instead of dead-end `repair_protocol`
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断

@@ -1335,6 +1335,24 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   }
 
   if (protocolHealth === "unhealthy") {
+    if (summary && normalizeSummaryFailureCategory(summary) === "sdk_failed") {
+      return {
+        runDir,
+        terminalStatus: summary.status,
+        failureCategory: "sdk_failed",
+        reason: summary.reason,
+        terminalRole: summary.terminalRole,
+        protocolHealth,
+        protocolIssues,
+        diagnostic,
+        recommendedAction: "inspect",
+        summary: "Codex SDK/CLI failed before required protocol artifacts were written. Check SDK health, then rerun the original task.",
+        commands: [
+          `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
+          buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
+        ],
+      };
+    }
     return {
       runDir,
       terminalStatus: summary?.status ?? "unknown",

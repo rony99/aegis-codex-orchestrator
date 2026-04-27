@@ -596,6 +596,62 @@ test("status prioritizes protocol repair for broken runs", async () => {
   }
 });
 
+test("status gives sdk failure guidance when sdk fails before protocol artifacts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-early-sdk-failed-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-sdk-failed");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    const summary = await writeSummary(runsDir, "run-sdk-failed", {
+      status: "ask_user",
+      reason: "Researcher failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      failureCategory: "sdk_failed",
+      terminalRole: "researcher",
+      taskFile: path.join(runDir, "task.md"),
+      endedAt: "2026-04-24T00:00:03.000Z",
+      metrics: {
+        sessionLogEntries: 1,
+        roleTurns: {
+          researcher: 1,
+        },
+      },
+      options: {
+        observe: false,
+        monitorSdk: false,
+        skipDiscovery: true,
+      },
+    });
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "blocked",
+      lastUpdatedAt: summary.endedAt,
+      lastRole: "researcher",
+      loop: 0,
+      terminal: true,
+      reason: summary.reason,
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir, "--json"]);
+
+    assert.equal(result.status, 0);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.protocolHealth, "unhealthy");
+    assert.equal(status.failureCategory, "sdk_failed");
+    assert.equal(status.recommendedAction, "inspect");
+    assert.match(status.summary, /SDK\/CLI failed before required protocol artifacts/);
+    assert.ok(status.commands.some((command) => command.includes("codex-gtd smoke --model gpt-5.4")));
+    assert.ok(status.commands.some((command) => command.includes("codex-gtd run --task")));
+    assert.ok(status.commands.some((command) => command.includes("--skip-discovery")));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("status recommends inspect when no summary exists and no turn is running", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-inspect-"));
 
