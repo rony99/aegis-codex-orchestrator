@@ -111,6 +111,10 @@
   - items
 - [x] role 失败时写入 `session-log/*-error.json`、`progress.md` 和 `blockers.md`；
 - [x] 每个 role turn 使用 `AbortController`（`thread.run(..., { signal })`）实现超时保护；`--turn-timeout-ms` 和 `CODEX_GTD_TURN_TIMEOUT_MS` 可配置。
+- [x] 每个 role turn 使用 Codex SDK `runStreamed()` 记录中间事件诊断：
+  - `session-log/inflight/*.json` 持续记录 `classification`、`lastEventType`、`lastItem`、`idleMs`
+  - 每 30 秒向 stderr 输出 heartbeat，区分 no SDK events、active command/tool、idle timeout、permission/approval failure
+  - SDK 不支持 streaming 时保留 buffered `run()` fallback
 - [x] 每个 run 终态写入 `run-summary.json`:
   - `status` / `reason`
   - `model`

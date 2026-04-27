@@ -1,4 +1,4 @@
-import { Codex, type Thread, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
+import { Codex, type Thread, type ThreadEvent, type ThreadItem, type Usage, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
 import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
@@ -23,6 +23,7 @@ const DEFAULT_RUNS_DIR = "runs";
 const DEFAULT_SNIPPETS_DIR = "snippets";
 const DEFAULT_MAX_LOOPS = 8;
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+const ROLE_HEARTBEAT_MS = 30_000;
 const DEFAULT_MONITOR_SDK = true;
 const SDK_MONITOR_DIR = ".codex-gtd";
 const SDK_MONITOR_FILE = "sdk-health-baseline.json";
@@ -2193,7 +2194,6 @@ function classifyFailure(result: RunResult, terminalRole?: string): FailureCateg
   if (reason.includes("invalid decision") || reason.includes("invalid next_action")) {
     return "invalid_manager_decision";
   }
-  if (reason.includes("failed")) return "role_failed";
   if (
     reason.includes("missing")
     || reason.includes("credential")
@@ -2201,11 +2201,16 @@ function classifyFailure(result: RunResult, terminalRole?: string): FailureCateg
     || reason.includes("api key")
     || reason.includes("blocked")
     || reason.includes("blocker")
+    || reason.includes("permission")
+    || reason.includes("approval")
+    || reason.includes("access denied")
+    || reason.includes("not permitted")
     || reason.includes("ask_user")
-    || result.status === "ask_user"
   ) {
     return "blocker";
   }
+  if (reason.includes("failed")) return "role_failed";
+  if (result.status === "ask_user") return "blocker";
   if (terminalRole === "discovery") return "discovery_needed";
 
   return "unknown";
@@ -2376,9 +2381,15 @@ async function runRoleWithModel(
   }, context.turnTimeoutMs);
 
   try {
-    const turn = role === "manager"
-      ? await thread.run(prompt, { outputSchema: managerSchema, signal: abortController.signal })
-      : await thread.run(prompt, { signal: abortController.signal });
+    const turn = await runThreadWithDiagnostics(context, {
+      thread,
+      role: isFallback ? `${role}-fallback` : role,
+      model,
+      prompt,
+      startedAt,
+      signal: abortController.signal,
+      outputSchema: role === "manager" ? managerSchema : undefined,
+    });
     const endedAt = new Date().toISOString();
 
     await writeSessionLog(context, {
@@ -2394,7 +2405,8 @@ async function runRoleWithModel(
     return { ok: true, turn };
   } catch (error) {
     const endedAt = new Date().toISOString();
-    const reason = summarizeError(error);
+    const diagnosticError = error instanceof ThreadRunDiagnosticError ? error : undefined;
+    const reason = summarizeError(diagnosticError?.cause ?? error);
     const fallbackModel = isFallback ? undefined : resolveRoleFallbackModel(model, reason);
 
     await writeRoleErrorLog(context, {
@@ -2406,6 +2418,7 @@ async function runRoleWithModel(
       startedAt,
       endedAt,
       threadId: thread.id,
+      diagnostic: diagnosticError?.diagnostic,
     });
 
     if (fallbackModel) {
@@ -2436,7 +2449,14 @@ async function runObserverRole(
   try {
     const lessonFile = path.join(context.runDir, "lessons.md");
     const previousLessons = await readOptionalFile(lessonFile);
-    const turn = await thread.run(prompt, { signal: abortController.signal });
+    const turn = await runThreadWithDiagnostics(context, {
+      thread,
+      role: "observer",
+      model: context.model,
+      prompt,
+      startedAt,
+      signal: abortController.signal,
+    });
     const endedAt = new Date().toISOString();
     const existingLessons = await readOptionalFile(lessonFile);
     const lessons = selectObserverLessonsContent(existingLessons, turn.finalResponse, previousLessons);
@@ -2454,7 +2474,8 @@ async function runObserverRole(
     return { ok: true, turn };
   } catch (error) {
     const endedAt = new Date().toISOString();
-    const reason = summarizeError(error);
+    const diagnosticError = error instanceof ThreadRunDiagnosticError ? error : undefined;
+    const reason = summarizeError(diagnosticError?.cause ?? error);
 
     await writeRoleErrorLog(context, {
       role: "observer",
@@ -2464,12 +2485,250 @@ async function runObserverRole(
       startedAt,
       endedAt,
       threadId: thread.id,
+      diagnostic: diagnosticError?.diagnostic,
     });
 
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
   }
+}
+
+type RoleRunDiagnostic = {
+  role: string;
+  model: string;
+  threadId: string | null;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  lastUpdatedAt: string;
+  lastEventAt: string;
+  idleMs: number;
+  classification: string;
+  detail: string;
+  lastEventType?: string;
+  lastItem?: unknown;
+};
+
+class ThreadRunDiagnosticError extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly diagnostic: RoleRunDiagnostic,
+  ) {
+    super(summarizeError(cause));
+  }
+}
+
+async function runThreadWithDiagnostics(
+  context: RunContext | ObserverContext,
+  options: {
+    thread: Thread;
+    role: string;
+    model: string;
+    prompt: string;
+    startedAt: string;
+    signal: AbortSignal;
+    outputSchema?: unknown;
+  },
+): Promise<CodexTurn> {
+  const runStreamed = (options.thread as Thread & {
+    runStreamed?: Thread["runStreamed"];
+  }).runStreamed;
+
+  let lastEventAtMs = Date.parse(options.startedAt);
+  if (!Number.isFinite(lastEventAtMs)) lastEventAtMs = Date.now();
+  let lastEventType: string | undefined;
+  let lastItem: ThreadItem | undefined;
+  let classification = "waiting_for_first_sdk_event";
+  let detail = "No SDK event has been received yet; this is usually model startup or queueing until the turn timeout expires.";
+
+  const diagnosticPath = roleInflightDiagnosticPath(context.runDir, options.startedAt, options.role);
+  const currentDiagnostic = (status: RoleRunDiagnostic["status"]): RoleRunDiagnostic => {
+    const now = Date.now();
+    return {
+      role: options.role,
+      model: options.model,
+      threadId: options.thread.id,
+      status,
+      startedAt: options.startedAt,
+      lastUpdatedAt: new Date(now).toISOString(),
+      lastEventAt: new Date(lastEventAtMs).toISOString(),
+      idleMs: Math.max(0, now - lastEventAtMs),
+      classification,
+      detail,
+      lastEventType,
+      lastItem,
+    };
+  };
+  const writeDiagnostic = async (status: RoleRunDiagnostic["status"]) => {
+    await writeRoleInflightDiagnostic(diagnosticPath, currentDiagnostic(status));
+  };
+
+  await writeDiagnostic("running");
+  const heartbeat = setInterval(() => {
+    const diagnostic = currentDiagnostic("running");
+    console.error(`[codex-gtd] ${options.role} still running: ${diagnostic.classification}; idle=${Math.round(diagnostic.idleMs / 1000)}s; ${diagnostic.detail}`);
+    void writeRoleInflightDiagnostic(diagnosticPath, diagnostic).catch(() => undefined);
+  }, ROLE_HEARTBEAT_MS);
+
+  try {
+    if (typeof runStreamed !== "function") {
+      const turn = await options.thread.run(
+        options.prompt,
+        options.outputSchema ? { outputSchema: options.outputSchema, signal: options.signal } : { signal: options.signal },
+      );
+      classification = "turn_completed";
+      detail = "The SDK turn completed through the buffered run() fallback.";
+      await writeDiagnostic("completed");
+      return turn;
+    }
+
+    const items: ThreadItem[] = [];
+    let finalResponse = "";
+    let usage: Usage | null = null;
+    let turnFailure: { message: string } | null = null;
+    const streamed = await runStreamed.call(
+      options.thread,
+      options.prompt,
+      options.outputSchema ? { outputSchema: options.outputSchema, signal: options.signal } : { signal: options.signal },
+    );
+
+    for await (const event of streamed.events) {
+      const eventAt = Date.now();
+      lastEventAtMs = eventAt;
+      lastEventType = event.type;
+      const eventDiagnosis = diagnoseThreadEvent(event);
+      classification = eventDiagnosis.classification;
+      detail = eventDiagnosis.detail;
+      if ("item" in event) {
+        lastItem = event.item;
+      }
+      await writeDiagnostic("running");
+
+      if (event.type === "item.completed") {
+        if (event.item.type === "agent_message") {
+          finalResponse = event.item.text;
+        }
+        items.push(event.item);
+      } else if (event.type === "turn.completed") {
+        usage = event.usage;
+      } else if (event.type === "turn.failed") {
+        turnFailure = event.error;
+        break;
+      } else if (event.type === "error") {
+        turnFailure = { message: event.message };
+        break;
+      }
+    }
+
+    if (turnFailure) {
+      throw new Error(turnFailure.message);
+    }
+
+    classification = "turn_completed";
+    detail = "The SDK turn completed.";
+    await writeDiagnostic("completed");
+    return { items, finalResponse, usage };
+  } catch (error) {
+    if (options.signal.aborted && classification !== "command_running" && classification !== "mcp_tool_running") {
+      classification = lastEventType ? "idle_until_turn_timeout" : "no_sdk_events_before_turn_timeout";
+      detail = lastEventType
+        ? `No SDK event arrived before the ${context.turnTimeoutMs}ms turn timeout after ${lastEventType}.`
+        : `No SDK event arrived before the ${context.turnTimeoutMs}ms turn timeout.`;
+    } else if (isPermissionOrApprovalReason(summarizeError(error))) {
+      classification = "permission_or_approval_blocked";
+      detail = "The SDK surfaced a permission or approval issue; this run needs user or environment action instead of more waiting.";
+    }
+    const diagnostic = currentDiagnostic("failed");
+    await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
+    throw new ThreadRunDiagnosticError(error, diagnostic);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+function diagnoseThreadEvent(event: ThreadEvent): { classification: string; detail: string } {
+  if (event.type === "thread.started") {
+    return { classification: "thread_started", detail: `SDK thread started: ${event.thread_id}.` };
+  }
+  if (event.type === "turn.started") {
+    return { classification: "model_running", detail: "The SDK turn started and is waiting for model/tool events." };
+  }
+  if (event.type === "turn.completed") {
+    return { classification: "turn_completed", detail: "The SDK turn completed." };
+  }
+  if (event.type === "turn.failed") {
+    return diagnoseFailureReason(event.error.message);
+  }
+  if (event.type === "error") {
+    return diagnoseFailureReason(event.message);
+  }
+  return diagnoseThreadItem(event.item);
+}
+
+function diagnoseThreadItem(item: ThreadItem): { classification: string; detail: string } {
+  if (item.type === "command_execution") {
+    const command = item.command.length > 160 ? `${item.command.slice(0, 157)}...` : item.command;
+    if (item.status === "in_progress") {
+      return { classification: "command_running", detail: `Command is still running: ${command}` };
+    }
+    return { classification: `command_${item.status}`, detail: `Command ${item.status}: ${command}` };
+  }
+  if (item.type === "mcp_tool_call") {
+    const tool = `${item.server}.${item.tool}`;
+    if (item.status === "in_progress") {
+      return { classification: "mcp_tool_running", detail: `MCP tool is still running: ${tool}` };
+    }
+    if (item.status === "failed") {
+      return diagnoseFailureReason(item.error?.message ?? `MCP tool failed: ${tool}`);
+    }
+    return { classification: "mcp_tool_completed", detail: `MCP tool completed: ${tool}` };
+  }
+  if (item.type === "web_search") {
+    return { classification: "web_search_running", detail: `Web search requested: ${item.query}` };
+  }
+  if (item.type === "file_change") {
+    return { classification: `file_change_${item.status}`, detail: `File change ${item.status}: ${item.changes.length} change(s).` };
+  }
+  if (item.type === "todo_list") {
+    const remaining = item.items.filter((todo) => !todo.completed).length;
+    return { classification: "todo_list_updated", detail: `${remaining} todo item(s) remain open.` };
+  }
+  if (item.type === "reasoning") {
+    return { classification: "model_reasoning", detail: "The model produced reasoning summary output." };
+  }
+  if (item.type === "agent_message") {
+    return { classification: "agent_message", detail: "The agent produced a final or intermediate message." };
+  }
+  return diagnoseFailureReason(item.message);
+}
+
+function diagnoseFailureReason(reason: string): { classification: string; detail: string } {
+  if (isPermissionOrApprovalReason(reason)) {
+    return {
+      classification: "permission_or_approval_blocked",
+      detail: "The SDK surfaced a permission or approval issue; this run needs user or environment action instead of more waiting.",
+    };
+  }
+  return { classification: "sdk_error", detail: reason };
+}
+
+function isPermissionOrApprovalReason(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  return normalized.includes("permission")
+    || normalized.includes("approval")
+    || normalized.includes("not permitted")
+    || normalized.includes("access denied")
+    || normalized.includes("operation not allowed");
+}
+
+function roleInflightDiagnosticPath(runDir: string, startedAt: string, role: string): string {
+  const safeStartedAt = startedAt.replaceAll(":", "-");
+  return path.join(runDir, "session-log", "inflight", `${safeStartedAt}-${role}.json`);
+}
+
+async function writeRoleInflightDiagnostic(file: string, diagnostic: RoleRunDiagnostic): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
 }
 
 const OBSERVER_LESSONS_REQUIRED_SECTIONS = [
@@ -2599,6 +2858,7 @@ async function writeRoleErrorLog(
     startedAt: string;
     endedAt: string;
     threadId: string | null;
+    diagnostic?: RoleRunDiagnostic;
   },
 ): Promise<void> {
   const safeStartedAt = entry.startedAt.replaceAll(":", "-");
@@ -2623,6 +2883,7 @@ async function writeRoleErrorLog(
           entry.error instanceof Error
             ? { name: entry.error.name, message: entry.error.message }
             : String(entry.error),
+        diagnostic: entry.diagnostic,
       },
       null,
       2,

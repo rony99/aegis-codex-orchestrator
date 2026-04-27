@@ -1050,6 +1050,161 @@ test("resume execute continues max-loops runs from the next manager loop", async
   }
 });
 
+test("resume execute records streamed role diagnostics while a turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-diagnostics-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-streamed",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+    await writeFile(path.join(runDir, "progress.md"), `${await readFile(path.join(runDir, "progress.md"), "utf8")}\nVerification command: node workspace/tool.js\nVerification result: passed\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "item.started",
+                  item: {
+                    id: "cmd-1",
+                    type: "command_execution",
+                    command: "node workspace/tool.js",
+                    aggregated_output: "",
+                    status: "in_progress",
+                  },
+                };
+                yield {
+                  type: "item.completed",
+                  item: {
+                    id: "msg-1",
+                    type: "agent_message",
+                    text: JSON.stringify({
+                      next_action: "done",
+                      target: "workspace/",
+                      instructions: "finish",
+                      reason: "streamed resume completed",
+                    }),
+                  },
+                };
+                yield {
+                  type: "turn.completed",
+                  usage: {
+                    input_tokens: 1,
+                    cached_input_tokens: 0,
+                    output_tokens: 1,
+                  },
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "done");
+
+    const inflightEntries = await readdir(path.join(runDir, "session-log", "inflight"));
+    assert.equal(inflightEntries.length, 1);
+    const diagnostic = JSON.parse(await readFile(path.join(runDir, "session-log", "inflight", inflightEntries[0]), "utf8"));
+    assert.equal(diagnostic.status, "completed");
+    assert.equal(diagnostic.classification, "turn_completed");
+    assert.equal(diagnostic.lastEventType, "turn.completed");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute classifies permission waits as user-action blockers", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-permission-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-permission",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "turn.failed",
+                  error: {
+                    message: "Permission denied: approval required for this operation",
+                  },
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "ask_user");
+
+    const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
+    const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
+    assert.equal(errorLog.diagnostic.classification, "permission_or_approval_blocked");
+
+    const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+    assert.equal(summary.failureCategory, "blocker");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("run summary captures machine-readable terminal state", () => {
   const summary = buildRunSummary({
     runDir: "/tmp/aegis-run",

@@ -174,6 +174,7 @@ TODO:
   - 开发前明确 freeze
 - 已完成: 增加 `--turn-timeout-ms`（默认 5 分钟，可由 env 配置）
 - 已完成: 用 `AbortController` 限制单个 `thread.run()`
+- 已完成: 基于 Codex SDK `runStreamed()` 增加 role turn 运行中诊断，`session-log/inflight/*.json` 和 stderr heartbeat 可区分正常长耗时、命令/tool 仍在跑、无 SDK event 直到超时、以及权限/审批类失败
 - 已完成: role 失败时写入:
   - `blockers.md`
   - `progress.md`

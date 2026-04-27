@@ -96,6 +96,7 @@ The manager decides one next action at a time:
 - Driver-level closeout gate before accepting `done`, checking protocol files, API probe sections, workspace output, and verification evidence.
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
+- Streaming role diagnostics in `session-log/inflight/` so long-running turns can be distinguished from no SDK events, active commands/tools, timeout, or permission/approval failures.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Bounded manager prompt context so long `progress.md`, probe notes, and snippets do not make later manager turns unnecessarily large.
 - Role-level fallback from spark to `gpt-5.4` for unsupported tool/model errors and spark turn timeouts.
