@@ -9,6 +9,7 @@ import {
   buildRunRepairPlan,
   buildRunSummary,
   buildResumePlan,
+  classifyRunFailure,
   evaluateCloseoutGate,
   applyWorkspacePatch,
   executeResumePlan,
@@ -392,6 +393,153 @@ test("status surfaces inflight diagnostics for a currently running turn", async 
     assert.match(result.stdout, /Current diagnosis: command_running/);
     assert.match(result.stdout, /Diagnostic detail: Command is still running: npm test/);
     assert.match(result.stdout, /Recommended action: wait/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status treats progress drift as pending while a turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-running-drift-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-resuming", {
+      status: "ask_user",
+      reason: "Manager failed before resume",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-resuming");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "running",
+      lastUpdatedAt: "2026-04-24T00:00:31.000Z",
+      lastRole: "driver",
+      loop: 2,
+      terminal: false,
+      reason: undefined,
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await mkdir(path.join(runDir, "session-log", "inflight"), { recursive: true });
+    await writeFile(path.join(runDir, "session-log", "inflight", "2026-04-24T00-00-31-manager.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-running",
+      status: "running",
+      startedAt: "2026-04-24T00:00:31.000Z",
+      lastUpdatedAt: "2026-04-24T00:01:01.000Z",
+      lastEventAt: "2026-04-24T00:01:00.000Z",
+      idleMs: 1000,
+      classification: "model_running",
+      detail: "The SDK turn started and is waiting for model/tool events.",
+      lastEventType: "turn.started",
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: running/);
+    assert.match(result.stdout, /Protocol health: pending/);
+    assert.doesNotMatch(result.stdout, /Progress\/run-summary drift/);
+    assert.match(result.stdout, /Recommended action: wait/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends sdk resume for a recoverable failed run", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-resume-sdk-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.3-codex-spark",
+      threadId: "thread-manager-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "manager prompt",
+      error: { name: "AbortError", message: "The operation was aborted" },
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Failure category: turn_timeout/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: resume_sdk/);
+    assert.match(result.stdout, /codex-gtd resume --run-dir/);
+    assert.match(result.stdout, /--execute/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status prioritizes protocol repair for broken runs", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-repair-protocol-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-broken", {
+      status: "ask_user",
+      reason: "Manager failed: invalid decision",
+      failureCategory: "invalid_manager_decision",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-broken");
+    await rm(path.join(runDir, "interfaces.md"), { force: true });
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Protocol health: unhealthy/);
+    assert.match(result.stdout, /Missing required protocol entries: interfaces\.md/);
+    assert.match(result.stdout, /Recommended action: repair_protocol/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends inspect when no summary exists and no turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-inspect-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-no-summary");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nNo-op implementation.\n", "utf8");
+    await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nNo-op interface.\n", "utf8");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: unknown/);
+    assert.match(result.stdout, /Failure category: unknown/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: inspect/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -1318,6 +1466,22 @@ test("run summary captures machine-readable terminal state", () => {
   assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
+});
+
+test("failure classification keeps primary role failures ahead of observer failures", () => {
+  const failureCategory = classifyRunFailure({
+    runDir: "/tmp/aegis-run",
+    status: "ask_user",
+    reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    observer: {
+      runDir: "/tmp/aegis-run",
+      status: "failed",
+      reason: "Observer failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    },
+    snippetCandidates: [],
+  }, "manager");
+
+  assert.equal(failureCategory, "role_failed");
 });
 
 test("resolveRoleFallbackModel falls back from spark on unsupported tool and timeout errors", () => {

@@ -1253,7 +1253,7 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
 
   const protocolIssues: string[] = [];
   if (!runProtocol.ok) {
-    const missing = diagnostic?.status === "running"
+    const missing = diagnostic?.status === "running" || !summary
       ? runProtocol.missing.filter((entry) => entry !== RUN_SUMMARY_FILE)
       : runProtocol.missing;
     if (missing.length > 0) {
@@ -1263,7 +1263,7 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   if (!apiProbesReadme.ok) {
     protocolIssues.push(`Missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
   }
-  if (!progressDrift.ok && summary) {
+  if (!progressDrift.ok && summary && diagnostic?.status !== "running") {
     protocolIssues.push(...progressDrift.details);
     for (const mismatch of progressDrift.mismatches) {
       protocolIssues.push(`Progress/run-summary drift: ${mismatch.key} progress=${JSON.stringify(mismatch.progressValue)} summary=${JSON.stringify(mismatch.summaryValue)}`);
@@ -1271,7 +1271,7 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   }
 
   const protocolHealth: RunStatus["protocolHealth"] = protocolIssues.length === 0
-    ? (diagnostic?.status === "running" && !summary ? "pending" : "clean")
+    ? (diagnostic?.status === "running" ? "pending" : "clean")
     : "unhealthy";
 
   if (diagnostic?.status === "running") {
@@ -1903,7 +1903,7 @@ async function finishRun(
   const endedAtMs = Date.now();
   const endedAt = new Date(endedAtMs).toISOString();
   const sessionMetrics = await readSessionLogMetrics(context.runDir);
-  const failureCategory = classifyFailure(result, sessionMetrics.terminalRole);
+  const failureCategory = classifyRunFailure(result, sessionMetrics.terminalRole);
   await appendProgress(context.runDir, "", {
     status: progressStatusForResult(result, failureCategory),
     model: context.model,
@@ -2286,7 +2286,7 @@ function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   const normalized = normalizeFailureCategory(summary.failureCategory);
   if (normalized !== "role_failed") return normalized;
 
-  return classifyFailure({
+  return classifyRunFailure({
     runDir: summary.runDir,
     status: summary.status,
     reason: summary.reason,
@@ -2296,10 +2296,9 @@ function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   }, summary.terminalRole);
 }
 
-function classifyFailure(result: RunResult, terminalRole?: string): FailureCategory {
-  if (result.observer?.status === "failed") return "observer_failed";
+export function classifyRunFailure(result: RunResult, terminalRole?: string): FailureCategory {
   if (result.sdkMonitor && !result.sdkMonitor.passed) return "sdk_failed";
-  if (result.status === "done") return "none";
+  if (result.status === "done") return result.observer?.status === "failed" ? "observer_failed" : "none";
   if (result.status === "max_loops_reached") return "max_loops";
 
   const reason = (result.reason ?? "").toLowerCase();
@@ -2327,6 +2326,7 @@ function classifyFailure(result: RunResult, terminalRole?: string): FailureCateg
   if (reason.includes("failed")) return "role_failed";
   if (result.status === "ask_user") return "blocker";
   if (terminalRole === "discovery") return "discovery_needed";
+  if (result.observer?.status === "failed") return "observer_failed";
 
   return "unknown";
 }
