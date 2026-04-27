@@ -183,9 +183,11 @@ By default this only checks the patch. With `--write`, it applies the patch afte
 ```bash
 node dist/cli.js resume --run-dir runs/<timestamp>
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo
+node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute
+node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute --write
 ```
 
-This command is a local planner. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`.
+This command is a local planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`. With `--execute`, it runs only the selected local export/apply step. Applying still stays dry-run unless `--write` is also present.
 
 ### Run the included pilot task
 
@@ -267,7 +269,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 

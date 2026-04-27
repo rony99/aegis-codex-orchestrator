@@ -184,6 +184,17 @@ export type ResumePlan = {
   commands: string[];
 };
 
+export type ExecuteResumeOptions = ResumePlanOptions & {
+  write?: boolean;
+};
+
+export type ExecuteResumeResult = {
+  plan: ResumePlan;
+  executed: boolean;
+  exportResult?: ExportWorkspaceResult;
+  applyResult?: ApplyWorkspaceResult;
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
@@ -1294,6 +1305,39 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
       `codex-gtd export-workspace --run-dir ${shellQuote(runDir)}`,
     ],
   };
+}
+
+export async function executeResumePlan(options: ExecuteResumeOptions): Promise<ExecuteResumeResult> {
+  const plan = await buildResumePlan(options);
+  if (!plan.ready) {
+    throw new Error(`resume plan is not ready: ${plan.action}`);
+  }
+
+  if (plan.action === "export_workspace") {
+    return {
+      plan,
+      executed: true,
+      exportResult: await exportWorkspacePatch({ runDir: options.runDir }),
+    };
+  }
+
+  if (plan.action === "apply_workspace") {
+    if (!options.targetDir) {
+      throw new Error("resume apply requires targetDir");
+    }
+
+    return {
+      plan,
+      executed: true,
+      applyResult: await applyWorkspacePatch({
+        runDir: options.runDir,
+        targetDir: options.targetDir,
+        write: options.write,
+      }),
+    };
+  }
+
+  throw new Error(`resume action is not executable: ${plan.action}`);
 }
 
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {

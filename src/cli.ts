@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -15,6 +15,7 @@ type ParsedArgs = {
   outFile?: string;
   targetDir?: string;
   write?: boolean;
+  execute?: boolean;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
@@ -121,6 +122,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--execute") {
+      parsed.execute = true;
+      continue;
+    }
+
     if (arg === "--observe") {
       parsed.observe = true;
       continue;
@@ -200,7 +206,7 @@ Usage:
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -328,6 +334,16 @@ function printResumePlan(plan: ResumePlan): void {
     for (const command of plan.commands) {
       console.log(`- ${command}`);
     }
+  }
+}
+
+function printResumeExecution(result: ExecuteResumeResult): void {
+  console.log(`Executed: ${result.plan.action}`);
+  if (result.exportResult) {
+    printWorkspaceExport(result.exportResult);
+  }
+  if (result.applyResult) {
+    printWorkspaceApply(result.applyResult);
   }
 }
 
@@ -490,6 +506,17 @@ async function main(): Promise<void> {
   if (args.command === "resume") {
     if (!args.runDir) {
       throw new Error("resume requires --run-dir <run-dir>");
+    }
+
+    if (args.execute) {
+      const result = await executeResumePlan({
+        runDir: args.runDir,
+        targetDir: args.targetDir,
+        write: args.write,
+      });
+      printResumePlan(result.plan);
+      printResumeExecution(result);
+      return;
     }
 
     const plan = await buildResumePlan({

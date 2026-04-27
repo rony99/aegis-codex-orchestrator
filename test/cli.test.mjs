@@ -11,6 +11,7 @@ import {
   buildResumePlan,
   evaluateCloseoutGate,
   applyWorkspacePatch,
+  executeResumePlan,
   exportWorkspacePatch,
   resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
@@ -150,7 +151,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
-  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\]/);
+  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -701,6 +702,102 @@ test("resume delegates failed runs to repair-plan", async () => {
     assert.equal(cliResult.status, 1);
     assert.match(cliResult.stdout, /Source: repair-plan/);
     assert.match(cliResult.stdout, /Action: rerun/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute exports completed workspace output", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-execute-export-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+
+    const result = await executeResumePlan({ runDir });
+    assert.equal(result.plan.action, "export_workspace");
+    assert.equal(result.executed, true);
+    assert.equal(result.exportResult?.fileCount, 1);
+    assert.match(await readFile(path.join(runDir, "workspace.patch"), "utf8"), /diff --git a\/tool\.js b\/tool\.js/);
+
+    const cliResult = runCli(["resume", "--run-dir", runDir, "--execute"]);
+    assert.equal(cliResult.status, 0);
+    assert.match(cliResult.stdout, /Executed: export_workspace/);
+    assert.match(cliResult.stdout, /Workspace patch:/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute applies only when target and write are explicit", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-execute-apply-"));
+  const targetDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-execute-target-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    execFileSync("git", ["init"], { cwd: targetDir, stdio: "ignore" });
+
+    const dryRun = await executeResumePlan({ runDir, targetDir });
+    assert.equal(dryRun.plan.action, "apply_workspace");
+    assert.equal(dryRun.executed, true);
+    assert.equal(dryRun.applyResult?.applied, false);
+    await assert.rejects(
+      () => readFile(path.join(targetDir, "tool.js"), "utf8"),
+      /ENOENT/,
+    );
+
+    const cliWrite = runCli(["resume", "--run-dir", runDir, "--target", targetDir, "--execute", "--write"]);
+    assert.equal(cliWrite.status, 0);
+    assert.match(cliWrite.stdout, /Executed: apply_workspace/);
+    assert.match(cliWrite.stdout, /Mode: write/);
+    assert.equal(await readFile(path.join(targetDir, "tool.js"), "utf8"), "console.log('tool');\n");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute refuses non-ready repair plans", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-execute-refuse-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    await assert.rejects(
+      () => executeResumePlan({ runDir }),
+      /resume plan is not ready/,
+    );
+
+    const cliResult = runCli(["resume", "--run-dir", runDir, "--execute"]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stderr, /resume plan is not ready/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

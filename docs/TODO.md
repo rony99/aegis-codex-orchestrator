@@ -14,7 +14,7 @@
   - `codex-gtd repair-plan --run-dir <run-dir>`
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
-  - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]`
+  - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
 - [x] Codex SDK web search 接入:
@@ -144,10 +144,11 @@
   - `--write` 才实际写入目标 repo
   - 目标必须是 git repo 且工作区干净，否则阻断
 - [x] local resume planner:
-  - `resume --run-dir <run-dir> [--target <repo-dir>]`
+  - `resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]`
   - completed run + workspace 输出: 建议 `export_workspace`
   - completed run + target repo: 建议 `apply_workspace`
   - failed run: 委托 `repair-plan` 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`
+  - `--execute` 只执行本地 export/apply step；apply 仍默认 dry-run，只有 `--write` 才写目标 repo
 - [x] SDK/model failure classification:
   - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`

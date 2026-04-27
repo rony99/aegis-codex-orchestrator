@@ -234,7 +234,7 @@ TODO:
 - 已完成: `repair-plan --run-dir` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`。
 - 已完成: `export-workspace --run-dir` 安全导出命令，把 run `workspace/` 文本文件生成可审查 git-style patch，为后续 guarded apply/resume 做准备。
 - 已完成: `apply-workspace --run-dir --target [--write]` guarded apply 命令；默认 dry-run，目标必须是干净 git repo，`git apply --check` 通过后才允许 `--write`。
-- 已完成: `resume --run-dir [--target]` 本地 planner，把 completed runs 路由到 `export_workspace` / `apply_workspace`，把 failed runs 委托给 `repair-plan`。
+- 已完成: `resume --run-dir [--target] [--execute] [--write]` 本地 planner/executor，把 completed runs 路由到 `export_workspace` / `apply_workspace`，把 failed runs 委托给 `repair-plan`；`--execute` 只执行本地步骤，不恢复 SDK thread。
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
 - 已完成: manager 输入压缩，第二轮及后续 manager prompt 对 `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets` 有确定性长度上限，并保留 progress state、最新验证证据和 closeout gate 约束。
