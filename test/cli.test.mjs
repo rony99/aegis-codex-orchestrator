@@ -9,6 +9,7 @@ import {
   buildRunRepairPlan,
   buildRunSummary,
   evaluateCloseoutGate,
+  applyWorkspacePatch,
   exportWorkspacePatch,
   resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
@@ -147,6 +148,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
+  assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -559,6 +561,72 @@ test("export-workspace rejects empty workspaces", async () => {
     assert.match(cliResult.stderr, /workspace is empty/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("apply-workspace dry-runs by default and writes only with explicit flag", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-apply-workspace-"));
+  const targetDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-target-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-with-workspace", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-with-workspace");
+    await mkdir(path.join(runDir, "workspace", "src"), { recursive: true });
+    await writeFile(path.join(runDir, "workspace", "src", "cli.js"), "console.log('applied');\n", "utf8");
+    execFileSync("git", ["init"], { cwd: targetDir, stdio: "ignore" });
+
+    const dryRun = await applyWorkspacePatch({ runDir, targetDir });
+    assert.equal(dryRun.applied, false);
+    assert.equal(dryRun.fileCount, 1);
+    await assert.rejects(
+      () => readFile(path.join(targetDir, "src", "cli.js"), "utf8"),
+      /ENOENT/,
+    );
+
+    const cliDryRun = runCli(["apply-workspace", "--run-dir", runDir, "--target", targetDir]);
+    assert.equal(cliDryRun.status, 0);
+    assert.match(cliDryRun.stdout, /Mode: dry-run/);
+    assert.match(cliDryRun.stdout, /Patch check: passed/);
+
+    const applied = await applyWorkspacePatch({ runDir, targetDir, write: true });
+    assert.equal(applied.applied, true);
+    assert.equal(await readFile(path.join(targetDir, "src", "cli.js"), "utf8"), "console.log('applied');\n");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test("apply-workspace refuses dirty target repositories", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-apply-dirty-run-"));
+  const targetDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-apply-dirty-target-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-with-workspace", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-with-workspace");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    execFileSync("git", ["init"], { cwd: targetDir, stdio: "ignore" });
+    await writeFile(path.join(targetDir, "dirty.txt"), "untracked\n", "utf8");
+
+    await assert.rejects(
+      () => applyWorkspacePatch({ runDir, targetDir }),
+      /target repository has uncommitted changes/,
+    );
+
+    const cliResult = runCli(["apply-workspace", "--run-dir", runDir, "--target", targetDir, "--write"]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stderr, /target repository has uncommitted changes/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
   }
 });
 

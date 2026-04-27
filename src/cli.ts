@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { buildRunRepairPlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ExportWorkspaceResult, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, buildRunRepairPlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExportWorkspaceResult, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -13,6 +13,8 @@ type ParsedArgs = {
   slug?: string;
   title?: string;
   outFile?: string;
+  targetDir?: string;
+  write?: boolean;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
@@ -107,6 +109,18 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--target") {
+      if (!next) throw new Error("--target requires a repository directory");
+      parsed.targetDir = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--write") {
+      parsed.write = true;
+      continue;
+    }
+
     if (arg === "--observe") {
       parsed.observe = true;
       continue;
@@ -185,6 +199,7 @@ Usage:
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
+  codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -278,6 +293,16 @@ function printWorkspaceExport(result: ExportWorkspaceResult): void {
   console.log(`Workspace patch: ${result.outFile}`);
   console.log(`Run directory: ${result.runDir}`);
   console.log(`Workspace directory: ${result.workspaceDir}`);
+  console.log(`Files: ${result.fileCount}`);
+  console.log(`Bytes: ${result.byteCount}`);
+}
+
+function printWorkspaceApply(result: ApplyWorkspaceResult): void {
+  console.log(`Workspace patch: ${result.patchFile}`);
+  console.log(`Run directory: ${result.runDir}`);
+  console.log(`Target directory: ${result.targetDir}`);
+  console.log(`Mode: ${result.applied ? "write" : "dry-run"}`);
+  console.log("Patch check: passed");
   console.log(`Files: ${result.fileCount}`);
   console.log(`Bytes: ${result.byteCount}`);
 }
@@ -417,6 +442,24 @@ async function main(): Promise<void> {
       outFile: args.outFile,
     });
     printWorkspaceExport(result);
+    return;
+  }
+
+  if (args.command === "apply-workspace") {
+    if (!args.runDir) {
+      throw new Error("apply-workspace requires --run-dir <run-dir>");
+    }
+    if (!args.targetDir) {
+      throw new Error("apply-workspace requires --target <repo-dir>");
+    }
+
+    const result = await applyWorkspacePatch({
+      runDir: args.runDir,
+      targetDir: args.targetDir,
+      patchFile: args.outFile,
+      write: args.write,
+    });
+    printWorkspaceApply(result);
     return;
   }
 

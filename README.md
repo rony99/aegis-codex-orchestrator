@@ -69,6 +69,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
 - `codex-gtd repair-plan --run-dir <run-dir>`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
+- `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -102,6 +103,7 @@ The manager decides one next action at a time:
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
+- Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -164,6 +166,15 @@ node dist/cli.js export-workspace --run-dir runs/<timestamp> --out workspace.pat
 ```
 
 This writes a git-style patch for text files under the run's `workspace/`. It is intentionally review-first: inspect the patch and run `git apply --check workspace.patch` in the target repository before applying it.
+
+### Safely apply generated workspace output
+
+```bash
+node dist/cli.js apply-workspace --run-dir runs/<timestamp> --target /path/to/repo
+node dist/cli.js apply-workspace --run-dir runs/<timestamp> --target /path/to/repo --write
+```
+
+By default this only checks the patch. With `--write`, it applies the patch after verifying that the target is a git repository, the target working tree is clean, and `git apply --check` passes.
 
 ### Run the included pilot task
 
@@ -244,6 +255,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
+  codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
@@ -313,7 +325,7 @@ Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
 - Turn `repair-plan` into actual `resume` once role checkpoints are precise enough.
-- Add a guarded apply flow on top of `export-workspace`.
+- Add resume orchestration on top of `repair-plan`, `export-workspace`, and `apply-workspace`.
 - Run more medium/large dogfood passes now that observer and manager input are compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.

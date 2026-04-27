@@ -1,4 +1,5 @@
 import { Codex, type Thread, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
+import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -145,6 +146,22 @@ export type ExportWorkspaceResult = {
   outFile: string;
   fileCount: number;
   byteCount: number;
+};
+
+export type ApplyWorkspaceOptions = {
+  runDir: string;
+  targetDir: string;
+  patchFile?: string;
+  write?: boolean;
+};
+
+export type ApplyWorkspaceResult = {
+  runDir: string;
+  targetDir: string;
+  patchFile: string;
+  fileCount: number;
+  byteCount: number;
+  applied: boolean;
 };
 
 export type ObserveResult = {
@@ -1176,6 +1193,31 @@ export async function exportWorkspacePatch(options: ExportWorkspaceOptions): Pro
   };
 }
 
+export async function applyWorkspacePatch(options: ApplyWorkspaceOptions): Promise<ApplyWorkspaceResult> {
+  const targetDir = path.resolve(options.targetDir);
+  assertCleanGitTarget(targetDir);
+
+  const exportResult = await exportWorkspacePatch({
+    runDir: options.runDir,
+    outFile: options.patchFile,
+  });
+
+  runGit(targetDir, ["apply", "--check", exportResult.outFile]);
+
+  if (options.write) {
+    runGit(targetDir, ["apply", exportResult.outFile]);
+  }
+
+  return {
+    runDir: exportResult.runDir,
+    targetDir,
+    patchFile: exportResult.outFile,
+    fileCount: exportResult.fileCount,
+    byteCount: exportResult.byteCount,
+    applied: Boolean(options.write),
+  };
+}
+
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
   let entries: string[];
   try {
@@ -1275,6 +1317,37 @@ function toPatchPath(value: string): string {
 
 function isLikelyBinary(buffer: Buffer): boolean {
   return buffer.includes(0);
+}
+
+function assertCleanGitTarget(targetDir: string): void {
+  try {
+    runGit(targetDir, ["rev-parse", "--is-inside-work-tree"]);
+  } catch {
+    throw new Error("target must be a git repository");
+  }
+
+  const status = runGit(targetDir, ["status", "--porcelain"]);
+  if (status.trim().length > 0) {
+    throw new Error("target repository has uncommitted changes");
+  }
+}
+
+function runGit(cwd: string, args: string[]): string {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "stderr" in error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
+      if (stderr) {
+        throw new Error(stderr);
+      }
+    }
+    throw error;
+  }
 }
 
 function isRunSummary(value: unknown): value is RunSummary {
