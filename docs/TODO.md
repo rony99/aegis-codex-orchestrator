@@ -482,6 +482,8 @@
   - status: `ask_user`
   - reason: researcher SDK reconnect failure, `Reconnecting... 2/5 (timeout waiting for child process to exit)`
   - finding: SDK failed before researcher wrote `spec.md`, `interfaces.md`, or `api-probes/README.md`; status now keeps protocol health `unhealthy` but recommends `inspect` with `smoke` and rerun commands instead of dead-end `repair_protocol`
+  - retry with a smaller task and empty snippets dir also failed at researcher with the same SDK stream reconnect message before writing protocol artifacts
+  - follow-up: SDK reconnect/stream/subprocess failures now get dedicated diagnostic classification `sdk_reconnect_failed` instead of generic `sdk_error`
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
 
 ## 当前判断

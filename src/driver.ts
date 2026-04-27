@@ -2926,6 +2926,12 @@ function diagnoseThreadItem(item: ThreadItem): { classification: string; detail:
 }
 
 function diagnoseFailureReason(reason: string): { classification: string; detail: string } {
+  if (isSdkReconnectReason(reason)) {
+    return {
+      classification: "sdk_reconnect_failed",
+      detail: `Codex SDK stream reconnected or disconnected before the turn completed: ${reason}`,
+    };
+  }
   if (isPermissionOrApprovalReason(reason)) {
     return {
       classification: "permission_or_approval_blocked",
@@ -2933,6 +2939,14 @@ function diagnoseFailureReason(reason: string): { classification: string; detail
     };
   }
   return { classification: "sdk_error", detail: reason };
+}
+
+function isSdkReconnectReason(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  return normalized.includes("reconnecting")
+    || normalized.includes("stream disconnected")
+    || normalized.includes("connection reset")
+    || normalized.includes("timeout waiting for child process to exit");
 }
 
 function isPermissionOrApprovalReason(reason: string): boolean {

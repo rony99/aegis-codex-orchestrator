@@ -1687,6 +1687,71 @@ test("resume execute classifies permission waits as user-action blockers", async
   }
 });
 
+test("resume execute classifies sdk reconnect stream failures distinctly", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-reconnect-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-reconnect",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "error",
+                  message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "ask_user");
+
+    const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
+    const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
+    assert.equal(errorLog.diagnostic.classification, "sdk_reconnect_failed");
+    assert.match(errorLog.diagnostic.detail, /Codex SDK stream reconnected or disconnected/);
+
+    const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
+    assert.equal(statusResult.status, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.diagnostic.classification, "sdk_reconnect_failed");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("run summary captures machine-readable terminal state", () => {
   const summary = buildRunSummary({
     runDir: "/tmp/aegis-run",
