@@ -3002,6 +3002,7 @@ async function runRoleWithModel(
       endedAt,
       threadId: thread.id,
       diagnostic: diagnosticError?.diagnostic,
+      eventTraceFile: diagnosticError?.eventTraceFile,
     });
 
     if (fallbackModel) {
@@ -3069,6 +3070,7 @@ async function runObserverRole(
       endedAt,
       threadId: thread.id,
       diagnostic: diagnosticError?.diagnostic,
+      eventTraceFile: diagnosticError?.eventTraceFile,
     });
 
     return { ok: false, reason };
@@ -3092,10 +3094,31 @@ export type RoleRunDiagnostic = {
   lastItem?: unknown;
 };
 
+type RoleRunEventTraceEvent = {
+  index: number;
+  receivedAt: string;
+  event: ThreadEvent;
+  classification: string;
+  detail: string;
+};
+
+type RoleRunEventTrace = {
+  role: string;
+  model: string;
+  threadId: string | null;
+  status: RoleRunDiagnostic["status"];
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  events: RoleRunEventTraceEvent[];
+  diagnostic: RoleRunDiagnostic;
+};
+
 class ThreadRunDiagnosticError extends Error {
   constructor(
     readonly cause: unknown,
     readonly diagnostic: RoleRunDiagnostic,
+    readonly eventTraceFile?: string,
   ) {
     super(summarizeError(cause));
   }
@@ -3123,8 +3146,10 @@ async function runThreadWithDiagnostics(
   let lastItem: ThreadItem | undefined;
   let classification = "waiting_for_first_sdk_event";
   let detail = "No SDK event has been received yet; this is usually model startup or queueing until the turn timeout expires.";
+  const traceEvents: RoleRunEventTraceEvent[] = [];
 
   const diagnosticPath = roleInflightDiagnosticPath(context.runDir, options.startedAt, options.role);
+  const eventTracePath = roleEventTracePath(context.runDir, options.startedAt, options.role);
   const currentDiagnostic = (status: RoleRunDiagnostic["status"]): RoleRunDiagnostic => {
     const now = Date.now();
     return {
@@ -3145,6 +3170,19 @@ async function runThreadWithDiagnostics(
   const writeDiagnostic = async (status: RoleRunDiagnostic["status"]) => {
     await writeRoleInflightDiagnostic(diagnosticPath, currentDiagnostic(status));
   };
+  const writeEventTrace = async (status: RoleRunDiagnostic["status"], diagnostic: RoleRunDiagnostic) => {
+    await writeRoleEventTrace(eventTracePath, {
+      role: options.role,
+      model: options.model,
+      threadId: options.thread.id,
+      status,
+      startedAt: options.startedAt,
+      endedAt: diagnostic.lastUpdatedAt,
+      durationMs: Math.max(0, Date.parse(diagnostic.lastUpdatedAt) - Date.parse(options.startedAt)),
+      events: traceEvents,
+      diagnostic,
+    });
+  };
 
   await writeDiagnostic("running");
   const heartbeat = setInterval(() => {
@@ -3161,7 +3199,9 @@ async function runThreadWithDiagnostics(
       );
       classification = "turn_completed";
       detail = "The SDK turn completed through the buffered run() fallback.";
-      await writeDiagnostic("completed");
+      const diagnostic = currentDiagnostic("completed");
+      await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
+      await writeEventTrace("completed", diagnostic);
       return turn;
     }
 
@@ -3185,6 +3225,13 @@ async function runThreadWithDiagnostics(
       if ("item" in event) {
         lastItem = event.item;
       }
+      traceEvents.push({
+        index: traceEvents.length,
+        receivedAt: new Date(eventAt).toISOString(),
+        event,
+        classification,
+        detail,
+      });
       await writeDiagnostic("running");
 
       if (event.type === "item.completed") {
@@ -3209,7 +3256,9 @@ async function runThreadWithDiagnostics(
 
     classification = "turn_completed";
     detail = "The SDK turn completed.";
-    await writeDiagnostic("completed");
+    const diagnostic = currentDiagnostic("completed");
+    await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
+    await writeEventTrace("completed", diagnostic);
     return { items, finalResponse, usage };
   } catch (error) {
     if (options.signal.aborted && classification !== "command_running" && classification !== "mcp_tool_running") {
@@ -3223,7 +3272,8 @@ async function runThreadWithDiagnostics(
     }
     const diagnostic = currentDiagnostic("failed");
     await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
-    throw new ThreadRunDiagnosticError(error, diagnostic);
+    await writeEventTrace("failed", diagnostic);
+    throw new ThreadRunDiagnosticError(error, diagnostic, eventTracePath);
   } finally {
     clearInterval(heartbeat);
   }
@@ -3323,9 +3373,19 @@ function roleInflightDiagnosticPath(runDir: string, startedAt: string, role: str
   return path.join(runDir, "session-log", "inflight", `${safeStartedAt}-${role}.json`);
 }
 
+function roleEventTracePath(runDir: string, startedAt: string, role: string): string {
+  const safeStartedAt = startedAt.replaceAll(":", "-");
+  return path.join(runDir, "session-log", "events", `${safeStartedAt}-${role}.json`);
+}
+
 async function writeRoleInflightDiagnostic(file: string, diagnostic: RoleRunDiagnostic): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
+}
+
+async function writeRoleEventTrace(file: string, trace: RoleRunEventTrace): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(trace, null, 2)}\n`, "utf8");
 }
 
 async function readLatestInflightDiagnostic(runDir: string): Promise<RoleRunDiagnostic | undefined> {
@@ -3490,6 +3550,7 @@ async function writeRoleErrorLog(
     endedAt: string;
     threadId: string | null;
     diagnostic?: RoleRunDiagnostic;
+    eventTraceFile?: string;
   },
 ): Promise<void> {
   const safeStartedAt = entry.startedAt.replaceAll(":", "-");
@@ -3515,6 +3576,7 @@ async function writeRoleErrorLog(
             ? { name: entry.error.name, message: entry.error.message }
             : String(entry.error),
         diagnostic: entry.diagnostic,
+        eventTraceFile: entry.eventTraceFile,
       },
       null,
       2,

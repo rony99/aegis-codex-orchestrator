@@ -1774,6 +1774,17 @@ test("resume execute records streamed role diagnostics while a turn is running",
     assert.equal(diagnostic.status, "completed");
     assert.equal(diagnostic.classification, "turn_completed");
     assert.equal(diagnostic.lastEventType, "turn.completed");
+
+    const eventEntries = await readdir(path.join(runDir, "session-log", "events"));
+    assert.equal(eventEntries.length, 1);
+    const eventTrace = JSON.parse(await readFile(path.join(runDir, "session-log", "events", eventEntries[0]), "utf8"));
+    assert.equal(eventTrace.role, "manager");
+    assert.equal(eventTrace.model, "gpt-5.4");
+    assert.equal(eventTrace.threadId, "thread-manager-streamed");
+    assert.equal(eventTrace.events.length, 5);
+    assert.equal(eventTrace.events[0].event.type, "thread.started");
+    assert.equal(eventTrace.events.at(-1).event.type, "turn.completed");
+    assert.equal(eventTrace.events.at(-1).classification, "turn_completed");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -1898,11 +1909,88 @@ test("resume execute classifies sdk reconnect stream failures distinctly", async
     const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
     assert.equal(errorLog.diagnostic.classification, "sdk_reconnect_failed");
     assert.match(errorLog.diagnostic.detail, /Codex SDK stream reconnected or disconnected/);
+    assert.match(errorLog.eventTraceFile, /session-log\/events\/.+-manager\.json$/);
+
+    const eventTrace = JSON.parse(await readFile(errorLog.eventTraceFile, "utf8"));
+    assert.equal(eventTrace.status, "failed");
+    assert.equal(eventTrace.role, "manager");
+    assert.equal(eventTrace.events.length, 3);
+    assert.equal(eventTrace.events.at(-1).event.type, "error");
+    assert.equal(eventTrace.events.at(-1).classification, "sdk_reconnect_failed");
 
     const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
     assert.equal(statusResult.status, 0);
     const status = JSON.parse(statusResult.stdout);
     assert.equal(status.diagnostic.classification, "sdk_reconnect_failed");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute preserves event trace when a turn times out after sdk events", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-timeout-trace-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-timeout-trace",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed(_prompt, runOptions) {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                await new Promise((_, reject) => {
+                  runOptions.signal.addEventListener("abort", () => {
+                    const error = new Error("The operation was aborted");
+                    error.name = "AbortError";
+                    reject(error);
+                  }, { once: true });
+                });
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 10,
+    });
+
+    assert.equal(result.runResult?.status, "ask_user");
+
+    const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
+    const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
+    assert.equal(errorLog.diagnostic.classification, "idle_until_turn_timeout");
+    assert.match(errorLog.eventTraceFile, /session-log\/events\/.+-manager\.json$/);
+
+    const eventTrace = JSON.parse(await readFile(errorLog.eventTraceFile, "utf8"));
+    assert.equal(eventTrace.status, "failed");
+    assert.equal(eventTrace.events.length, 2);
+    assert.equal(eventTrace.events.at(-1).event.type, "turn.started");
+    assert.equal(eventTrace.diagnostic.classification, "idle_until_turn_timeout");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
