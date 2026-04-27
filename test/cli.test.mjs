@@ -559,6 +559,11 @@ test("status reclassifies historical observer-failed sdk reconnect summaries", a
         status: "failed",
         reason: "Observer failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
       },
+      options: {
+        observe: true,
+        monitorSdk: false,
+        skipDiscovery: true,
+      },
       endedAt: "2026-04-24T00:00:03.000Z",
     });
     const runDir = path.join(runsDir, "run-reconnect");
@@ -578,6 +583,7 @@ test("status reclassifies historical observer-failed sdk reconnect summaries", a
     assert.match(plan.summary, /Codex SDK\/CLI failed/);
     assert.ok(plan.commands.some((command) => command.includes("codex-gtd smoke --model gpt-5.4")));
     assert.ok(plan.commands.some((command) => command.includes("codex-gtd run --task")));
+    assert.ok(plan.commands.some((command) => command.includes("--skip-discovery")));
 
     const result = runCli(["status", "--run-dir", runDir]);
 
@@ -588,6 +594,7 @@ test("status reclassifies historical observer-failed sdk reconnect summaries", a
     assert.match(result.stdout, /Recommended action: inspect/);
     assert.match(result.stdout, /Codex SDK\/CLI failed/);
     assert.match(result.stdout, /codex-gtd smoke --model gpt-5\.4/);
+    assert.match(result.stdout, /--skip-discovery/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

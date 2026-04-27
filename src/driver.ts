@@ -1208,7 +1208,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       issues: summary.reason ? [summary.reason] : [],
       commands: [
         `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor`,
+        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor${summary.options.skipDiscovery ? " --skip-discovery" : ""}`,
       ],
     };
   }
