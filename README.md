@@ -67,10 +67,11 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd observe --run-dir <run-dir> [--model <model>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]`
 - `codex-gtd run --task <task-file> ... --observe`
 - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
-- `codex-gtd repair-plan --run-dir <run-dir>`
+- `codex-gtd status --run-dir <run-dir> [--json]`
+- `codex-gtd repair-plan --run-dir <run-dir> [--json]`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
-- `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]`
+- `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -96,16 +97,18 @@ The manager decides one next action at a time:
 - Driver-level closeout gate before accepting `done`, checking protocol files, API probe sections, workspace output, and verification evidence.
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
+- Streaming role diagnostics in `session-log/inflight/` so long-running turns can be distinguished from no SDK events, active commands/tools, timeout, or permission/approval failures.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Bounded manager prompt context so long `progress.md`, probe notes, and snippets do not make later manager turns unnecessarily large.
 - Role-level fallback from spark to `gpt-5.4` for unsupported tool/model errors and spark turn timeouts.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
+- Status command (`codex-gtd status`) for one-run diagnostics, including protocol health, latest inflight role diagnosis, and the recommended next operator action.
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
-- Resume command (`codex-gtd resume`) that chooses the next local recovery step without invoking Codex or writing target files.
+- Resume command (`codex-gtd resume`) that routes completed runs to export/apply and recoverable failed runs to SDK-backed continuation using saved role thread IDs.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -153,13 +156,23 @@ The report command is local-only. It reads `run-summary.json` files and prints a
 
 It also reports snippet usage from each run's `spec.md` `Snippet Decision` section, so you can see whether promoted snippets are actually being reused.
 
+### Inspect one run
+
+```bash
+node dist/cli.js status --run-dir runs/<timestamp>
+node dist/cli.js status --run-dir runs/<timestamp> --json
+```
+
+The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `rerun`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`. Use `--json` when a script or monitor needs machine-readable output.
+
 ### Get a repair plan for a failed run
 
 ```bash
 node dist/cli.js repair-plan --run-dir runs/<timestamp>
+node dist/cli.js repair-plan --run-dir runs/<timestamp> --json
 ```
 
-This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`.
+This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`. Rerun commands preserve recorded `--skip-discovery` and `--web-search` options when the failed run captured them. Use `--json` for machine-readable recovery plans.
 
 ### Export generated workspace output
 
@@ -185,9 +198,12 @@ node dist/cli.js resume --run-dir runs/<timestamp>
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute --write
+node dist/cli.js resume --run-dir runs/<timestamp> --execute --model gpt-5.4 --turn-timeout-ms 600000 --observe
 ```
 
-This command is a local planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`. With `--execute`, it runs only the selected local export/apply step. Applying still stays dry-run unless `--write` is also present.
+This command is a planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs with `turn_timeout`, `unsupported_tool`, `role_failed`, `invalid_manager_decision`, or `max_loops`, it plans `resume_sdk` when a saved non-observer role `threadId` exists in `session-log/`. With `--execute`, `resume_sdk` reconstructs that Codex SDK thread and appends continuation output to the original run directory. Applying workspace output still stays dry-run unless `--write` is also present.
+
+Resume does not bypass user blockers: `blocker`, `discovery_needed`, `sdk_failed`, `observer_failed`, missing protocol files, protocol drift, or missing local Codex session IDs still require repair, user input, or a fresh run. Timeout threads that only reached `turn.started` and completed no SDK work are also treated as rerun-only because resuming that incomplete turn can reconnect to a broken SDK stream.
 
 ### Run the included pilot task
 
@@ -266,10 +282,11 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
-  codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd status --run-dir <run-dir> [--json]
+  codex-gtd repair-plan --run-dir <run-dir> [--json]
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
@@ -338,7 +355,6 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Turn local `resume` planning into SDK-backed continuation once role checkpoints are precise enough.
 - Run more medium/large dogfood passes now that observer and manager input are compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.

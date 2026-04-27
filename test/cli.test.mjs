@@ -9,6 +9,7 @@ import {
   buildRunRepairPlan,
   buildRunSummary,
   buildResumePlan,
+  classifyRunFailure,
   evaluateCloseoutGate,
   applyWorkspacePatch,
   executeResumePlan,
@@ -148,13 +149,14 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
-  assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
+  assert.match(output, /codex-gtd repair-plan --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
-  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\]/);
+  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\] \[--model <model>\] \[--web-search <disabled\|cached\|live>\] \[--snippets-dir <dir>\] \[--turn-timeout-ms <ms>\] \[--max-loops <n>\] \[--observe\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
+  assert.match(output, /codex-gtd status --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
 
@@ -330,6 +332,352 @@ Reason: Task has no HTTP dependency.
   }
 });
 
+test("status recommends workspace export for a completed run", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-done-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      reason: "finished with verification",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Run status:/);
+    assert.match(result.stdout, /Terminal status: done/);
+    assert.match(result.stdout, /Failure category: none/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: export_workspace/);
+    assert.match(result.stdout, /codex-gtd export-workspace --run-dir/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status can emit machine-readable json", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-json-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      reason: "finished with verification",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir, "--json"]);
+
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.stdout, /Run status:/);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.runDir, runDir);
+    assert.equal(parsed.terminalStatus, "done");
+    assert.equal(parsed.failureCategory, "none");
+    assert.equal(parsed.protocolHealth, "clean");
+    assert.equal(parsed.recommendedAction, "export_workspace");
+    assert.ok(parsed.commands.some((command) => command.includes("codex-gtd export-workspace")));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status surfaces inflight diagnostics for a currently running turn", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-running-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-running");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await mkdir(path.join(runDir, "session-log", "inflight"), { recursive: true });
+    await writeFile(path.join(runDir, "session-log", "inflight", "2026-04-24T00-00-01-manager.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-running",
+      status: "running",
+      startedAt: "2026-04-24T00:00:01.000Z",
+      lastUpdatedAt: "2026-04-24T00:00:31.000Z",
+      lastEventAt: "2026-04-24T00:00:30.000Z",
+      idleMs: 1000,
+      classification: "command_running",
+      detail: "Command is still running: npm test",
+      lastEventType: "item.started",
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: running/);
+    assert.match(result.stdout, /Current diagnosis: command_running/);
+    assert.match(result.stdout, /Diagnostic detail: Command is still running: npm test/);
+    assert.match(result.stdout, /Recommended action: wait/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status treats progress drift as pending while a turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-running-drift-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-resuming", {
+      status: "ask_user",
+      reason: "Manager failed before resume",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-resuming");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "running",
+      lastUpdatedAt: "2026-04-24T00:00:31.000Z",
+      lastRole: "driver",
+      loop: 2,
+      terminal: false,
+      reason: undefined,
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await mkdir(path.join(runDir, "session-log", "inflight"), { recursive: true });
+    await writeFile(path.join(runDir, "session-log", "inflight", "2026-04-24T00-00-31-manager.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-running",
+      status: "running",
+      startedAt: "2026-04-24T00:00:31.000Z",
+      lastUpdatedAt: "2026-04-24T00:01:01.000Z",
+      lastEventAt: "2026-04-24T00:01:00.000Z",
+      idleMs: 1000,
+      classification: "model_running",
+      detail: "The SDK turn started and is waiting for model/tool events.",
+      lastEventType: "turn.started",
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: running/);
+    assert.match(result.stdout, /Protocol health: pending/);
+    assert.doesNotMatch(result.stdout, /Progress\/run-summary drift/);
+    assert.match(result.stdout, /Recommended action: wait/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends sdk resume for a recoverable failed run", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-resume-sdk-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.3-codex-spark",
+      threadId: "thread-manager-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "manager prompt",
+      error: { name: "AbortError", message: "The operation was aborted" },
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Failure category: turn_timeout/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: resume_sdk/);
+    assert.match(result.stdout, /codex-gtd resume --run-dir/);
+    assert.match(result.stdout, /--execute/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends rerun for timeout threads without completed sdk work", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-incomplete-timeout-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "manager prompt",
+      diagnostic: {
+        classification: "idle_until_turn_timeout",
+        lastEventType: "turn.started",
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir, "--json"]);
+
+    assert.equal(result.status, 0);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.protocolHealth, "clean");
+    assert.equal(status.recommendedAction, "rerun");
+    assert.match(status.summary, /timed out before completing any SDK work/);
+    assert.ok(status.commands.some((command) => command.includes("codex-gtd run --task")));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status prioritizes protocol repair for broken runs", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-repair-protocol-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-broken", {
+      status: "ask_user",
+      reason: "Manager failed: invalid decision",
+      failureCategory: "invalid_manager_decision",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-broken");
+    await rm(path.join(runDir, "interfaces.md"), { force: true });
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Protocol health: unhealthy/);
+    assert.match(result.stdout, /Missing required protocol entries: interfaces\.md/);
+    assert.match(result.stdout, /Recommended action: repair_protocol/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status recommends inspect when no summary exists and no turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-inspect-"));
+
+  try {
+    const runDir = path.join(runsDir, "run-no-summary");
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nNo-op implementation.\n", "utf8");
+    await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nNo-op interface.\n", "utf8");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: unknown/);
+    assert.match(result.stdout, /Failure category: unknown/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: inspect/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status reclassifies historical observer-failed sdk reconnect summaries", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-reconnect-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-reconnect", {
+      status: "ask_user",
+      reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      failureCategory: "observer_failed",
+      terminalRole: "observer",
+      observer: {
+        runDir: path.join(runsDir, "run-reconnect"),
+        status: "failed",
+        reason: "Observer failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      },
+      options: {
+        observe: true,
+        monitorSdk: false,
+        skipDiscovery: true,
+      },
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-reconnect");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "observer",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const plan = await buildRunRepairPlan({ runDir });
+    assert.equal(plan.action, "inspect");
+    assert.equal(plan.failureCategory, "sdk_failed");
+    assert.match(plan.summary, /Codex SDK\/CLI failed/);
+    assert.ok(plan.commands.some((command) => command.includes("codex-gtd smoke --model gpt-5.4")));
+    assert.ok(plan.commands.some((command) => command.includes("codex-gtd run --task")));
+    assert.ok(plan.commands.some((command) => command.includes("--skip-discovery")));
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Failure category: sdk_failed/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: inspect/);
+    assert.match(result.stdout, /Codex SDK\/CLI failed/);
+    assert.match(result.stdout, /codex-gtd smoke --model gpt-5\.4/);
+    assert.match(result.stdout, /--skip-discovery/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("parseSnippetDecision reads structured spec decisions", () => {
   assert.deepEqual(parseSnippetDecision(`# Spec
 
@@ -438,6 +786,12 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
       model: "gpt-5.3-codex-spark",
       taskFile: path.join(runsDir, "task.md"),
       turnTimeoutMs: 300000,
+      options: {
+        observe: false,
+        monitorSdk: true,
+        skipDiscovery: true,
+        webSearchMode: "live",
+      },
       metrics: {
         sessionLogEntries: 1,
         roleTurns: {
@@ -467,6 +821,8 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
     assert.deepEqual(plan.issues, []);
     assert.ok(plan.commands.some((command) => command.includes("--model gpt-5.4")));
     assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms 600000")));
+    assert.ok(plan.commands.some((command) => command.includes("--skip-discovery")));
+    assert.ok(plan.commands.some((command) => command.includes("--web-search live")));
 
     const result = runCli(["repair-plan", "--run-dir", runDir]);
     assert.equal(result.status, 0);
@@ -474,6 +830,17 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
     assert.match(result.stdout, /Action: rerun/);
     assert.match(result.stdout, /--model gpt-5\.4/);
     assert.match(result.stdout, /--turn-timeout-ms 600000/);
+    assert.match(result.stdout, /--skip-discovery/);
+    assert.match(result.stdout, /--web-search live/);
+
+    const jsonResult = runCli(["repair-plan", "--run-dir", runDir, "--json"]);
+    assert.equal(jsonResult.status, 0);
+    assert.doesNotMatch(jsonResult.stdout, /Repair plan:/);
+    const parsed = JSON.parse(jsonResult.stdout);
+    assert.equal(parsed.action, "rerun");
+    assert.equal(parsed.failureCategory, "turn_timeout");
+    assert.ok(parsed.commands.some((command) => command.includes("--skip-discovery")));
+    assert.ok(parsed.commands.some((command) => command.includes("--web-search live")));
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -669,8 +1036,96 @@ test("resume plans export or apply for completed runs with workspace output", as
   }
 });
 
-test("resume delegates failed runs to repair-plan", async () => {
+test("resume delegates user-blocked failed runs to repair-plan", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-failed-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-blocked", {
+      status: "ask_user",
+      reason: "Missing paid provider API key",
+      failureCategory: "blocker",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-blocked");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "blocked",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Missing paid provider API key",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const plan = await buildResumePlan({ runDir });
+
+    assert.equal(plan.action, "answer_user");
+    assert.equal(plan.ready, false);
+    assert.equal(plan.source, "repair-plan");
+    assert.equal(plan.commands.length, 0);
+
+    const cliResult = runCli(["resume", "--run-dir", runDir]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stdout, /Source: repair-plan/);
+    assert.match(cliResult.stdout, /Action: answer_user/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume plans sdk continuation for recoverable failed runs", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-plan-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.3-codex-spark",
+      threadId: "thread-manager-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "manager prompt",
+      error: { name: "AbortError", message: "The operation was aborted" },
+    }, null, 2)}\n`, "utf8");
+
+    const plan = await buildResumePlan({ runDir });
+
+    assert.equal(plan.action, "resume_sdk");
+    assert.equal(plan.ready, true);
+    assert.equal(plan.source, "resume");
+    assert.match(plan.summary, /Resume manager/);
+    assert.ok(plan.commands.some((command) => command.includes("resume")));
+    assert.ok(plan.commands.some((command) => command.includes("--execute")));
+
+    const cliResult = runCli(["resume", "--run-dir", runDir]);
+    assert.equal(cliResult.status, 0);
+    assert.match(cliResult.stdout, /Action: resume_sdk/);
+    assert.match(cliResult.stdout, /Ready: yes/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume blocks sdk continuation when recoverable run has no thread id", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-missing-thread-"));
 
   try {
     await writeHealthyRunSummary(runsDir, "run-timeout", {
@@ -693,15 +1148,74 @@ test("resume delegates failed runs to repair-plan", async () => {
 
     const plan = await buildResumePlan({ runDir });
 
-    assert.equal(plan.action, "rerun");
+    assert.equal(plan.action, "resume_sdk");
     assert.equal(plan.ready, false);
-    assert.equal(plan.source, "repair-plan");
-    assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms")));
+    assert.equal(plan.source, "resume");
+    assert.ok(plan.issues.some((issue) => issue.includes("No resumable thread")));
 
     const cliResult = runCli(["resume", "--run-dir", runDir]);
     assert.equal(cliResult.status, 1);
-    assert.match(cliResult.stdout, /Source: repair-plan/);
-    assert.match(cliResult.stdout, /Action: rerun/);
+    assert.match(cliResult.stdout, /Action: resume_sdk/);
+    assert.match(cliResult.stdout, /Ready: no/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume blocks sdk continuation for timeout threads without completed sdk work", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-incomplete-timeout-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Researcher failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "researcher",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "researcher",
+      loop: 0,
+      terminal: true,
+      reason: "Researcher failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-researcher-error.json"), `${JSON.stringify({
+      role: "researcher",
+      model: "gpt-5.4",
+      threadId: "thread-researcher-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "researcher prompt",
+      diagnostic: {
+        role: "researcher",
+        model: "gpt-5.4",
+        threadId: "thread-researcher-timeout",
+        status: "failed",
+        startedAt: "2026-04-24T00:00:02.000Z",
+        lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+        lastEventAt: "2026-04-24T00:00:02.100Z",
+        idleMs: 900,
+        classification: "idle_until_turn_timeout",
+        detail: "No SDK event arrived before the 1000ms turn timeout after turn.started.",
+        lastEventType: "turn.started",
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const plan = await buildResumePlan({ runDir });
+
+    assert.equal(plan.action, "resume_sdk");
+    assert.equal(plan.ready, false);
+    assert.ok(plan.issues.some((issue) => issue.includes("timed out before completing any SDK work")));
+
+    const cliResult = runCli(["resume", "--run-dir", runDir]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stdout, /Ready: no/);
+    assert.match(cliResult.stdout, /timed out before completing any SDK work/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -803,6 +1317,320 @@ test("resume execute refuses non-ready repair plans", async () => {
   }
 });
 
+test("resume execute continues a recoverable manager thread and rewrites terminal summary", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-execute-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.3-codex-spark",
+      threadId: "thread-manager-timeout",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+      error: { name: "AbortError", message: "The operation was aborted" },
+    }, null, 2)}\n`, "utf8");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), `${progress}\nVerification command: node workspace/tool.js\nVerification result: passed\n`, "utf8");
+
+    const resumedThreads = [];
+    const fakeCodex = {
+      resumeThread(threadId, options) {
+        resumedThreads.push({ threadId, options });
+        return {
+          id: threadId,
+          async run() {
+            return {
+              finalResponse: JSON.stringify({
+                next_action: "done",
+                target: "workspace/",
+                instructions: "finish",
+                reason: "resumed manager confirmed existing verification",
+              }),
+              usage: null,
+              items: [],
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+      maxLoops: 4,
+    });
+
+    assert.equal(result.plan.action, "resume_sdk");
+    assert.equal(result.executed, true);
+    assert.equal(result.runResult?.status, "done");
+    assert.deepEqual(resumedThreads.map((entry) => entry.threadId), ["thread-manager-timeout"]);
+    assert.equal(resumedThreads[0].options.workingDirectory, runDir);
+
+    const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+    assert.equal(summary.status, "done");
+    assert.equal(summary.failureCategory, "none");
+    assert.match(summary.reason, /resumed manager confirmed/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute continues max-loops runs from the next manager loop", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-max-loops-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-max-loops", {
+      status: "max_loops_reached",
+      reason: "Manager did not finish within 2 loop(s).",
+      failureCategory: "max_loops",
+      terminalRole: "manager",
+      maxLoops: 2,
+      endedAt: "2026-04-24T00:00:03.000Z",
+      metrics: {
+        sessionLogEntries: 2,
+        roleTurns: {
+          manager: 2,
+        },
+      },
+    });
+    const runDir = path.join(runsDir, "run-max-loops");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-loop-2",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      prompt: "manager loop 2 prompt",
+    }, null, 2)}\n`, "utf8");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager did not finish within 2 loop(s).",
+    });
+    await writeFile(path.join(runDir, "progress.md"), `${progress}\nVerification command: node workspace/tool.js\nVerification result: passed\n`, "utf8");
+
+    const prompts = [];
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async run(prompt) {
+            prompts.push(prompt);
+            return {
+              finalResponse: JSON.stringify({
+                next_action: "done",
+                target: "workspace/",
+                instructions: "finish",
+                reason: "resumed max loops from next manager loop",
+              }),
+              usage: null,
+              items: [],
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.plan.action, "resume_sdk");
+    assert.equal(result.plan.sdkTarget?.nextLoop, 3);
+    assert.equal(result.runResult?.status, "done");
+    assert.match(prompts[0], /Loop: 3/);
+
+    const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+    assert.equal(summary.status, "done");
+    assert.equal(summary.maxLoops, 3);
+    assert.match(summary.reason, /resumed max loops/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute records streamed role diagnostics while a turn is running", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-diagnostics-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-streamed",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+    await writeFile(path.join(runDir, "progress.md"), `${await readFile(path.join(runDir, "progress.md"), "utf8")}\nVerification command: node workspace/tool.js\nVerification result: passed\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "item.started",
+                  item: {
+                    id: "cmd-1",
+                    type: "command_execution",
+                    command: "node workspace/tool.js",
+                    aggregated_output: "",
+                    status: "in_progress",
+                  },
+                };
+                yield {
+                  type: "item.completed",
+                  item: {
+                    id: "msg-1",
+                    type: "agent_message",
+                    text: JSON.stringify({
+                      next_action: "done",
+                      target: "workspace/",
+                      instructions: "finish",
+                      reason: "streamed resume completed",
+                    }),
+                  },
+                };
+                yield {
+                  type: "turn.completed",
+                  usage: {
+                    input_tokens: 1,
+                    cached_input_tokens: 0,
+                    output_tokens: 1,
+                  },
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "done");
+
+    const inflightEntries = await readdir(path.join(runDir, "session-log", "inflight"));
+    assert.equal(inflightEntries.length, 1);
+    const diagnostic = JSON.parse(await readFile(path.join(runDir, "session-log", "inflight", inflightEntries[0]), "utf8"));
+    assert.equal(diagnostic.status, "completed");
+    assert.equal(diagnostic.classification, "turn_completed");
+    assert.equal(diagnostic.lastEventType, "turn.completed");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute classifies permission waits as user-action blockers", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-permission-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-manager-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-manager-timeout");
+    await writeFile(path.join(runDir, "session-log", "2026-04-24T00-00-02-manager-error.json"), `${JSON.stringify({
+      role: "manager",
+      model: "gpt-5.4",
+      threadId: "thread-manager-permission",
+      startedAt: "2026-04-24T00:00:02.000Z",
+      endedAt: "2026-04-24T00:00:03.000Z",
+      reason: "AbortError: The operation was aborted",
+      prompt: "old manager prompt",
+    }, null, 2)}\n`, "utf8");
+
+    const fakeCodex = {
+      resumeThread(threadId) {
+        return {
+          id: threadId,
+          async runStreamed() {
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: threadId };
+                yield { type: "turn.started" };
+                yield {
+                  type: "turn.failed",
+                  error: {
+                    message: "Permission denied: approval required for this operation",
+                  },
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await executeResumePlan({
+      runDir,
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+    });
+
+    assert.equal(result.runResult?.status, "ask_user");
+
+    const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
+    const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
+    assert.equal(errorLog.diagnostic.classification, "permission_or_approval_blocked");
+
+    const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+    assert.equal(summary.failureCategory, "blocker");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("run summary captures machine-readable terminal state", () => {
   const summary = buildRunSummary({
     runDir: "/tmp/aegis-run",
@@ -849,6 +1677,22 @@ test("run summary captures machine-readable terminal state", () => {
   assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
+});
+
+test("failure classification keeps sdk reconnect failures ahead of observer failures", () => {
+  const failureCategory = classifyRunFailure({
+    runDir: "/tmp/aegis-run",
+    status: "ask_user",
+    reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    observer: {
+      runDir: "/tmp/aegis-run",
+      status: "failed",
+      reason: "Observer failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    },
+    snippetCandidates: [],
+  }, "manager");
+
+  assert.equal(failureCategory, "sdk_failed");
 });
 
 test("resolveRoleFallbackModel falls back from spark on unsupported tool and timeout errors", () => {

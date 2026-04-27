@@ -1,4 +1,4 @@
-import { Codex, type Thread, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
+import { Codex, type Thread, type ThreadEvent, type ThreadItem, type Usage, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
 import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
@@ -23,6 +23,7 @@ const DEFAULT_RUNS_DIR = "runs";
 const DEFAULT_SNIPPETS_DIR = "snippets";
 const DEFAULT_MAX_LOOPS = 8;
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+const ROLE_HEARTBEAT_MS = 30_000;
 const DEFAULT_MONITOR_SDK = true;
 const SDK_MONITOR_DIR = ".codex-gtd";
 const SDK_MONITOR_FILE = "sdk-health-baseline.json";
@@ -172,7 +173,18 @@ export type ResumePlanOptions = {
 export type ResumePlanAction =
   | "export_workspace"
   | "apply_workspace"
+  | "resume_sdk"
   | RepairPlanAction;
+
+type ResumableRole = "researcher" | "manager" | "developer" | "tester";
+
+export type ResumeSdkTarget = {
+  role: ResumableRole;
+  threadId: string;
+  prompt?: string;
+  sessionLogFile: string;
+  nextLoop: number;
+};
 
 export type ResumePlan = {
   runDir: string;
@@ -182,10 +194,18 @@ export type ResumePlan = {
   summary: string;
   issues: string[];
   commands: string[];
+  sdkTarget?: ResumeSdkTarget;
 };
 
 export type ExecuteResumeOptions = ResumePlanOptions & {
   write?: boolean;
+  model?: string;
+  snippetsDir?: string;
+  observe?: boolean;
+  webSearchMode?: WebSearchMode;
+  turnTimeoutMs?: number;
+  maxLoops?: number;
+  codex?: CodexClient;
 };
 
 export type ExecuteResumeResult = {
@@ -193,6 +213,29 @@ export type ExecuteResumeResult = {
   executed: boolean;
   exportResult?: ExportWorkspaceResult;
   applyResult?: ApplyWorkspaceResult;
+  runResult?: RunResult;
+};
+
+export type RunStatusOptions = {
+  runDir: string;
+};
+
+export type RunStatusAction =
+  | "wait"
+  | ResumePlanAction;
+
+export type RunStatus = {
+  runDir: string;
+  terminalStatus: RunResult["status"] | "running" | "unknown";
+  failureCategory: FailureCategory;
+  reason?: string;
+  terminalRole?: string;
+  protocolHealth: "clean" | "pending" | "unhealthy";
+  protocolIssues: string[];
+  diagnostic?: RoleRunDiagnostic;
+  recommendedAction: RunStatusAction;
+  summary: string;
+  commands: string[];
 };
 
 export type ObserveResult = {
@@ -378,8 +421,10 @@ type DiscoveryDecision = {
   open_questions: string[];
 };
 
+export type CodexClient = Pick<Codex, "startThread" | "resumeThread">;
+
 type RunContext = {
-  codex: Codex;
+  codex: CodexClient;
   model: string;
   turnTimeoutMs: number;
   runDir: string;
@@ -391,7 +436,7 @@ type RunContext = {
 };
 
 type ObserverContext = {
-  codex: Codex;
+  codex: CodexClient;
   model: string;
   turnTimeoutMs: number;
   runDir: string;
@@ -735,10 +780,46 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     }, runMeta);
   }
 
+  const loopResult = await runExecutionLoop(context, maxLoops, 1);
+  const finalStatus = loopResult.status;
+  const finalReason = loopResult.reason;
+
+  const observer = options.observe
+    ? await safeRunObserver({
+      runDir,
+      model: options.model,
+      snippetsDir: options.snippetsDir,
+      turnTimeoutMs: options.turnTimeoutMs,
+      webSearchMode,
+    })
+    : undefined;
+
+  const snippetCandidates = finalStatus === "done" && observer?.status === "done"
+    ? await safeGenerateSnippetCandidates({
+      runDir,
+      snippetsDir,
+    })
+    : [];
+
+  return await finishRun(context, {
+    runDir,
+    status: finalStatus,
+    reason: finalReason,
+    observer,
+    snippetCandidates,
+    sdkMonitor,
+  }, runMeta);
+}
+
+async function runExecutionLoop(
+  context: RunContext,
+  maxLoops: number,
+  startLoop: number,
+): Promise<{ status: RunResult["status"]; reason?: string }> {
   let finalStatus: RunResult["status"] = "max_loops_reached";
   let finalReason: string | undefined;
 
-  for (let loop = 1; loop <= maxLoops; loop += 1) {
+  for (let loop = startLoop; loop <= maxLoops; loop += 1) {
     const managerRoleResult = await runRole(context, "manager", await managerPrompt(loop, context.runDir, context.snippetsDir));
     if (!managerRoleResult.ok) {
       const reason = `Manager failed: ${managerRoleResult.reason}`;
@@ -836,31 +917,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     await appendBlocker(context.runDir, finalReason);
   }
 
-  const observer = options.observe
-    ? await safeRunObserver({
-      runDir,
-      model: options.model,
-      snippetsDir: options.snippetsDir,
-      turnTimeoutMs: options.turnTimeoutMs,
-      webSearchMode,
-    })
-    : undefined;
-
-  const snippetCandidates = finalStatus === "done" && observer?.status === "done"
-    ? await safeGenerateSnippetCandidates({
-      runDir,
-      snippetsDir,
-    })
-    : [];
-
-  return await finishRun(context, {
-    runDir,
-    status: finalStatus,
-    reason: finalReason,
-    observer,
-    snippetCandidates,
-    sdkMonitor,
-  }, runMeta);
+  return { status: finalStatus, reason: finalReason };
 }
 
 async function runSdkHealthCheck(options: {
@@ -1116,7 +1173,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "The last run timed out. Re-run the original task with the stable model and a longer turn timeout.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --turn-timeout-ms ${timeoutMs} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL, turnTimeoutMs: timeoutMs }),
       ],
     };
   }
@@ -1133,7 +1190,25 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "The selected model hit an unsupported tool path. Re-run the task with the stable model.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
+      ],
+    };
+  }
+
+  if (failureCategory === "sdk_failed") {
+    return {
+      runDir,
+      action: "inspect",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Codex SDK/CLI failed locally. Check Codex CLI auth, local session health, and SDK smoke status before retrying resume or rerunning the task.",
+      issues: summary.reason ? [summary.reason] : [],
+      commands: [
+        `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
       ],
     };
   }
@@ -1165,7 +1240,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "Run reached the loop limit. Inspect progress.md, then re-run with a higher loop budget if the remaining work is clear.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${shellQuote(summary.model)} --max-loops ${summary.maxLoops + 2} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: summary.model, maxLoops: summary.maxLoops + 2 }),
       ],
     };
   }
@@ -1182,6 +1257,137 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
     issues: summary.reason ? [summary.reason] : [],
     commands: [],
   };
+}
+
+function buildRunRerunCommand(
+  summary: RunSummary,
+  options: { model: string; turnTimeoutMs?: number; maxLoops?: number },
+): string {
+  const parts = [
+    "codex-gtd",
+    "run",
+    "--task",
+    shellQuote(summary.taskFile),
+    "--model",
+    shellQuote(options.model),
+  ];
+  if (options.turnTimeoutMs !== undefined) {
+    parts.push("--turn-timeout-ms", String(options.turnTimeoutMs));
+  }
+  if (options.maxLoops !== undefined) {
+    parts.push("--max-loops", String(options.maxLoops));
+  }
+  parts.push("--skip-sdk-monitor");
+  if (summary.options.skipDiscovery) {
+    parts.push("--skip-discovery");
+  }
+  if (summary.options.webSearchMode) {
+    parts.push("--web-search", shellQuote(summary.options.webSearchMode));
+  }
+  return parts.join(" ");
+}
+
+export async function buildRunStatus(options: RunStatusOptions): Promise<RunStatus> {
+  const runDir = path.resolve(options.runDir);
+  const [summary, runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
+    readRunSummary(runDir),
+    validateRunProtocol(runDir),
+    validateApiProbesReadme(runDir),
+    compareProgressRunSummary(runDir),
+    readLatestInflightDiagnostic(runDir),
+  ]);
+
+  const protocolIssues: string[] = [];
+  if (!runProtocol.ok) {
+    const missing = diagnostic?.status === "running" || !summary
+      ? runProtocol.missing.filter((entry) => entry !== RUN_SUMMARY_FILE)
+      : runProtocol.missing;
+    if (missing.length > 0) {
+      protocolIssues.push(`Missing required protocol entries: ${missing.join(", ")}`);
+    }
+  }
+  if (!apiProbesReadme.ok) {
+    protocolIssues.push(`Missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
+  }
+  if (!progressDrift.ok && summary && diagnostic?.status !== "running") {
+    protocolIssues.push(...progressDrift.details);
+    for (const mismatch of progressDrift.mismatches) {
+      protocolIssues.push(`Progress/run-summary drift: ${mismatch.key} progress=${JSON.stringify(mismatch.progressValue)} summary=${JSON.stringify(mismatch.summaryValue)}`);
+    }
+  }
+
+  const protocolHealth: RunStatus["protocolHealth"] = protocolIssues.length === 0
+    ? (diagnostic?.status === "running" ? "pending" : "clean")
+    : "unhealthy";
+
+  if (diagnostic?.status === "running") {
+    return {
+      runDir,
+      terminalStatus: "running",
+      failureCategory: "none",
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "wait",
+      summary: "A Codex role turn is still running. Inspect the inflight diagnostic before deciding whether to wait or intervene.",
+      commands: [],
+    };
+  }
+
+  if (protocolHealth === "unhealthy") {
+    return {
+      runDir,
+      terminalStatus: summary?.status ?? "unknown",
+      failureCategory: summary ? normalizeSummaryFailureCategory(summary) : "unknown",
+      reason: summary?.reason,
+      terminalRole: summary?.terminalRole,
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "repair_protocol",
+      summary: "Run has protocol health issues; repair the file protocol before rerunning or resuming.",
+      commands: [],
+    };
+  }
+
+  if (!summary) {
+    return {
+      runDir,
+      terminalStatus: "unknown",
+      failureCategory: "unknown",
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "inspect",
+      summary: "Run has no terminal summary and no active inflight role diagnostic. Inspect progress.md and session-log/.",
+      commands: [],
+    };
+  }
+
+  const resumePlan = await buildResumePlan({ runDir });
+  const recommendedAction = resumePlan.action === "resume_sdk" && !resumePlan.ready
+    ? statusFallbackAction(resumePlan)
+    : resumePlan.action;
+  return {
+    runDir,
+    terminalStatus: summary.status,
+    failureCategory: normalizeSummaryFailureCategory(summary),
+    reason: summary.reason,
+    terminalRole: summary.terminalRole,
+    protocolHealth,
+    protocolIssues,
+    diagnostic,
+    recommendedAction,
+    summary: resumePlan.summary,
+    commands: resumePlan.commands,
+  };
+}
+
+function statusFallbackAction(plan: ResumePlan): RunStatusAction {
+  if (plan.commands.some((command) => command.includes("codex-gtd run --task"))) {
+    return "rerun";
+  }
+  return "inspect";
 }
 
 export async function exportWorkspacePatch(options: ExportWorkspaceOptions): Promise<ExportWorkspaceResult> {
@@ -1253,7 +1459,7 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
   const runDir = path.resolve(options.runDir);
   const repairPlan = await buildRunRepairPlan({ runDir });
 
-  if (repairPlan.action !== "none") {
+  if (repairPlan.action !== "none" && !isSdkRecoverableRepairPlan(repairPlan)) {
     return {
       runDir,
       action: repairPlan.action,
@@ -1262,6 +1468,39 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
       summary: repairPlan.summary,
       issues: repairPlan.issues,
       commands: repairPlan.commands,
+    };
+  }
+
+  if (isSdkRecoverableRepairPlan(repairPlan)) {
+    const summary = await readRunSummary(runDir);
+    const selection = summary ? await selectResumeSdkTarget(runDir, summary, repairPlan.failureCategory) : {};
+    const target = selection.target;
+    const action: ResumePlanAction = "resume_sdk";
+    const command = `codex-gtd resume --run-dir ${shellQuote(runDir)} --execute`;
+
+    if (!target) {
+      const summaryText = selection.blockedReason
+        ?? "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.";
+      return {
+        runDir,
+        action,
+        ready: false,
+        source: "resume",
+        summary: summaryText,
+        issues: [selection.blockedReason ?? "No resumable thread found for the recoverable failure. Re-run the original task if the local Codex session is unavailable."],
+        commands: repairPlan.commands,
+      };
+    }
+
+    return {
+      runDir,
+      action,
+      ready: true,
+      source: "resume",
+      summary: `Resume ${target.role} from saved Codex SDK thread ${target.threadId}.`,
+      issues: [],
+      commands: [command],
+      sdkTarget: target,
     };
   }
 
@@ -1307,6 +1546,137 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
   };
 }
 
+function isSdkRecoverableRepairPlan(plan: RunRepairPlan): boolean {
+  return plan.status !== "done" && (
+    plan.failureCategory === "turn_timeout"
+    || plan.failureCategory === "unsupported_tool"
+    || plan.failureCategory === "role_failed"
+    || plan.failureCategory === "invalid_manager_decision"
+    || plan.failureCategory === "max_loops"
+  );
+}
+
+type SessionLogEntry = {
+  file: string;
+  role: string;
+  threadId?: string;
+  prompt?: string;
+  startedAt: string;
+  isError: boolean;
+  diagnostic?: {
+    classification?: string;
+    lastEventType?: string;
+  };
+};
+
+async function selectResumeSdkTarget(
+  runDir: string,
+  summary: RunSummary,
+  failureCategory: FailureCategory,
+): Promise<{ target?: ResumeSdkTarget; blockedReason?: string }> {
+  const entries = await readSessionLogEntries(runDir);
+  const managerLoop = summary.metrics.roleTurns.manager ?? 0;
+  const nextLoop = Math.min(managerLoop + 1, summary.maxLoops + 1);
+
+  let selected: SessionLogEntry | undefined;
+  if (failureCategory === "invalid_manager_decision" || failureCategory === "max_loops") {
+    selected = latestSessionLogEntry(entries, (entry) => normalizeResumableRole(entry.role) === "manager");
+  } else {
+    selected = latestSessionLogEntry(entries, (entry) => {
+      const role = normalizeResumableRole(entry.role);
+      return entry.isError && role !== undefined;
+    });
+  }
+
+  if (!selected) return {};
+  const role = normalizeResumableRole(selected.role);
+  if (!role || !selected.threadId) return {};
+  if (failureCategory === "turn_timeout" && isIncompleteTimeoutThread(selected)) {
+    return {
+      blockedReason: "Saved SDK thread timed out before completing any SDK work; resume may reconnect to an incomplete turn. Re-run the original task instead.",
+    };
+  }
+
+  return {
+    target: {
+      role,
+      threadId: selected.threadId,
+      prompt: selected.prompt,
+      sessionLogFile: selected.file,
+      nextLoop,
+    },
+  };
+}
+
+function isIncompleteTimeoutThread(entry: SessionLogEntry): boolean {
+  const classification = entry.diagnostic?.classification;
+  if (classification !== "idle_until_turn_timeout" && classification !== "no_sdk_events_before_turn_timeout") {
+    return false;
+  }
+  const lastEventType = entry.diagnostic?.lastEventType;
+  return lastEventType === undefined || lastEventType === "turn.started";
+}
+
+async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]> {
+  const sessionLogDir = path.join(runDir, "session-log");
+  let files: string[];
+  try {
+    files = (await readdir(sessionLogDir)).filter((entry) => entry.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+
+  const entries: SessionLogEntry[] = [];
+  for (const file of files) {
+    try {
+      const raw = await readFile(path.join(sessionLogDir, file), "utf8");
+      const parsed = JSON.parse(raw) as {
+        role?: unknown;
+        threadId?: unknown;
+        prompt?: unknown;
+        startedAt?: unknown;
+        diagnostic?: unknown;
+      };
+      const diagnostic = isSessionLogDiagnostic(parsed.diagnostic) ? parsed.diagnostic : undefined;
+      entries.push({
+        file: path.join("session-log", file),
+        role: typeof parsed.role === "string" ? parsed.role : inferRoleFromSessionLogName(file),
+        threadId: typeof parsed.threadId === "string" && parsed.threadId.trim().length > 0 ? parsed.threadId : undefined,
+        prompt: typeof parsed.prompt === "string" && parsed.prompt.trim().length > 0 ? parsed.prompt : undefined,
+        startedAt: typeof parsed.startedAt === "string" && parsed.startedAt.trim().length > 0 ? parsed.startedAt : file,
+        isError: file.endsWith("-error.json"),
+        diagnostic,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return entries;
+}
+
+function isSessionLogDiagnostic(value: unknown): value is SessionLogEntry["diagnostic"] {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { classification?: unknown; lastEventType?: unknown };
+  return (candidate.classification === undefined || typeof candidate.classification === "string")
+    && (candidate.lastEventType === undefined || typeof candidate.lastEventType === "string");
+}
+
+function latestSessionLogEntry(entries: SessionLogEntry[], predicate: (entry: SessionLogEntry) => boolean): SessionLogEntry | undefined {
+  return entries
+    .filter(predicate)
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    .at(-1);
+}
+
+function normalizeResumableRole(role: string): ResumableRole | undefined {
+  const normalized = role.replace(/-fallback$/, "");
+  if (normalized === "researcher" || normalized === "manager" || normalized === "developer" || normalized === "tester") {
+    return normalized;
+  }
+  return undefined;
+}
+
 export async function executeResumePlan(options: ExecuteResumeOptions): Promise<ExecuteResumeResult> {
   const plan = await buildResumePlan(options);
   if (!plan.ready) {
@@ -1337,7 +1707,138 @@ export async function executeResumePlan(options: ExecuteResumeOptions): Promise<
     };
   }
 
+  if (plan.action === "resume_sdk") {
+    return {
+      plan,
+      executed: true,
+      runResult: await executeSdkResumePlan(options, plan),
+    };
+  }
+
   throw new Error(`resume action is not executable: ${plan.action}`);
+}
+
+async function executeSdkResumePlan(options: ExecuteResumeOptions, plan: ResumePlan): Promise<RunResult> {
+  if (!plan.sdkTarget) {
+    throw new Error("resume sdk requires a saved thread target");
+  }
+
+  const runDir = path.resolve(options.runDir);
+  const summary = await readRunSummary(runDir);
+  if (!summary) {
+    throw new Error("resume sdk requires a readable run-summary.json");
+  }
+
+  const model = resolveModel(options.model ?? summary.model);
+  const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode ?? summary.options.webSearchMode);
+  const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs ?? summary.turnTimeoutMs);
+  const maxLoops = Math.max(options.maxLoops ?? summary.maxLoops, plan.sdkTarget.nextLoop);
+  const task = await readFile(path.join(runDir, "task.md"), "utf8");
+  await ensureSnippetCatalog(snippetsDir);
+
+  const context: RunContext = {
+    codex: options.codex ?? new Codex(),
+    model,
+    turnTimeoutMs,
+    runDir,
+    workspaceDir: path.join(runDir, "workspace"),
+    snippetsDir,
+    task,
+    webSearchMode,
+    threads: new Map<Role, Thread>(),
+  };
+
+  const startedAtMs = Number.isFinite(Date.parse(summary.startedAt)) ? Date.parse(summary.startedAt) : Date.now();
+  const runMeta: RunMeta = {
+    taskFile: summary.taskFile,
+    startedAt: summary.startedAt,
+    startedAtMs,
+    maxLoops,
+    turnTimeoutMs,
+    observe: options.observe ?? summary.options.observe,
+    monitorSdk: false,
+    skipDiscovery: summary.options.skipDiscovery,
+    webSearchMode,
+  };
+
+  const target = plan.sdkTarget;
+  const resumedThread = resumeRoleThread(context, target.role, target.threadId, model);
+  context.threads.set(target.role, resumedThread);
+  await appendProgress(context.runDir, `\n## Resume\n\nResuming ${target.role} from ${target.sessionLogFile} with thread ${target.threadId}.\n`, {
+    status: "running",
+    model,
+    startedAt: summary.startedAt,
+    lastUpdatedAt: new Date().toISOString(),
+    lastRole: "driver",
+    loop: summary.metrics.roleTurns.manager ?? 0,
+    terminal: false,
+  });
+
+  let preLoopFailure: string | undefined;
+  if (target.role !== "manager") {
+    if (!target.prompt) {
+      preLoopFailure = `Resume target ${target.role} is missing its saved prompt.`;
+    } else {
+      const roleResult = await runRole(context, target.role, target.prompt);
+      if (!roleResult.ok) {
+        preLoopFailure = `${capitalizeRole(target.role)} failed during resume: ${roleResult.reason}`;
+      }
+    }
+  }
+
+  if (preLoopFailure) {
+    await appendProgress(context.runDir, `\n## Failed\n\n${preLoopFailure}\n`);
+    await appendBlocker(context.runDir, preLoopFailure);
+    return await finishRun(context, {
+      runDir,
+      status: "ask_user",
+      reason: preLoopFailure,
+      observer: undefined,
+      snippetCandidates: [],
+      sdkMonitor: summary.sdkMonitor,
+    }, runMeta);
+  }
+
+  const loopResult = await runExecutionLoop(context, maxLoops, Math.max(1, target.nextLoop));
+  const observer = (options.observe ?? summary.options.observe)
+    ? await safeRunObserver({
+      runDir,
+      model,
+      snippetsDir,
+      turnTimeoutMs,
+      webSearchMode,
+    })
+    : undefined;
+
+  const snippetCandidates = loopResult.status === "done" && observer?.status === "done"
+    ? await safeGenerateSnippetCandidates({ runDir, snippetsDir })
+    : [];
+
+  return await finishRun(context, {
+    runDir,
+    status: loopResult.status,
+    reason: loopResult.reason,
+    observer,
+    snippetCandidates,
+    sdkMonitor: summary.sdkMonitor,
+  }, runMeta);
+}
+
+function resumeRoleThread(context: RunContext, role: Role, threadId: string, model: string): Thread {
+  return context.codex.resumeThread(threadId, {
+    model,
+    workingDirectory: context.runDir,
+    skipGitRepoCheck: true,
+    sandboxMode: role === "smoke" ? "read-only" : "workspace-write",
+    approvalPolicy: "never",
+    networkAccessEnabled: true,
+    webSearchMode: context.webSearchMode,
+  });
+}
+
+function capitalizeRole(role: string): string {
+  return role.slice(0, 1).toUpperCase() + role.slice(1);
 }
 
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
@@ -1491,7 +1992,7 @@ async function finishRun(
   const endedAtMs = Date.now();
   const endedAt = new Date(endedAtMs).toISOString();
   const sessionMetrics = await readSessionLogMetrics(context.runDir);
-  const failureCategory = classifyFailure(result, sessionMetrics.terminalRole);
+  const failureCategory = classifyRunFailure(result, sessionMetrics.terminalRole);
   await appendProgress(context.runDir, "", {
     status: progressStatusForResult(result, failureCategory),
     model: context.model,
@@ -1872,9 +2373,9 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
 
 function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   const normalized = normalizeFailureCategory(summary.failureCategory);
-  if (normalized !== "role_failed") return normalized;
+  if (normalized !== "role_failed" && normalized !== "observer_failed") return normalized;
 
-  return classifyFailure({
+  return classifyRunFailure({
     runDir: summary.runDir,
     status: summary.status,
     reason: summary.reason,
@@ -1884,20 +2385,19 @@ function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   }, summary.terminalRole);
 }
 
-function classifyFailure(result: RunResult, terminalRole?: string): FailureCategory {
-  if (result.observer?.status === "failed") return "observer_failed";
+export function classifyRunFailure(result: RunResult, terminalRole?: string): FailureCategory {
   if (result.sdkMonitor && !result.sdkMonitor.passed) return "sdk_failed";
-  if (result.status === "done") return "none";
+  if (result.status === "done") return result.observer?.status === "failed" ? "observer_failed" : "none";
   if (result.status === "max_loops_reached") return "max_loops";
 
   const reason = (result.reason ?? "").toLowerCase();
   if (reason.includes("discovery")) return "discovery_needed";
   if (reason.includes("aborterror") || reason.includes("operation was aborted")) return "turn_timeout";
   if (reason.includes("not supported") && reason.includes("tool")) return "unsupported_tool";
+  if (reason.includes("reconnecting") || reason.includes("timeout waiting for child process to exit")) return "sdk_failed";
   if (reason.includes("invalid decision") || reason.includes("invalid next_action")) {
     return "invalid_manager_decision";
   }
-  if (reason.includes("failed")) return "role_failed";
   if (
     reason.includes("missing")
     || reason.includes("credential")
@@ -1905,12 +2405,18 @@ function classifyFailure(result: RunResult, terminalRole?: string): FailureCateg
     || reason.includes("api key")
     || reason.includes("blocked")
     || reason.includes("blocker")
+    || reason.includes("permission")
+    || reason.includes("approval")
+    || reason.includes("access denied")
+    || reason.includes("not permitted")
     || reason.includes("ask_user")
-    || result.status === "ask_user"
   ) {
     return "blocker";
   }
+  if (reason.includes("failed")) return "role_failed";
+  if (result.status === "ask_user") return "blocker";
   if (terminalRole === "discovery") return "discovery_needed";
+  if (result.observer?.status === "failed") return "observer_failed";
 
   return "unknown";
 }
@@ -2080,9 +2586,15 @@ async function runRoleWithModel(
   }, context.turnTimeoutMs);
 
   try {
-    const turn = role === "manager"
-      ? await thread.run(prompt, { outputSchema: managerSchema, signal: abortController.signal })
-      : await thread.run(prompt, { signal: abortController.signal });
+    const turn = await runThreadWithDiagnostics(context, {
+      thread,
+      role: isFallback ? `${role}-fallback` : role,
+      model,
+      prompt,
+      startedAt,
+      signal: abortController.signal,
+      outputSchema: role === "manager" ? managerSchema : undefined,
+    });
     const endedAt = new Date().toISOString();
 
     await writeSessionLog(context, {
@@ -2098,7 +2610,8 @@ async function runRoleWithModel(
     return { ok: true, turn };
   } catch (error) {
     const endedAt = new Date().toISOString();
-    const reason = summarizeError(error);
+    const diagnosticError = error instanceof ThreadRunDiagnosticError ? error : undefined;
+    const reason = summarizeError(diagnosticError?.cause ?? error);
     const fallbackModel = isFallback ? undefined : resolveRoleFallbackModel(model, reason);
 
     await writeRoleErrorLog(context, {
@@ -2110,6 +2623,7 @@ async function runRoleWithModel(
       startedAt,
       endedAt,
       threadId: thread.id,
+      diagnostic: diagnosticError?.diagnostic,
     });
 
     if (fallbackModel) {
@@ -2140,7 +2654,14 @@ async function runObserverRole(
   try {
     const lessonFile = path.join(context.runDir, "lessons.md");
     const previousLessons = await readOptionalFile(lessonFile);
-    const turn = await thread.run(prompt, { signal: abortController.signal });
+    const turn = await runThreadWithDiagnostics(context, {
+      thread,
+      role: "observer",
+      model: context.model,
+      prompt,
+      startedAt,
+      signal: abortController.signal,
+    });
     const endedAt = new Date().toISOString();
     const existingLessons = await readOptionalFile(lessonFile);
     const lessons = selectObserverLessonsContent(existingLessons, turn.finalResponse, previousLessons);
@@ -2158,7 +2679,8 @@ async function runObserverRole(
     return { ok: true, turn };
   } catch (error) {
     const endedAt = new Date().toISOString();
-    const reason = summarizeError(error);
+    const diagnosticError = error instanceof ThreadRunDiagnosticError ? error : undefined;
+    const reason = summarizeError(diagnosticError?.cause ?? error);
 
     await writeRoleErrorLog(context, {
       role: "observer",
@@ -2168,12 +2690,284 @@ async function runObserverRole(
       startedAt,
       endedAt,
       threadId: thread.id,
+      diagnostic: diagnosticError?.diagnostic,
     });
 
     return { ok: false, reason };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export type RoleRunDiagnostic = {
+  role: string;
+  model: string;
+  threadId: string | null;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  lastUpdatedAt: string;
+  lastEventAt: string;
+  idleMs: number;
+  classification: string;
+  detail: string;
+  lastEventType?: string;
+  lastItem?: unknown;
+};
+
+class ThreadRunDiagnosticError extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly diagnostic: RoleRunDiagnostic,
+  ) {
+    super(summarizeError(cause));
+  }
+}
+
+async function runThreadWithDiagnostics(
+  context: RunContext | ObserverContext,
+  options: {
+    thread: Thread;
+    role: string;
+    model: string;
+    prompt: string;
+    startedAt: string;
+    signal: AbortSignal;
+    outputSchema?: unknown;
+  },
+): Promise<CodexTurn> {
+  const runStreamed = (options.thread as Thread & {
+    runStreamed?: Thread["runStreamed"];
+  }).runStreamed;
+
+  let lastEventAtMs = Date.parse(options.startedAt);
+  if (!Number.isFinite(lastEventAtMs)) lastEventAtMs = Date.now();
+  let lastEventType: string | undefined;
+  let lastItem: ThreadItem | undefined;
+  let classification = "waiting_for_first_sdk_event";
+  let detail = "No SDK event has been received yet; this is usually model startup or queueing until the turn timeout expires.";
+
+  const diagnosticPath = roleInflightDiagnosticPath(context.runDir, options.startedAt, options.role);
+  const currentDiagnostic = (status: RoleRunDiagnostic["status"]): RoleRunDiagnostic => {
+    const now = Date.now();
+    return {
+      role: options.role,
+      model: options.model,
+      threadId: options.thread.id,
+      status,
+      startedAt: options.startedAt,
+      lastUpdatedAt: new Date(now).toISOString(),
+      lastEventAt: new Date(lastEventAtMs).toISOString(),
+      idleMs: Math.max(0, now - lastEventAtMs),
+      classification,
+      detail,
+      lastEventType,
+      lastItem,
+    };
+  };
+  const writeDiagnostic = async (status: RoleRunDiagnostic["status"]) => {
+    await writeRoleInflightDiagnostic(diagnosticPath, currentDiagnostic(status));
+  };
+
+  await writeDiagnostic("running");
+  const heartbeat = setInterval(() => {
+    const diagnostic = currentDiagnostic("running");
+    console.error(`[codex-gtd] ${options.role} still running: ${diagnostic.classification}; idle=${Math.round(diagnostic.idleMs / 1000)}s; ${diagnostic.detail}`);
+    void writeRoleInflightDiagnostic(diagnosticPath, diagnostic).catch(() => undefined);
+  }, ROLE_HEARTBEAT_MS);
+
+  try {
+    if (typeof runStreamed !== "function") {
+      const turn = await options.thread.run(
+        options.prompt,
+        options.outputSchema ? { outputSchema: options.outputSchema, signal: options.signal } : { signal: options.signal },
+      );
+      classification = "turn_completed";
+      detail = "The SDK turn completed through the buffered run() fallback.";
+      await writeDiagnostic("completed");
+      return turn;
+    }
+
+    const items: ThreadItem[] = [];
+    let finalResponse = "";
+    let usage: Usage | null = null;
+    let turnFailure: { message: string } | null = null;
+    const streamed = await runStreamed.call(
+      options.thread,
+      options.prompt,
+      options.outputSchema ? { outputSchema: options.outputSchema, signal: options.signal } : { signal: options.signal },
+    );
+
+    for await (const event of streamed.events) {
+      const eventAt = Date.now();
+      lastEventAtMs = eventAt;
+      lastEventType = event.type;
+      const eventDiagnosis = diagnoseThreadEvent(event);
+      classification = eventDiagnosis.classification;
+      detail = eventDiagnosis.detail;
+      if ("item" in event) {
+        lastItem = event.item;
+      }
+      await writeDiagnostic("running");
+
+      if (event.type === "item.completed") {
+        if (event.item.type === "agent_message") {
+          finalResponse = event.item.text;
+        }
+        items.push(event.item);
+      } else if (event.type === "turn.completed") {
+        usage = event.usage;
+      } else if (event.type === "turn.failed") {
+        turnFailure = event.error;
+        break;
+      } else if (event.type === "error") {
+        turnFailure = { message: event.message };
+        break;
+      }
+    }
+
+    if (turnFailure) {
+      throw new Error(turnFailure.message);
+    }
+
+    classification = "turn_completed";
+    detail = "The SDK turn completed.";
+    await writeDiagnostic("completed");
+    return { items, finalResponse, usage };
+  } catch (error) {
+    if (options.signal.aborted && classification !== "command_running" && classification !== "mcp_tool_running") {
+      classification = lastEventType ? "idle_until_turn_timeout" : "no_sdk_events_before_turn_timeout";
+      detail = lastEventType
+        ? `No SDK event arrived before the ${context.turnTimeoutMs}ms turn timeout after ${lastEventType}.`
+        : `No SDK event arrived before the ${context.turnTimeoutMs}ms turn timeout.`;
+    } else if (isPermissionOrApprovalReason(summarizeError(error))) {
+      classification = "permission_or_approval_blocked";
+      detail = "The SDK surfaced a permission or approval issue; this run needs user or environment action instead of more waiting.";
+    }
+    const diagnostic = currentDiagnostic("failed");
+    await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
+    throw new ThreadRunDiagnosticError(error, diagnostic);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+function diagnoseThreadEvent(event: ThreadEvent): { classification: string; detail: string } {
+  if (event.type === "thread.started") {
+    return { classification: "thread_started", detail: `SDK thread started: ${event.thread_id}.` };
+  }
+  if (event.type === "turn.started") {
+    return { classification: "model_running", detail: "The SDK turn started and is waiting for model/tool events." };
+  }
+  if (event.type === "turn.completed") {
+    return { classification: "turn_completed", detail: "The SDK turn completed." };
+  }
+  if (event.type === "turn.failed") {
+    return diagnoseFailureReason(event.error.message);
+  }
+  if (event.type === "error") {
+    return diagnoseFailureReason(event.message);
+  }
+  return diagnoseThreadItem(event.item);
+}
+
+function diagnoseThreadItem(item: ThreadItem): { classification: string; detail: string } {
+  if (item.type === "command_execution") {
+    const command = item.command.length > 160 ? `${item.command.slice(0, 157)}...` : item.command;
+    if (item.status === "in_progress") {
+      return { classification: "command_running", detail: `Command is still running: ${command}` };
+    }
+    return { classification: `command_${item.status}`, detail: `Command ${item.status}: ${command}` };
+  }
+  if (item.type === "mcp_tool_call") {
+    const tool = `${item.server}.${item.tool}`;
+    if (item.status === "in_progress") {
+      return { classification: "mcp_tool_running", detail: `MCP tool is still running: ${tool}` };
+    }
+    if (item.status === "failed") {
+      return diagnoseFailureReason(item.error?.message ?? `MCP tool failed: ${tool}`);
+    }
+    return { classification: "mcp_tool_completed", detail: `MCP tool completed: ${tool}` };
+  }
+  if (item.type === "web_search") {
+    return { classification: "web_search_running", detail: `Web search requested: ${item.query}` };
+  }
+  if (item.type === "file_change") {
+    return { classification: `file_change_${item.status}`, detail: `File change ${item.status}: ${item.changes.length} change(s).` };
+  }
+  if (item.type === "todo_list") {
+    const remaining = item.items.filter((todo) => !todo.completed).length;
+    return { classification: "todo_list_updated", detail: `${remaining} todo item(s) remain open.` };
+  }
+  if (item.type === "reasoning") {
+    return { classification: "model_reasoning", detail: "The model produced reasoning summary output." };
+  }
+  if (item.type === "agent_message") {
+    return { classification: "agent_message", detail: "The agent produced a final or intermediate message." };
+  }
+  return diagnoseFailureReason(item.message);
+}
+
+function diagnoseFailureReason(reason: string): { classification: string; detail: string } {
+  if (isPermissionOrApprovalReason(reason)) {
+    return {
+      classification: "permission_or_approval_blocked",
+      detail: "The SDK surfaced a permission or approval issue; this run needs user or environment action instead of more waiting.",
+    };
+  }
+  return { classification: "sdk_error", detail: reason };
+}
+
+function isPermissionOrApprovalReason(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  return normalized.includes("permission")
+    || normalized.includes("approval")
+    || normalized.includes("not permitted")
+    || normalized.includes("access denied")
+    || normalized.includes("operation not allowed");
+}
+
+function roleInflightDiagnosticPath(runDir: string, startedAt: string, role: string): string {
+  const safeStartedAt = startedAt.replaceAll(":", "-");
+  return path.join(runDir, "session-log", "inflight", `${safeStartedAt}-${role}.json`);
+}
+
+async function writeRoleInflightDiagnostic(file: string, diagnostic: RoleRunDiagnostic): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
+}
+
+async function readLatestInflightDiagnostic(runDir: string): Promise<RoleRunDiagnostic | undefined> {
+  const inflightDir = path.join(runDir, "session-log", "inflight");
+  let entries: string[];
+  try {
+    entries = (await readdir(inflightDir)).filter((entry) => entry.endsWith(".json")).sort();
+  } catch {
+    return undefined;
+  }
+
+  const diagnostics: RoleRunDiagnostic[] = [];
+  for (const entry of entries) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(inflightDir, entry), "utf8")) as RoleRunDiagnostic;
+      if (
+        typeof parsed.role === "string"
+        && typeof parsed.model === "string"
+        && (parsed.status === "running" || parsed.status === "completed" || parsed.status === "failed")
+        && typeof parsed.startedAt === "string"
+        && typeof parsed.lastUpdatedAt === "string"
+        && typeof parsed.classification === "string"
+        && typeof parsed.detail === "string"
+      ) {
+        diagnostics.push(parsed);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return diagnostics
+    .sort((left, right) => left.lastUpdatedAt.localeCompare(right.lastUpdatedAt))
+    .at(-1);
 }
 
 const OBSERVER_LESSONS_REQUIRED_SECTIONS = [
@@ -2303,6 +3097,7 @@ async function writeRoleErrorLog(
     startedAt: string;
     endedAt: string;
     threadId: string | null;
+    diagnostic?: RoleRunDiagnostic;
   },
 ): Promise<void> {
   const safeStartedAt = entry.startedAt.replaceAll(":", "-");
@@ -2327,6 +3122,7 @@ async function writeRoleErrorLog(
           entry.error instanceof Error
             ? { name: entry.error.name, message: entry.error.message }
             : String(entry.error),
+        diagnostic: entry.diagnostic,
       },
       null,
       2,

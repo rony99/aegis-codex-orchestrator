@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -23,6 +23,7 @@ type ParsedArgs = {
   turnTimeoutMs?: number;
   maxLoops?: number;
   limit?: number;
+  json?: boolean;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -132,6 +133,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--json") {
+      parsed.json = true;
+      continue;
+    }
+
     if (arg === "--skip-discovery") {
       parsed.skipDiscovery = true;
       continue;
@@ -203,10 +209,11 @@ Usage:
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
-  codex-gtd repair-plan --run-dir <run-dir>
+  codex-gtd status --run-dir <run-dir> [--json]
+  codex-gtd repair-plan --run-dir <run-dir> [--json]
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -345,6 +352,43 @@ function printResumeExecution(result: ExecuteResumeResult): void {
   if (result.applyResult) {
     printWorkspaceApply(result.applyResult);
   }
+  if (result.runResult) {
+    console.log(`Run status: ${result.runResult.status}`);
+    console.log(`Run directory: ${result.runResult.runDir}`);
+    if (result.runResult.reason) console.log(`Reason: ${result.runResult.reason}`);
+    if (result.runResult.observer) console.log(`Observer status: ${result.runResult.observer.status}`);
+  }
+}
+
+function printRunStatus(status: RunStatus): void {
+  console.log("Run status:");
+  console.log(`Run directory: ${status.runDir}`);
+  console.log(`Terminal status: ${status.terminalStatus}`);
+  console.log(`Failure category: ${status.failureCategory}`);
+  if (status.terminalRole) console.log(`Terminal role: ${status.terminalRole}`);
+  if (status.reason) console.log(`Reason: ${status.reason}`);
+  console.log(`Protocol health: ${status.protocolHealth}`);
+  if (status.protocolIssues.length > 0) {
+    console.log("Protocol issues:");
+    for (const issue of status.protocolIssues) {
+      console.log(`- ${issue}`);
+    }
+  }
+  if (status.diagnostic) {
+    console.log(`Current diagnosis: ${status.diagnostic.classification}`);
+    console.log(`Diagnostic detail: ${status.diagnostic.detail}`);
+    console.log(`Diagnostic role: ${status.diagnostic.role}`);
+    console.log(`Diagnostic idle: ${formatDuration(status.diagnostic.idleMs)}`);
+    if (status.diagnostic.lastEventType) console.log(`Diagnostic last event: ${status.diagnostic.lastEventType}`);
+  }
+  console.log(`Recommended action: ${status.recommendedAction}`);
+  console.log(`Summary: ${status.summary}`);
+  if (status.commands.length > 0) {
+    console.log("Suggested commands:");
+    for (const command of status.commands) {
+      console.log(`- ${command}`);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -465,10 +509,28 @@ async function main(): Promise<void> {
     }
 
     const plan = await buildRunRepairPlan({ runDir: args.runDir });
-    printRepairPlan(plan);
+    if (args.json) {
+      console.log(JSON.stringify(plan, null, 2));
+    } else {
+      printRepairPlan(plan);
+    }
     if (plan.action === "repair_protocol" || plan.action === "inspect") {
       process.exitCode = 1;
     }
+    return;
+  }
+
+  if (args.command === "status") {
+    if (!args.runDir) {
+      throw new Error("status requires --run-dir <run-dir>");
+    }
+
+    const status = await buildRunStatus({ runDir: args.runDir });
+    if (args.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
+    printRunStatus(status);
     return;
   }
 
@@ -513,9 +575,18 @@ async function main(): Promise<void> {
         runDir: args.runDir,
         targetDir: args.targetDir,
         write: args.write,
+        model: args.model,
+        snippetsDir: args.snippetsDir,
+        observe: args.observe,
+        webSearchMode: args.webSearchMode,
+        turnTimeoutMs: args.turnTimeoutMs,
+        maxLoops: args.maxLoops,
       });
       printResumePlan(result.plan);
       printResumeExecution(result);
+      if (result.runResult && (result.runResult.status !== "done" || result.runResult.observer?.status === "failed")) {
+        process.exitCode = 1;
+      }
       return;
     }
 

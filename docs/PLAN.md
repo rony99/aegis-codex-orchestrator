@@ -174,6 +174,7 @@ TODO:
   - 开发前明确 freeze
 - 已完成: 增加 `--turn-timeout-ms`（默认 5 分钟，可由 env 配置）
 - 已完成: 用 `AbortController` 限制单个 `thread.run()`
+- 已完成: 基于 Codex SDK `runStreamed()` 增加 role turn 运行中诊断，`session-log/inflight/*.json` 和 stderr heartbeat 可区分正常长耗时、命令/tool 仍在跑、无 SDK event 直到超时、以及权限/审批类失败
 - 已完成: role 失败时写入:
   - `blockers.md`
   - `progress.md`
@@ -231,10 +232,11 @@ TODO:
 - 已完成: `api-probes/README.md` validator 放宽为接受 `#` 到 `######` 的 required section headings；researcher prompt 继续要求输出 exact `##` headings，避免真实 run 因标题级别产生 false positive。
 - 已完成: Codex SDK web search 能力核查与接入；本机真实 smoke 证实 `webSearchMode: "live"` 会产生 `web_search` items。
 - 已完成: `report` 输出 protocol health 聚合计数和 recent run compact flags
-- 已完成: `repair-plan --run-dir` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`。
+- 已完成: `repair-plan --run-dir [--json]` 本地恢复建议命令，基于 `run-summary.json`、协议健康和 progress drift 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`，并支持机器可读恢复计划。
 - 已完成: `export-workspace --run-dir` 安全导出命令，把 run `workspace/` 文本文件生成可审查 git-style patch，为后续 guarded apply/resume 做准备。
 - 已完成: `apply-workspace --run-dir --target [--write]` guarded apply 命令；默认 dry-run，目标必须是干净 git repo，`git apply --check` 通过后才允许 `--write`。
-- 已完成: `resume --run-dir [--target] [--execute] [--write]` 本地 planner/executor，把 completed runs 路由到 `export_workspace` / `apply_workspace`，把 failed runs 委托给 `repair-plan`；`--execute` 只执行本地步骤，不恢复 SDK thread。
+- 已完成: `resume --run-dir [--target] [--execute] [--write]` planner/executor。completed runs 继续路由到 `export_workspace` / `apply_workspace`；可恢复 failed runs（`turn_timeout` / `unsupported_tool` / `role_failed` / `invalid_manager_decision` / `max_loops`）在存在 saved role `threadId` 时路由到 `resume_sdk`，`--execute` 会用 Codex SDK `resumeThread()` 追加续跑原 run 目录。用户 blocker、discovery_needed、SDK health failure、observer failure、协议损坏、缺失 threadId 或仅到达 `turn.started` 的不完整 timeout thread 仍需 repair/user action/rerun。
+- 已完成: `status --run-dir [--json]` 本地单 run 诊断命令，读取 summary、协议健康、progress drift 和 `session-log/inflight/`，区分仍在运行、需等待、需修协议、可导出/应用/SDK 续跑或需要人工 inspect，并支持机器可读输出。
 - 已完成: observer prompt 注入 protocol health context，要求 lessons 记录协议健康问题
 - 已完成: observer 输入压缩，`task/spec/interfaces/progress/blockers/api-probes/snippets/session-log` 在进入 SDK 前有确定性长度上限，并保留 session error reason
 - 已完成: manager 输入压缩，第二轮及后续 manager prompt 对 `task/discovery/spec/interfaces/progress/blockers/api-probes/snippets` 有确定性长度上限，并保留 progress state、最新验证证据和 closeout gate 约束。
@@ -244,6 +246,7 @@ TODO:
 
 - 从 5-10 个真实任务里提炼更稳定的失败模式
 - 继续用中等/大型真实 run 验证压缩后的 observer lesson 质量
+- 用真实 timeout/manager-failure run 继续 dogfood `resume --execute --model gpt-5.4 --turn-timeout-ms 600000 --observe`
 
 ### v0.5 — Snippet 自增长
 
@@ -279,6 +282,6 @@ TODO:
 
 ## 五、当前结论
 
-v0.5 已证明核心方向持续可行：Codex SDK 可承载串行闭环 + discovery 先行澄清 + snippet 检索 + summary/report 指标化 + observer lessons + snippet 自增长的试运行路径。
+v0.5 已证明核心方向持续可行：Codex SDK 可承载串行闭环 + discovery 先行澄清 + snippet 检索 + summary/report 指标化 + observer lessons + snippet 自增长 + SDK-backed resume 的试运行路径。
 
 当前优先级转向稳定性验证（尤其是 `ask_user` 与非交互场景）和价值沉淀（observation、snippet 候选到正式入库）。
