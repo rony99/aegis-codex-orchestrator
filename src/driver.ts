@@ -448,11 +448,23 @@ export type RawCodexCliStdoutLineEvent = {
   receivedAt: string;
 };
 
+export type RawCodexCliStderrWarning = {
+  category:
+    | "plugin_manifest_warning"
+    | "mcp_process_group_warning"
+    | "rollout_recording_warning"
+    | "codex_cli_error"
+    | "codex_cli_warning";
+  severity: "noise" | "possibly_related" | "blocking";
+  message: string;
+};
+
 export type RawCodexCliProbeResult = {
   args: string[];
   stdoutLines: string[];
   stdoutLineEvents?: RawCodexCliStdoutLineEvent[];
   stderr: string;
+  warnings?: RawCodexCliStderrWarning[];
   exitCode: number | null;
   signal: NodeJS.Signals | null;
 };
@@ -558,6 +570,10 @@ export async function runSdkProbe(options: SdkProbeOptions = {}): Promise<SdkPro
       const args = buildRawCodexCliProbeArgs(model, webSearchMode);
       const runner = options.rawCliRunner ?? runRawCodexCliProbe;
       rawCli = await runner({ args, input, signal: abortController.signal });
+      rawCli = {
+        ...rawCli,
+        warnings: rawCli.warnings ?? parseRawCodexCliStderrWarnings(rawCli.stderr),
+      };
 
       const rawStdoutEvents = rawCli.stdoutLineEvents ?? rawCli.stdoutLines.map((line) => ({
         line,
@@ -826,6 +842,48 @@ async function runRawCodexCliProbe(request: RawCodexCliProbeRequest): Promise<Ra
     child.stdin.write(request.input);
     child.stdin.end();
   });
+}
+
+function parseRawCodexCliStderrWarnings(stderr: string): RawCodexCliStderrWarning[] {
+  const warnings: RawCodexCliStderrWarning[] = [];
+  for (const rawLine of stderr.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const normalized = line.toLowerCase();
+    if (normalized.includes("codex_core_plugins::manifest")) {
+      warnings.push({
+        category: "plugin_manifest_warning",
+        severity: "noise",
+        message: line,
+      });
+    } else if (normalized.includes("codex_rmcp_client::stdio_server_launcher") && normalized.includes("failed to terminate mcp process group")) {
+      warnings.push({
+        category: "mcp_process_group_warning",
+        severity: "noise",
+        message: line,
+      });
+    } else if (normalized.includes("failed to record rollout items")) {
+      warnings.push({
+        category: "rollout_recording_warning",
+        severity: "possibly_related",
+        message: line,
+      });
+    } else if (normalized.includes(" error ") || normalized.includes(" error:") || normalized.includes("error ")) {
+      warnings.push({
+        category: "codex_cli_error",
+        severity: "blocking",
+        message: line,
+      });
+    } else if (normalized.includes(" warn ") || normalized.includes(" warn:") || normalized.includes("warning")) {
+      warnings.push({
+        category: "codex_cli_warning",
+        severity: "possibly_related",
+        message: line,
+      });
+    }
+  }
+  return warnings;
 }
 
 export async function runSmokeTest(
@@ -3359,6 +3417,43 @@ function diagnoseThreadItem(item: ThreadItem): { classification: string; detail:
 }
 
 function diagnoseFailureReason(reason: string): { classification: string; detail: string } {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes("failed to parse codex cli jsonl event")) {
+    return {
+      classification: "codex_cli_jsonl_parse_failed",
+      detail: `Codex CLI emitted a non-JSONL event in experimental JSON mode: ${reason}`,
+    };
+  }
+  if (normalized.includes("codex cli exited with")) {
+    return {
+      classification: "codex_cli_exit_failed",
+      detail: `Codex CLI subprocess exited before the turn completed: ${reason}`,
+    };
+  }
+  if (normalized.includes("timeout waiting for child process to exit")) {
+    return {
+      classification: "codex_cli_child_exit_timeout",
+      detail: `Codex CLI child process did not exit cleanly before the SDK stream failed: ${reason}`,
+    };
+  }
+  if (normalized.includes("stream ended before turn.completed")) {
+    return {
+      classification: "sdk_stream_incomplete",
+      detail: `SDK/CLI event stream ended without a completed turn: ${reason}`,
+    };
+  }
+  if (normalized.includes("aborterror") || normalized.includes("operation was aborted")) {
+    return {
+      classification: "turn_timeout",
+      detail: `The role turn was aborted by the configured timeout: ${reason}`,
+    };
+  }
+  if (normalized.includes("not supported") && normalized.includes("tool")) {
+    return {
+      classification: "unsupported_tool",
+      detail: `The selected model or environment does not support a requested tool: ${reason}`,
+    };
+  }
   if (isSdkReconnectReason(reason)) {
     return {
       classification: "sdk_reconnect_failed",

@@ -281,8 +281,8 @@ test("sdk probe captures top-level stream errors as diagnostics", async () => {
   assert.equal(result.status, "failed");
   assert.equal(result.events.length, 3);
   assert.equal(result.error?.eventType, "error");
-  assert.equal(result.error?.classification, "sdk_reconnect_failed");
-  assert.match(result.error?.detail ?? "", /Codex SDK stream reconnected or disconnected/);
+  assert.equal(result.error?.classification, "codex_cli_child_exit_timeout");
+  assert.match(result.error?.detail ?? "", /Codex CLI child process did not exit cleanly/);
 });
 
 test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async () => {
@@ -331,7 +331,11 @@ test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async 
               receivedAt: "2026-04-27T11:01:00.000Z",
             },
           ],
-          stderr: "raw stderr details",
+          stderr: [
+            "2026-04-27T11:00:01.000000Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt: prompt must be at most 128 characters path=/tmp/plugin.json",
+            "2026-04-27T11:00:02.000000Z ERROR codex_core::session: failed to record rollout items: thread raw-thread not found",
+            "2026-04-27T11:00:03.000000Z  WARN codex_rmcp_client::stdio_server_launcher: Failed to terminate MCP process group 123: No such process (os error 3)",
+          ].join("\n"),
           exitCode: 0,
           signal: null,
         };
@@ -346,16 +350,28 @@ test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async 
     assert.equal(result.events.length, 3);
     assert.equal(result.events[0].receivedAt, "2026-04-27T11:00:00.000Z");
     assert.equal(result.events[2].receivedAt, "2026-04-27T11:01:00.000Z");
-    assert.equal(result.rawCli?.stderr, "raw stderr details");
+    assert.match(result.rawCli?.stderr ?? "", /codex_core_plugins::manifest/);
     assert.equal(result.rawCli?.exitCode, 0);
     assert.equal(result.rawCli?.stdoutLineEvents?.length, 3);
+    assert.deepEqual(result.rawCli?.warnings?.map((warning) => warning.category), [
+      "plugin_manifest_warning",
+      "rollout_recording_warning",
+      "mcp_process_group_warning",
+    ]);
+    assert.deepEqual(result.rawCli?.warnings?.map((warning) => warning.severity), [
+      "noise",
+      "possibly_related",
+      "noise",
+    ]);
     assert.equal(result.error?.eventType, "error");
-    assert.equal(result.error?.classification, "sdk_reconnect_failed");
+    assert.equal(result.error?.classification, "codex_cli_child_exit_timeout");
 
     const trace = JSON.parse(await readFile(traceFile, "utf8"));
-    assert.equal(trace.rawCli.stderr, "raw stderr details");
+    assert.match(trace.rawCli.stderr, /codex_core_plugins::manifest/);
     assert.equal(trace.rawCli.stdoutLines.length, 3);
     assert.equal(trace.rawCli.stdoutLineEvents.length, 3);
+    assert.equal(trace.rawCli.warnings.length, 3);
+    assert.equal(trace.rawCli.warnings[1].category, "rollout_recording_warning");
     assert.equal(trace.events[2].receivedAt, "2026-04-27T11:01:00.000Z");
   } finally {
     await rm(probeDir, { recursive: true, force: true });
@@ -1876,7 +1892,7 @@ test("resume execute classifies permission waits as user-action blockers", async
   }
 });
 
-test("resume execute classifies sdk reconnect stream failures distinctly", async () => {
+test("resume execute classifies codex cli child exit timeouts distinctly", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-reconnect-"));
 
   try {
@@ -1929,8 +1945,8 @@ test("resume execute classifies sdk reconnect stream failures distinctly", async
 
     const errorLogs = (await readdir(path.join(runDir, "session-log"))).filter((entry) => entry.endsWith("-error.json")).sort();
     const errorLog = JSON.parse(await readFile(path.join(runDir, "session-log", errorLogs.at(-1)), "utf8"));
-    assert.equal(errorLog.diagnostic.classification, "sdk_reconnect_failed");
-    assert.match(errorLog.diagnostic.detail, /Codex SDK stream reconnected or disconnected/);
+    assert.equal(errorLog.diagnostic.classification, "codex_cli_child_exit_timeout");
+    assert.match(errorLog.diagnostic.detail, /Codex CLI child process did not exit cleanly/);
     assert.match(errorLog.eventTraceFile, /session-log\/events\/.+-manager\.json$/);
 
     const eventTrace = JSON.parse(await readFile(errorLog.eventTraceFile, "utf8"));
@@ -1938,12 +1954,12 @@ test("resume execute classifies sdk reconnect stream failures distinctly", async
     assert.equal(eventTrace.role, "manager");
     assert.equal(eventTrace.events.length, 3);
     assert.equal(eventTrace.events.at(-1).event.type, "error");
-    assert.equal(eventTrace.events.at(-1).classification, "sdk_reconnect_failed");
+    assert.equal(eventTrace.events.at(-1).classification, "codex_cli_child_exit_timeout");
 
     const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
     assert.equal(statusResult.status, 0);
     const status = JSON.parse(statusResult.stdout);
-    assert.equal(status.diagnostic.classification, "sdk_reconnect_failed");
+    assert.equal(status.diagnostic.classification, "codex_cli_child_exit_timeout");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

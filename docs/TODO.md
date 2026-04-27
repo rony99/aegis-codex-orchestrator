@@ -18,10 +18,10 @@
 
 ## Known issues
 
-- [ ] Codex CLI raw stderr can contain plugin manifest warnings, MCP process-group warnings, and rollout-recording warnings even when the probe exits successfully.
+- [x] Codex CLI raw stderr can contain plugin manifest warnings, MCP process-group warnings, and rollout-recording warnings even when the probe exits successfully.
   - Repro: `node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-probe.json --raw-cli --json`
-  - Impact: noisy diagnostics; not currently known to block normal SDK runs.
-  - Workaround: compare raw CLI probe output with SDK probe output before treating stderr warnings as the root cause.
+  - Current handling: raw CLI probe now emits structured `warnings[]` with `category`, `severity`, and original `message`.
+  - Remaining risk: these warnings may still require manual correlation with SDK probe output before treating stderr as the root cause.
 - [ ] SDK reconnect/stream failures can happen before a role writes full protocol artifacts.
   - Impact: failed runs may need fresh rerun instead of SDK resume when no saved usable role `threadId` exists.
   - Workaround: run `status --json`, inspect `session-log/*-error.json` and `eventTraceFile`, then use `sdk-probe` and `sdk-probe --raw-cli` to separate SDK wrapper vs CLI subprocess failures.
@@ -31,7 +31,7 @@
 - [ ] Parallel developer roles.
 - [ ] Snippet category/tag governance and broader reusable snippet coverage.
 - [ ] API probe quality gates across runs.
-- [ ] Finer SDK stream failure subcategories beyond the current `sdk_failed` / `sdk_reconnect_failed` split.
+- [x] Finer SDK/CLI diagnostic subcategories beyond the original `sdk_error` / `sdk_reconnect_failed` split.
 
 ## Dogfood findings
 
@@ -44,6 +44,18 @@
   - `rawCli.stdoutLineEvents[]` records `{ line, receivedAt }`
   - parsed probe `events[].receivedAt` uses the raw line receive timestamp when available
   - real verification: `node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-line-events.json --raw-cli --json` wrote 4 `stdoutLineEvents` and exited 0
+- [x] Raw CLI stderr warnings are now structured:
+  - `plugin_manifest_warning` and `mcp_process_group_warning`: `severity=noise`
+  - `rollout_recording_warning`: `severity=possibly_related`
+  - generic `codex_cli_warning` / `codex_cli_error` fallback categories remain available for unknown stderr lines
+  - real verification: `/tmp/codex-gtd-raw-cli-warnings.json` captured 15 warnings: 6 plugin manifest, 8 MCP process-group, 1 rollout recording
+- [x] SDK/CLI diagnostics now distinguish:
+  - `codex_cli_child_exit_timeout`
+  - `codex_cli_exit_failed`
+  - `codex_cli_jsonl_parse_failed`
+  - `sdk_stream_incomplete`
+  - `turn_timeout`
+  - `unsupported_tool`
 - [x] First-version small success run:
   - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 2 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-success`
   - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
@@ -181,10 +193,11 @@
 - [x] 直接 Codex CLI probe:
   - `sdk-probe --raw-cli` 捕获 stdout JSONL、stderr、exit code 和 signal，用于和 SDK event stream 对照
   - raw CLI JSON trace includes `stdoutLineEvents[]` with per-line receive timestamps, while preserving `stdoutLines[]`
+  - raw CLI JSON trace includes structured `warnings[]` parsed from stderr
   - real raw CLI probe passed, and exposed stderr warnings hidden by the SDK wrapper, including plugin manifest warnings, MCP process group termination warnings, and `failed to record rollout items: thread ... not found`
-- [ ] SDK/CLI failure hardening backlog:
+- [x] SDK/CLI failure hardening backlog:
   - 用真实 reconnect/timeout run 做 `sdk-probe` / raw CLI probe / `resume --execute` 对照记录
-  - failureCategory 增加更细的 SDK stream 子类，减少 `sdk_failed` 下的人工判断
+  - diagnostic classification 增加更细的 SDK/CLI stream 子类，减少 `sdk_failed` 下的人工判断
 - [x] 每个 run 终态写入 `run-summary.json`:
   - `status` / `reason`
   - `model`

@@ -417,6 +417,17 @@ function printSdkProbe(result: SdkProbeResult): void {
   if (result.rawCli) {
     console.log(`Raw CLI exit: ${result.rawCli.signal ? `signal ${result.rawCli.signal}` : `code ${result.rawCli.exitCode ?? 0}`}`);
     console.log(`Raw CLI stdout lines: ${result.rawCli.stdoutLines.length}`);
+    if (result.rawCli.warnings && result.rawCli.warnings.length > 0) {
+      console.log("Raw CLI warnings:");
+      const warningCounts = new Map<string, number>();
+      for (const warning of result.rawCli.warnings) {
+        const key = `${warning.severity}/${warning.category}`;
+        warningCounts.set(key, (warningCounts.get(key) ?? 0) + 1);
+      }
+      for (const [key, count] of [...warningCounts.entries()].sort()) {
+        console.log(`- ${key}: ${count}`);
+      }
+    }
     if (result.rawCli.stderr) console.log(`Raw CLI stderr: ${result.rawCli.stderr}`);
   }
   if (result.events.length > 0) {
