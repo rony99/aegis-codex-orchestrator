@@ -171,7 +171,7 @@ The status command is local-only. It reads `run-summary.json`, protocol health, 
 node dist/cli.js repair-plan --run-dir runs/<timestamp>
 ```
 
-This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`.
+This command is local-only. It reads `run-summary.json`, protocol health, and progress drift, then prints a deterministic next action such as `rerun`, `repair_protocol`, `answer_user`, or `inspect`. Rerun commands preserve recorded `--skip-discovery` and `--web-search` options when the failed run captured them.
 
 ### Export generated workspace output
 

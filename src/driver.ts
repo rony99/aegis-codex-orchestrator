@@ -1173,7 +1173,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "The last run timed out. Re-run the original task with the stable model and a longer turn timeout.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --turn-timeout-ms ${timeoutMs} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL, turnTimeoutMs: timeoutMs }),
       ],
     };
   }
@@ -1190,7 +1190,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "The selected model hit an unsupported tool path. Re-run the task with the stable model.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
       ],
     };
   }
@@ -1208,7 +1208,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       issues: summary.reason ? [summary.reason] : [],
       commands: [
         `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor${summary.options.skipDiscovery ? " --skip-discovery" : ""}`,
+        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
       ],
     };
   }
@@ -1240,7 +1240,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "Run reached the loop limit. Inspect progress.md, then re-run with a higher loop budget if the remaining work is clear.",
       issues: [],
       commands: [
-        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${shellQuote(summary.model)} --max-loops ${summary.maxLoops + 2} --skip-sdk-monitor`,
+        buildRunRerunCommand(summary, { model: summary.model, maxLoops: summary.maxLoops + 2 }),
       ],
     };
   }
@@ -1257,6 +1257,34 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
     issues: summary.reason ? [summary.reason] : [],
     commands: [],
   };
+}
+
+function buildRunRerunCommand(
+  summary: RunSummary,
+  options: { model: string; turnTimeoutMs?: number; maxLoops?: number },
+): string {
+  const parts = [
+    "codex-gtd",
+    "run",
+    "--task",
+    shellQuote(summary.taskFile),
+    "--model",
+    shellQuote(options.model),
+  ];
+  if (options.turnTimeoutMs !== undefined) {
+    parts.push("--turn-timeout-ms", String(options.turnTimeoutMs));
+  }
+  if (options.maxLoops !== undefined) {
+    parts.push("--max-loops", String(options.maxLoops));
+  }
+  parts.push("--skip-sdk-monitor");
+  if (summary.options.skipDiscovery) {
+    parts.push("--skip-discovery");
+  }
+  if (summary.options.webSearchMode) {
+    parts.push("--web-search", shellQuote(summary.options.webSearchMode));
+  }
+  return parts.join(" ");
 }
 
 export async function buildRunStatus(options: RunStatusOptions): Promise<RunStatus> {

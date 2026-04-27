@@ -738,6 +738,12 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
       model: "gpt-5.3-codex-spark",
       taskFile: path.join(runsDir, "task.md"),
       turnTimeoutMs: 300000,
+      options: {
+        observe: false,
+        monitorSdk: true,
+        skipDiscovery: true,
+        webSearchMode: "live",
+      },
       metrics: {
         sessionLogEntries: 1,
         roleTurns: {
@@ -767,6 +773,8 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
     assert.deepEqual(plan.issues, []);
     assert.ok(plan.commands.some((command) => command.includes("--model gpt-5.4")));
     assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms 600000")));
+    assert.ok(plan.commands.some((command) => command.includes("--skip-discovery")));
+    assert.ok(plan.commands.some((command) => command.includes("--web-search live")));
 
     const result = runCli(["repair-plan", "--run-dir", runDir]);
     assert.equal(result.status, 0);
@@ -774,6 +782,8 @@ test("repair-plan recommends deterministic recovery for timeout runs without inv
     assert.match(result.stdout, /Action: rerun/);
     assert.match(result.stdout, /--model gpt-5\.4/);
     assert.match(result.stdout, /--turn-timeout-ms 600000/);
+    assert.match(result.stdout, /--skip-discovery/);
+    assert.match(result.stdout, /--web-search live/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
