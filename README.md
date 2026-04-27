@@ -49,6 +49,7 @@ progress.md        # human log plus machine-readable state block
 blockers.md        # issues that require user attention or cannot be self-resolved
 run-summary.json   # machine-readable terminal state, failure category, and role metrics
 session-log/       # raw Codex turn traces for future observer/reflection work
+session-log/events/ # ordered SDK event traces for role turn diagnosis
 api-probes/        # API/SDK probe notes, scripts, samples, or failure records
 workspace/         # generated implementation and tests
 ```
@@ -99,6 +100,7 @@ The manager decides one next action at a time:
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Streaming role diagnostics in `session-log/inflight/` so long-running turns can be distinguished from no SDK events, active commands/tools, timeout, or permission/approval failures.
+- Ordered role event traces in `session-log/events/`; role error logs include `eventTraceFile` when a streamed trace is available.
 - SDK probe command (`codex-gtd sdk-probe`) that records raw streamed SDK events, final diagnosis, and an optional trace JSON file for reconnect/debugging cases. `--raw-cli` bypasses the SDK wrapper and captures Codex CLI stdout JSONL, stderr, exit code, and signal for subprocess-level diagnostics.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Bounded manager prompt context so long `progress.md`, probe notes, and snippets do not make later manager turns unnecessarily large.
@@ -147,6 +149,8 @@ node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file
 ```
 
 `sdk-probe` uses `runStreamed()` and records each SDK event with a diagnosis. A top-level SDK `error` event returns a failed probe result with the event type, classification, and detail instead of losing the stream output. Use `--raw-cli` when you need stderr and process exit details that the SDK wrapper does not expose.
+
+Normal role turns also write ordered event traces under `session-log/events/<timestamp>-<role>.json`. When a role fails, the matching `session-log/*-error.json` includes `eventTraceFile`, so you can jump from the failure summary to the complete streamed transcript.
 
 ### Run local tests
 

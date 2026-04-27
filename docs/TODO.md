@@ -4,6 +4,59 @@
 
 ---
 
+## First-version blockers
+
+- [x] `sdk-probe` and `sdk-probe --raw-cli` committed with local tests.
+- [x] Role turns persist complete streamed SDK event traces.
+- [x] Local verification baseline passes after runbook updates:
+  - `PATH=/Users/rony/.nvm/versions/node/v20.19.5/bin:$PATH npm run test:local`
+  - `PATH=/Users/rony/.nvm/versions/node/v20.19.5/bin:$PATH npm run typecheck`
+  - `git diff --check`
+- [x] One small real run reaches a usable terminal state and has readable `status` / `report` output.
+- [x] One reconnect/timeout-oriented dogfood run has `status` / `sdk-probe` / raw CLI evidence recorded.
+- [x] First-version runbook and backlog are updated in this file and README.
+
+## Known issues
+
+- [ ] Codex CLI raw stderr can contain plugin manifest warnings, MCP process-group warnings, and rollout-recording warnings even when the probe exits successfully.
+  - Repro: `node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-probe.json --raw-cli --json`
+  - Impact: noisy diagnostics; not currently known to block normal SDK runs.
+  - Workaround: compare raw CLI probe output with SDK probe output before treating stderr warnings as the root cause.
+- [ ] Raw CLI probe event timestamps currently reflect JSONL parse time after process exit.
+  - Impact: less useful for pinpointing the exact idle interval in a long stalled subprocess.
+  - Workaround: use role `session-log/inflight/*.json` and `session-log/events/*.json` for role turns; use raw CLI primarily for stderr/exit-code evidence.
+- [ ] SDK reconnect/stream failures can happen before a role writes full protocol artifacts.
+  - Impact: failed runs may need fresh rerun instead of SDK resume when no saved usable role `threadId` exists.
+  - Workaround: run `status --json`, inspect `session-log/*-error.json` and `eventTraceFile`, then use `sdk-probe` and `sdk-probe --raw-cli` to separate SDK wrapper vs CLI subprocess failures.
+
+## Enhancements after usable
+
+- [ ] Parallel developer roles.
+- [ ] Snippet category/tag governance and broader reusable snippet coverage.
+- [ ] API probe quality gates across runs.
+- [ ] Finer SDK stream failure subcategories beyond the current `sdk_failed` / `sdk_reconnect_failed` split.
+- [ ] Raw CLI probe line receive timestamps for better long-idle analysis.
+
+## Dogfood findings
+
+- [x] Raw CLI probe passed once and exposed stderr warnings hidden by the SDK wrapper:
+  - plugin manifest warnings
+  - MCP process group termination warnings
+  - `failed to record rollout items: thread ... not found`
+- [x] First-version small success run:
+  - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 2 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-success`
+  - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
+  - resume command: `node dist/cli.js resume --run-dir /tmp/codex-gtd-first-version-success/2026-04-27T10-55-48Z --execute --model gpt-5.4 --turn-timeout-ms 600000 --max-loops 4`
+  - final status: `done`, protocol health clean, report readable, 8 role event trace files
+- [x] First-version TODO exporter / reconnect-oriented run:
+  - command: `node dist/cli.js run --task examples/todo-exporter-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 1 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-todo`
+  - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
+  - SDK probe: `done`, 4 streamed events, trace `/tmp/codex-gtd-first-version-sdk-probe.json`
+  - raw CLI probe: `done`, exit code 0, 4 JSONL events, trace `/tmp/codex-gtd-first-version-raw-cli-probe.json`, stderr still contains plugin/MCP/rollout warnings
+  - resume command: `node dist/cli.js resume --run-dir /tmp/codex-gtd-first-version-todo/2026-04-27T11-08-38Z --execute --model gpt-5.4 --turn-timeout-ms 600000 --max-loops 3`
+  - final status: `done`, protocol health clean, report readable, 4 role event trace files
+  - reconnect was not reproduced in this run; observed failure was loop budget only, so no network/root SDK outage is indicated by this sample
+
 ## 当前真实实现(v0.5 alpha)
 
 - [x] TypeScript 项目初始化。
@@ -117,6 +170,10 @@
   - `session-log/inflight/*.json` 持续记录 `classification`、`lastEventType`、`lastItem`、`idleMs`
   - 每 30 秒向 stderr 输出 heartbeat，区分 no SDK events、active command/tool、idle timeout、permission/approval failure
   - SDK 不支持 streaming 时保留 buffered `run()` fallback
+- [x] 每个 streamed role turn 写入完整 event transcript:
+  - `session-log/events/<timestamp>-<role>.json` 记录 ordered SDK events、event timestamp、classification 和 detail
+  - 失败 trace 会保留最后已收到的 SDK event 和最终 diagnostic
+  - role 失败的 `session-log/*-error.json` 写入 `eventTraceFile`
 - [x] SDK stream probe:
   - `sdk-probe` 使用 `runStreamed()` 记录有序 SDK event transcript、最终 response/usage、threadId 和诊断分类
   - 支持 `--trace-file` 写入 JSON；顶层 `error` event 会返回 failed probe result，并保留 event type、classification 和 detail
@@ -124,8 +181,6 @@
   - `sdk-probe --raw-cli` 捕获 stdout JSONL、stderr、exit code 和 signal，用于和 SDK event stream 对照
   - real raw CLI probe passed, and exposed stderr warnings hidden by the SDK wrapper, including plugin manifest warnings, MCP process group termination warnings, and `failed to record rollout items: thread ... not found`
 - [ ] SDK/CLI failure hardening backlog:
-  - role turn 全量 event transcript 可选落盘，避免只保留 latest inflight diagnostic
-  - raw CLI probe 的事件时间戳目前是进程结束后解析时间；如需定位长时间 idle，应保留 stdout line receive timestamps
   - 用真实 reconnect/timeout run 做 `sdk-probe` / raw CLI probe / `resume --execute` 对照记录
   - failureCategory 增加更细的 SDK stream 子类，减少 `sdk_failed` 下的人工判断
 - [x] 每个 run 终态写入 `run-summary.json`:
