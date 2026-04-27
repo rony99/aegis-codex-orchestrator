@@ -18,6 +18,7 @@
   - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
+  - `codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
 - [x] Codex SDK web search 接入:
   - CLI 支持 `--web-search disabled|cached|live`
   - 环境变量支持 `CODEX_GTD_WEB_SEARCH`
@@ -116,6 +117,17 @@
   - `session-log/inflight/*.json` 持续记录 `classification`、`lastEventType`、`lastItem`、`idleMs`
   - 每 30 秒向 stderr 输出 heartbeat，区分 no SDK events、active command/tool、idle timeout、permission/approval failure
   - SDK 不支持 streaming 时保留 buffered `run()` fallback
+- [x] SDK stream probe:
+  - `sdk-probe` 使用 `runStreamed()` 记录有序 SDK event transcript、最终 response/usage、threadId 和诊断分类
+  - 支持 `--trace-file` 写入 JSON；顶层 `error` event 会返回 failed probe result，并保留 event type、classification 和 detail
+- [x] 直接 Codex CLI probe:
+  - `sdk-probe --raw-cli` 捕获 stdout JSONL、stderr、exit code 和 signal，用于和 SDK event stream 对照
+  - real raw CLI probe passed, and exposed stderr warnings hidden by the SDK wrapper, including plugin manifest warnings, MCP process group termination warnings, and `failed to record rollout items: thread ... not found`
+- [ ] SDK/CLI failure hardening backlog:
+  - role turn 全量 event transcript 可选落盘，避免只保留 latest inflight diagnostic
+  - raw CLI probe 的事件时间戳目前是进程结束后解析时间；如需定位长时间 idle，应保留 stdout line receive timestamps
+  - 用真实 reconnect/timeout run 做 `sdk-probe` / raw CLI probe / `resume --execute` 对照记录
+  - failureCategory 增加更细的 SDK stream 子类，减少 `sdk_failed` 下的人工判断
 - [x] 每个 run 终态写入 `run-summary.json`:
   - `status` / `reason`
   - `model`

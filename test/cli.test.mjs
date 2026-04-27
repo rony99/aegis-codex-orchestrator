@@ -14,6 +14,7 @@ import {
   applyWorkspacePatch,
   executeResumePlan,
   exportWorkspacePatch,
+  runSdkProbe,
   resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
   initializeRunProtocol,
@@ -157,6 +158,8 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
   assert.match(output, /codex-gtd status --run-dir <run-dir> \[--json\]/);
+  assert.match(output, /codex-gtd sdk-probe \[--model <model>\]/);
+  assert.match(output, /\[--raw-cli\]/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
 });
 
@@ -182,6 +185,159 @@ test("invalid web search mode fails fast before any SDK call", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /--web-search must be one of: disabled, cached, live/);
+});
+
+test("sdk probe records streamed events to a trace file", async () => {
+  const probeDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-sdk-probe-"));
+  const traceFile = path.join(probeDir, "trace.json");
+
+  try {
+    const fakeCodex = {
+      startThread(options) {
+        assert.equal(options.model, "gpt-5.4");
+        assert.equal(options.sandboxMode, "read-only");
+        assert.equal(options.approvalPolicy, "never");
+        assert.equal(options.skipGitRepoCheck, true);
+        return {
+          id: "probe-thread",
+          async runStreamed(prompt, runOptions) {
+            assert.match(prompt, /Codex SDK smoke test/);
+            assert.ok(runOptions.signal);
+            return {
+              events: (async function* () {
+                yield { type: "thread.started", thread_id: "probe-thread" };
+                yield { type: "turn.started" };
+                yield {
+                  type: "item.completed",
+                  item: {
+                    id: "message-1",
+                    type: "agent_message",
+                    text: "probe ok",
+                  },
+                };
+                yield {
+                  type: "turn.completed",
+                  usage: {
+                    input_tokens: 1,
+                    cached_input_tokens: 0,
+                    output_tokens: 1,
+                  },
+                };
+              })(),
+            };
+          },
+        };
+      },
+    };
+
+    const result = await runSdkProbe({
+      codex: fakeCodex,
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+      traceFile,
+    });
+
+    assert.equal(result.status, "done");
+    assert.equal(result.threadId, "probe-thread");
+    assert.equal(result.events.length, 4);
+    assert.equal(result.finalResponse, "probe ok");
+
+    const trace = JSON.parse(await readFile(traceFile, "utf8"));
+    assert.equal(trace.status, "done");
+    assert.equal(trace.events.length, 4);
+    assert.equal(trace.events[0].event.type, "thread.started");
+  } finally {
+    await rm(probeDir, { recursive: true, force: true });
+  }
+});
+
+test("sdk probe captures top-level stream errors as diagnostics", async () => {
+  const fakeCodex = {
+    startThread() {
+      return {
+        id: "probe-thread-error",
+        async runStreamed() {
+          return {
+            events: (async function* () {
+              yield { type: "thread.started", thread_id: "probe-thread-error" };
+              yield { type: "turn.started" };
+              yield {
+                type: "error",
+                message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
+              };
+            })(),
+          };
+        },
+      };
+    },
+  };
+
+  const result = await runSdkProbe({
+    codex: fakeCodex,
+    model: "gpt-5.4",
+    turnTimeoutMs: 1000,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.events.length, 3);
+  assert.equal(result.error?.eventType, "error");
+  assert.equal(result.error?.classification, "sdk_reconnect_failed");
+  assert.match(result.error?.detail ?? "", /Codex SDK stream reconnected or disconnected/);
+});
+
+test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async () => {
+  const probeDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-raw-cli-probe-"));
+  const traceFile = path.join(probeDir, "trace.json");
+
+  try {
+    const result = await runSdkProbe({
+      rawCli: true,
+      rawCliRunner: async ({ args, input }) => {
+        assert.deepEqual(args, [
+          "exec",
+          "--experimental-json",
+          "--model",
+          "gpt-5.4",
+          "--sandbox",
+          "read-only",
+          "--skip-git-repo-check",
+          "--config",
+          'approval_policy="never"',
+        ]);
+        assert.match(input, /Codex SDK smoke test/);
+        return {
+          stdoutLines: [
+            JSON.stringify({ type: "thread.started", thread_id: "raw-thread" }),
+            JSON.stringify({ type: "turn.started" }),
+            JSON.stringify({
+              type: "error",
+              message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
+            }),
+          ],
+          stderr: "raw stderr details",
+          exitCode: 0,
+          signal: null,
+        };
+      },
+      model: "gpt-5.4",
+      turnTimeoutMs: 1000,
+      traceFile,
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.threadId, "raw-thread");
+    assert.equal(result.events.length, 3);
+    assert.equal(result.rawCli?.stderr, "raw stderr details");
+    assert.equal(result.rawCli?.exitCode, 0);
+    assert.equal(result.error?.eventType, "error");
+    assert.equal(result.error?.classification, "sdk_reconnect_failed");
+
+    const trace = JSON.parse(await readFile(traceFile, "utf8"));
+    assert.equal(trace.rawCli.stderr, "raw stderr details");
+    assert.equal(trace.rawCli.stdoutLines.length, 3);
+  } finally {
+    await rm(probeDir, { recursive: true, force: true });
+  }
 });
 
 test("unknown flags fail fast before any SDK call", () => {

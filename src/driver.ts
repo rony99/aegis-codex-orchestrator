@@ -1,5 +1,5 @@
 import { Codex, type Thread, type ThreadEvent, type ThreadItem, type Usage, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -435,6 +435,62 @@ type RunContext = {
   threads: Map<Role, Thread>;
 };
 
+type SdkProbeCodexClient = Pick<Codex, "startThread">;
+
+export type RawCodexCliProbeRequest = {
+  args: string[];
+  input: string;
+  signal: AbortSignal;
+};
+
+export type RawCodexCliProbeResult = {
+  args: string[];
+  stdoutLines: string[];
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+};
+
+type RawCodexCliRunner = (request: RawCodexCliProbeRequest) => Promise<RawCodexCliProbeResult>;
+
+export type SdkProbeOptions = {
+  model?: string;
+  turnTimeoutMs?: number;
+  webSearchMode?: WebSearchMode;
+  traceFile?: string;
+  rawCli?: boolean;
+  rawCliRunner?: RawCodexCliRunner;
+  codex?: SdkProbeCodexClient;
+};
+
+export type SdkProbeTraceEvent = {
+  index: number;
+  receivedAt: string;
+  event: ThreadEvent;
+  classification: string;
+  detail: string;
+};
+
+export type SdkProbeResult = {
+  status: "done" | "failed";
+  model: string;
+  threadId: string | null;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  events: SdkProbeTraceEvent[];
+  finalResponse?: string;
+  usage?: Usage | null;
+  traceFile?: string;
+  rawCli?: RawCodexCliProbeResult;
+  error?: {
+    message: string;
+    eventType?: string;
+    classification: string;
+    detail: string;
+  };
+};
+
 type ObserverContext = {
   codex: CodexClient;
   model: string;
@@ -444,6 +500,310 @@ type ObserverContext = {
   webSearchMode?: WebSearchMode;
   threads: Map<Role, Thread>;
 };
+
+export async function runSdkProbe(options: SdkProbeOptions = {}): Promise<SdkProbeResult> {
+  const model = resolveModel(options.model);
+  const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode);
+  const codex = options.codex ?? new Codex();
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => {
+    abortController.abort();
+  }, turnTimeoutMs);
+  const traceEvents: SdkProbeTraceEvent[] = [];
+  let thread: Thread | null = null;
+  let rawThreadId: string | null = null;
+  let rawCli: RawCodexCliProbeResult | undefined;
+  let finalResponse = "";
+  let usage: Usage | null = null;
+
+  const finish = async (
+    patch: Pick<SdkProbeResult, "status"> & Partial<Pick<SdkProbeResult, "error" | "finalResponse" | "usage">>,
+  ): Promise<SdkProbeResult> => {
+    const endedAtMs = Date.now();
+    const result: SdkProbeResult = {
+      status: patch.status,
+      model,
+      threadId: rawThreadId ?? thread?.id ?? null,
+      startedAt,
+      endedAt: new Date(endedAtMs).toISOString(),
+      durationMs: endedAtMs - startedAtMs,
+      events: traceEvents,
+      finalResponse: patch.finalResponse,
+      usage: patch.usage,
+      error: patch.error,
+      traceFile: options.traceFile,
+      rawCli,
+    };
+
+    if (options.traceFile) {
+      await mkdir(path.dirname(options.traceFile), { recursive: true });
+      await writeFile(options.traceFile, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+    }
+
+    return result;
+  };
+
+  try {
+    if (options.rawCli) {
+      const input = smokePrompt(model);
+      const args = buildRawCodexCliProbeArgs(model, webSearchMode);
+      const runner = options.rawCliRunner ?? runRawCodexCliProbe;
+      rawCli = await runner({ args, input, signal: abortController.signal });
+
+      for (const line of rawCli.stdoutLines) {
+        let event: ThreadEvent;
+        try {
+          event = JSON.parse(line) as ThreadEvent;
+        } catch {
+          const message = `Failed to parse Codex CLI JSONL event: ${line}`;
+          const diagnosis = diagnoseFailureReason(message);
+          return finish({
+            status: "failed",
+            finalResponse,
+            usage,
+            error: {
+              message,
+              classification: diagnosis.classification,
+              detail: diagnosis.detail,
+            },
+          });
+        }
+
+        if (event.type === "thread.started") {
+          rawThreadId = event.thread_id;
+        }
+
+        const diagnosis = diagnoseThreadEvent(event);
+        traceEvents.push({
+          index: traceEvents.length,
+          receivedAt: new Date().toISOString(),
+          event,
+          classification: diagnosis.classification,
+          detail: diagnosis.detail,
+        });
+
+        if (event.type === "item.completed" && event.item.type === "agent_message") {
+          finalResponse = event.item.text;
+        } else if (event.type === "turn.completed") {
+          usage = event.usage;
+          return finish({ status: "done", finalResponse, usage });
+        } else if (event.type === "turn.failed") {
+          return finish({
+            status: "failed",
+            finalResponse,
+            usage,
+            error: {
+              message: event.error.message,
+              eventType: event.type,
+              classification: diagnosis.classification,
+              detail: diagnosis.detail,
+            },
+          });
+        } else if (event.type === "error") {
+          return finish({
+            status: "failed",
+            finalResponse,
+            usage,
+            error: {
+              message: event.message,
+              eventType: event.type,
+              classification: diagnosis.classification,
+              detail: diagnosis.detail,
+            },
+          });
+        }
+      }
+
+      const message = rawCli.exitCode === 0 && !rawCli.signal
+        ? "Codex CLI stream ended before turn.completed."
+        : `Codex CLI exited with ${rawCli.signal ? `signal ${rawCli.signal}` : `code ${rawCli.exitCode ?? 1}`}: ${rawCli.stderr}`;
+      const diagnosis = diagnoseFailureReason(message);
+      return finish({
+        status: "failed",
+        finalResponse,
+        usage,
+        error: {
+          message,
+          classification: diagnosis.classification,
+          detail: diagnosis.detail,
+        },
+      });
+    }
+
+    thread = codex.startThread({
+      model,
+      skipGitRepoCheck: true,
+      sandboxMode: "read-only",
+      approvalPolicy: "never",
+      webSearchMode,
+    });
+
+    const runStreamed = (thread as Thread & {
+      runStreamed?: Thread["runStreamed"];
+    }).runStreamed;
+    if (typeof runStreamed !== "function") {
+      throw new Error("Codex SDK thread does not support runStreamed(); cannot probe the event stream.");
+    }
+
+    const streamed = await runStreamed.call(thread, smokePrompt(model), { signal: abortController.signal });
+
+    for await (const event of streamed.events) {
+      const diagnosis = diagnoseThreadEvent(event);
+      traceEvents.push({
+        index: traceEvents.length,
+        receivedAt: new Date().toISOString(),
+        event,
+        classification: diagnosis.classification,
+        detail: diagnosis.detail,
+      });
+
+      if (event.type === "item.completed" && event.item.type === "agent_message") {
+        finalResponse = event.item.text;
+      } else if (event.type === "turn.completed") {
+        usage = event.usage;
+        return finish({ status: "done", finalResponse, usage });
+      } else if (event.type === "turn.failed") {
+        return finish({
+          status: "failed",
+          finalResponse,
+          usage,
+          error: {
+            message: event.error.message,
+            eventType: event.type,
+            classification: diagnosis.classification,
+            detail: diagnosis.detail,
+          },
+        });
+      } else if (event.type === "error") {
+        return finish({
+          status: "failed",
+          finalResponse,
+          usage,
+          error: {
+            message: event.message,
+            eventType: event.type,
+            classification: diagnosis.classification,
+            detail: diagnosis.detail,
+          },
+        });
+      }
+    }
+
+    const diagnosis = diagnoseFailureReason("Codex SDK stream ended before turn.completed.");
+    return finish({
+      status: "failed",
+      finalResponse,
+      usage,
+      error: {
+        message: "Codex SDK stream ended before turn.completed.",
+        classification: diagnosis.classification,
+        detail: diagnosis.detail,
+      },
+    });
+  } catch (error) {
+    const message = summarizeError(error);
+    const diagnosis = abortController.signal.aborted
+      ? {
+        classification: traceEvents.length > 0 ? "idle_until_turn_timeout" : "no_sdk_events_before_turn_timeout",
+        detail: traceEvents.length > 0
+          ? `No SDK event arrived before the ${turnTimeoutMs}ms turn timeout after ${traceEvents.at(-1)?.event.type}.`
+          : `No SDK event arrived before the ${turnTimeoutMs}ms turn timeout.`,
+      }
+      : diagnoseFailureReason(message);
+    return finish({
+      status: "failed",
+      finalResponse,
+      usage,
+      error: {
+        message,
+        classification: diagnosis.classification,
+        detail: diagnosis.detail,
+      },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildRawCodexCliProbeArgs(model: string, webSearchMode?: WebSearchMode): string[] {
+  const args = [
+    "exec",
+    "--experimental-json",
+    "--model",
+    model,
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--config",
+    'approval_policy="never"',
+  ];
+  if (webSearchMode) {
+    args.push("--config", `web_search="${webSearchMode}"`);
+  }
+  return args;
+}
+
+async function runRawCodexCliProbe(request: RawCodexCliProbeRequest): Promise<RawCodexCliProbeResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("codex", request.args, {
+      signal: request.signal,
+    });
+    const stdoutLines: string[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutRemainder = "";
+    let settled = false;
+
+    const finish = (result: RawCodexCliProbeResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
+    child.once("error", fail);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutRemainder += chunk.toString("utf8");
+      const lines = stdoutRemainder.split(/\r?\n/);
+      stdoutRemainder = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.length > 0) stdoutLines.push(line);
+      }
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    });
+
+    child.once("exit", (exitCode, signal) => {
+      if (stdoutRemainder.length > 0) {
+        stdoutLines.push(stdoutRemainder);
+      }
+      finish({
+        args: request.args,
+        stdoutLines,
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        exitCode,
+        signal,
+      });
+    });
+
+    if (!child.stdin) {
+      child.kill();
+      fail(new Error("Codex CLI child process has no stdin"));
+      return;
+    }
+    child.stdin.write(request.input);
+    child.stdin.end();
+  });
+}
 
 export async function runSmokeTest(
   options: { model?: string; turnTimeoutMs?: number; webSearchMode?: WebSearchMode } = {},

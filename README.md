@@ -72,6 +72,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
 - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
+- `codex-gtd sdk-probe [--model <model>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -98,6 +99,7 @@ The manager decides one next action at a time:
 - Local protocol helpers and tests for run initialization, progress state repair, API probe README sections, protocol drift, and manager decision parsing.
 - Session logs containing prompts, final responses, thread IDs, usage, and Codex items.
 - Streaming role diagnostics in `session-log/inflight/` so long-running turns can be distinguished from no SDK events, active commands/tools, timeout, or permission/approval failures.
+- SDK probe command (`codex-gtd sdk-probe`) that records raw streamed SDK events, final diagnosis, and an optional trace JSON file for reconnect/debugging cases. `--raw-cli` bypasses the SDK wrapper and captures Codex CLI stdout JSONL, stderr, exit code, and signal for subprocess-level diagnostics.
 - Fast test mode with the `codex-5.3-spark` alias, mapped to `gpt-5.3-codex-spark`.
 - Bounded manager prompt context so long `progress.md`, probe notes, and snippets do not make later manager turns unnecessarily large.
 - Role-level fallback from spark to `gpt-5.4` for unsupported tool/model errors and spark turn timeouts.
@@ -136,6 +138,15 @@ npm run smoke
 ```
 
 The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the most reliable default for this project. You can still pass `--model codex-5.3-spark` for faster experimental runs when that model is supported by your Codex account.
+
+For SDK stream debugging, use the probe command to keep the ordered event transcript:
+
+```bash
+node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-sdk-probe.json --json
+node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-probe.json --raw-cli --json
+```
+
+`sdk-probe` uses `runStreamed()` and records each SDK event with a diagnosis. A top-level SDK `error` event returns a failed probe result with the event type, classification, and detail instead of losing the stream output. Use `--raw-cli` when you need stderr and process exit details that the SDK wrapper does not expose.
 
 ### Run local tests
 
@@ -288,6 +299,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
+  codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 ```
 
 Defaults:

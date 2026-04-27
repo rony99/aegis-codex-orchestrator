@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -13,12 +13,14 @@ type ParsedArgs = {
   slug?: string;
   title?: string;
   outFile?: string;
+  traceFile?: string;
   targetDir?: string;
   write?: boolean;
   execute?: boolean;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
+  rawCli?: boolean;
   webSearchMode?: WebSearchMode;
   turnTimeoutMs?: number;
   maxLoops?: number;
@@ -111,6 +113,13 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--trace-file") {
+      if (!next) throw new Error("--trace-file requires a file path");
+      parsed.traceFile = next;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--target") {
       if (!next) throw new Error("--target requires a repository directory");
       parsed.targetDir = next;
@@ -150,6 +159,11 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--skip-sdk-monitor") {
       parsed.monitorSdk = false;
+      continue;
+    }
+
+    if (arg === "--raw-cli") {
+      parsed.rawCli = true;
       continue;
     }
 
@@ -215,6 +229,7 @@ Usage:
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
+  codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 
 Defaults:
   model: CODEX_GTD_MODEL or gpt-5.4
@@ -391,6 +406,36 @@ function printRunStatus(status: RunStatus): void {
   }
 }
 
+function printSdkProbe(result: SdkProbeResult): void {
+  console.log("SDK probe:");
+  console.log(`Status: ${result.status}`);
+  console.log(`Model: ${result.model}`);
+  console.log(`Thread ID: ${result.threadId ?? "unknown"}`);
+  console.log(`Duration: ${formatDuration(result.durationMs)}`);
+  console.log(`Events: ${result.events.length}`);
+  if (result.traceFile) console.log(`Trace file: ${result.traceFile}`);
+  if (result.rawCli) {
+    console.log(`Raw CLI exit: ${result.rawCli.signal ? `signal ${result.rawCli.signal}` : `code ${result.rawCli.exitCode ?? 0}`}`);
+    console.log(`Raw CLI stdout lines: ${result.rawCli.stdoutLines.length}`);
+    if (result.rawCli.stderr) console.log(`Raw CLI stderr: ${result.rawCli.stderr}`);
+  }
+  if (result.events.length > 0) {
+    const last = result.events.at(-1);
+    if (last) {
+      console.log(`Last event: ${last.event.type}`);
+      console.log(`Diagnosis: ${last.classification}`);
+      console.log(`Detail: ${last.detail}`);
+    }
+  }
+  if (result.error) {
+    console.log(`Error: ${result.error.message}`);
+    console.log(`Error classification: ${result.error.classification}`);
+    console.log(`Error detail: ${result.error.detail}`);
+  } else if (result.finalResponse) {
+    console.log(`Final response: ${result.finalResponse}`);
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -402,6 +447,25 @@ async function main(): Promise<void> {
   if (args.command === "smoke") {
     const result = await runSmokeTest({ model: args.model, webSearchMode: args.webSearchMode });
     console.log(result.finalResponse);
+    return;
+  }
+
+  if (args.command === "sdk-probe") {
+    const result = await runSdkProbe({
+      model: args.model,
+      webSearchMode: args.webSearchMode,
+      turnTimeoutMs: args.turnTimeoutMs,
+      traceFile: args.traceFile,
+      rawCli: args.rawCli,
+    });
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      printSdkProbe(result);
+    }
+    if (result.status !== "done") {
+      process.exitCode = 1;
+    }
     return;
   }
 
