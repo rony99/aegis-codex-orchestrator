@@ -443,9 +443,15 @@ export type RawCodexCliProbeRequest = {
   signal: AbortSignal;
 };
 
+export type RawCodexCliStdoutLineEvent = {
+  line: string;
+  receivedAt: string;
+};
+
 export type RawCodexCliProbeResult = {
   args: string[];
   stdoutLines: string[];
+  stdoutLineEvents?: RawCodexCliStdoutLineEvent[];
   stderr: string;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -553,12 +559,17 @@ export async function runSdkProbe(options: SdkProbeOptions = {}): Promise<SdkPro
       const runner = options.rawCliRunner ?? runRawCodexCliProbe;
       rawCli = await runner({ args, input, signal: abortController.signal });
 
-      for (const line of rawCli.stdoutLines) {
+      const rawStdoutEvents = rawCli.stdoutLineEvents ?? rawCli.stdoutLines.map((line) => ({
+        line,
+        receivedAt: new Date().toISOString(),
+      }));
+
+      for (const rawStdoutEvent of rawStdoutEvents) {
         let event: ThreadEvent;
         try {
-          event = JSON.parse(line) as ThreadEvent;
+          event = JSON.parse(rawStdoutEvent.line) as ThreadEvent;
         } catch {
-          const message = `Failed to parse Codex CLI JSONL event: ${line}`;
+          const message = `Failed to parse Codex CLI JSONL event: ${rawStdoutEvent.line}`;
           const diagnosis = diagnoseFailureReason(message);
           return finish({
             status: "failed",
@@ -579,7 +590,7 @@ export async function runSdkProbe(options: SdkProbeOptions = {}): Promise<SdkPro
         const diagnosis = diagnoseThreadEvent(event);
         traceEvents.push({
           index: traceEvents.length,
-          receivedAt: new Date().toISOString(),
+          receivedAt: rawStdoutEvent.receivedAt,
           event,
           classification: diagnosis.classification,
           detail: diagnosis.detail,
@@ -752,6 +763,7 @@ async function runRawCodexCliProbe(request: RawCodexCliProbeRequest): Promise<Ra
       signal: request.signal,
     });
     const stdoutLines: string[] = [];
+    const stdoutLineEvents: RawCodexCliStdoutLineEvent[] = [];
     const stderrChunks: Buffer[] = [];
     let stdoutRemainder = "";
     let settled = false;
@@ -774,7 +786,13 @@ async function runRawCodexCliProbe(request: RawCodexCliProbeRequest): Promise<Ra
       const lines = stdoutRemainder.split(/\r?\n/);
       stdoutRemainder = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.length > 0) stdoutLines.push(line);
+        if (line.length > 0) {
+          stdoutLines.push(line);
+          stdoutLineEvents.push({
+            line,
+            receivedAt: new Date().toISOString(),
+          });
+        }
       }
     });
 
@@ -785,10 +803,15 @@ async function runRawCodexCliProbe(request: RawCodexCliProbeRequest): Promise<Ra
     child.once("exit", (exitCode, signal) => {
       if (stdoutRemainder.length > 0) {
         stdoutLines.push(stdoutRemainder);
+        stdoutLineEvents.push({
+          line: stdoutRemainder,
+          receivedAt: new Date().toISOString(),
+        });
       }
       finish({
         args: request.args,
         stdoutLines,
+        stdoutLineEvents,
         stderr: Buffer.concat(stderrChunks).toString("utf8"),
         exitCode,
         signal,

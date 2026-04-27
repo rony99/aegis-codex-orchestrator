@@ -148,7 +148,7 @@ node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file
 node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-probe.json --raw-cli --json
 ```
 
-`sdk-probe` uses `runStreamed()` and records each SDK event with a diagnosis. A top-level SDK `error` event returns a failed probe result with the event type, classification, and detail instead of losing the stream output. Use `--raw-cli` when you need stderr and process exit details that the SDK wrapper does not expose.
+`sdk-probe` uses `runStreamed()` and records each SDK event with a diagnosis. A top-level SDK `error` event returns a failed probe result with the event type, classification, and detail instead of losing the stream output. Use `--raw-cli` when you need stderr and process exit details that the SDK wrapper does not expose. Raw CLI traces keep both the compatible `stdoutLines` array and `stdoutLineEvents[]` with per-line receive timestamps.
 
 Normal role turns also write ordered event traces under `session-log/events/<timestamp>-<role>.json`. When a role fails, the matching `session-log/*-error.json` includes `eventTraceFile`, so you can jump from the failure summary to the complete streamed transcript.
 

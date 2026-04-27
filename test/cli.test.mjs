@@ -314,6 +314,23 @@ test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async 
               message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
             }),
           ],
+          stdoutLineEvents: [
+            {
+              line: JSON.stringify({ type: "thread.started", thread_id: "raw-thread" }),
+              receivedAt: "2026-04-27T11:00:00.000Z",
+            },
+            {
+              line: JSON.stringify({ type: "turn.started" }),
+              receivedAt: "2026-04-27T11:00:05.000Z",
+            },
+            {
+              line: JSON.stringify({
+                type: "error",
+                message: "Reconnecting... 2/5 (timeout waiting for child process to exit)",
+              }),
+              receivedAt: "2026-04-27T11:01:00.000Z",
+            },
+          ],
           stderr: "raw stderr details",
           exitCode: 0,
           signal: null,
@@ -327,14 +344,19 @@ test("sdk probe can use raw Codex CLI output for subprocess diagnostics", async 
     assert.equal(result.status, "failed");
     assert.equal(result.threadId, "raw-thread");
     assert.equal(result.events.length, 3);
+    assert.equal(result.events[0].receivedAt, "2026-04-27T11:00:00.000Z");
+    assert.equal(result.events[2].receivedAt, "2026-04-27T11:01:00.000Z");
     assert.equal(result.rawCli?.stderr, "raw stderr details");
     assert.equal(result.rawCli?.exitCode, 0);
+    assert.equal(result.rawCli?.stdoutLineEvents?.length, 3);
     assert.equal(result.error?.eventType, "error");
     assert.equal(result.error?.classification, "sdk_reconnect_failed");
 
     const trace = JSON.parse(await readFile(traceFile, "utf8"));
     assert.equal(trace.rawCli.stderr, "raw stderr details");
     assert.equal(trace.rawCli.stdoutLines.length, 3);
+    assert.equal(trace.rawCli.stdoutLineEvents.length, 3);
+    assert.equal(trace.events[2].receivedAt, "2026-04-27T11:01:00.000Z");
   } finally {
     await rm(probeDir, { recursive: true, force: true });
   }

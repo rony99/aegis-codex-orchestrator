@@ -22,9 +22,6 @@
   - Repro: `node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-probe.json --raw-cli --json`
   - Impact: noisy diagnostics; not currently known to block normal SDK runs.
   - Workaround: compare raw CLI probe output with SDK probe output before treating stderr warnings as the root cause.
-- [ ] Raw CLI probe event timestamps currently reflect JSONL parse time after process exit.
-  - Impact: less useful for pinpointing the exact idle interval in a long stalled subprocess.
-  - Workaround: use role `session-log/inflight/*.json` and `session-log/events/*.json` for role turns; use raw CLI primarily for stderr/exit-code evidence.
 - [ ] SDK reconnect/stream failures can happen before a role writes full protocol artifacts.
   - Impact: failed runs may need fresh rerun instead of SDK resume when no saved usable role `threadId` exists.
   - Workaround: run `status --json`, inspect `session-log/*-error.json` and `eventTraceFile`, then use `sdk-probe` and `sdk-probe --raw-cli` to separate SDK wrapper vs CLI subprocess failures.
@@ -35,7 +32,6 @@
 - [ ] Snippet category/tag governance and broader reusable snippet coverage.
 - [ ] API probe quality gates across runs.
 - [ ] Finer SDK stream failure subcategories beyond the current `sdk_failed` / `sdk_reconnect_failed` split.
-- [ ] Raw CLI probe line receive timestamps for better long-idle analysis.
 
 ## Dogfood findings
 
@@ -43,6 +39,11 @@
   - plugin manifest warnings
   - MCP process group termination warnings
   - `failed to record rollout items: thread ... not found`
+- [x] Raw CLI probe now keeps line receive timestamps:
+  - `rawCli.stdoutLines` remains for compatibility
+  - `rawCli.stdoutLineEvents[]` records `{ line, receivedAt }`
+  - parsed probe `events[].receivedAt` uses the raw line receive timestamp when available
+  - real verification: `node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file /tmp/codex-gtd-raw-cli-line-events.json --raw-cli --json` wrote 4 `stdoutLineEvents` and exited 0
 - [x] First-version small success run:
   - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 2 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-success`
   - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
@@ -179,6 +180,7 @@
   - 支持 `--trace-file` 写入 JSON；顶层 `error` event 会返回 failed probe result，并保留 event type、classification 和 detail
 - [x] 直接 Codex CLI probe:
   - `sdk-probe --raw-cli` 捕获 stdout JSONL、stderr、exit code 和 signal，用于和 SDK event stream 对照
+  - raw CLI JSON trace includes `stdoutLineEvents[]` with per-line receive timestamps, while preserving `stdoutLines[]`
   - real raw CLI probe passed, and exposed stderr warnings hidden by the SDK wrapper, including plugin manifest warnings, MCP process group termination warnings, and `failed to record rollout items: thread ... not found`
 - [ ] SDK/CLI failure hardening backlog:
   - 用真实 reconnect/timeout run 做 `sdk-probe` / raw CLI probe / `resume --execute` 对照记录
