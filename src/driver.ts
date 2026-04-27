@@ -1195,6 +1195,24 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
     };
   }
 
+  if (failureCategory === "sdk_failed") {
+    return {
+      runDir,
+      action: "inspect",
+      resumable: false,
+      status: summary.status,
+      failureCategory,
+      terminalRole: summary.terminalRole,
+      reason: summary.reason,
+      summary: "Codex SDK/CLI failed locally. Check Codex CLI auth, local session health, and SDK smoke status before retrying resume or rerunning the task.",
+      issues: summary.reason ? [summary.reason] : [],
+      commands: [
+        `codex-gtd smoke --model ${ROLE_FALLBACK_MODEL}`,
+        `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${ROLE_FALLBACK_MODEL} --skip-sdk-monitor`,
+      ],
+    };
+  }
+
   if (failureCategory === "discovery_needed" || failureCategory === "blocker") {
     return {
       runDir,

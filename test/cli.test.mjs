@@ -572,6 +572,13 @@ test("status reclassifies historical observer-failed sdk reconnect summaries", a
     });
     await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
 
+    const plan = await buildRunRepairPlan({ runDir });
+    assert.equal(plan.action, "inspect");
+    assert.equal(plan.failureCategory, "sdk_failed");
+    assert.match(plan.summary, /Codex SDK\/CLI failed/);
+    assert.ok(plan.commands.some((command) => command.includes("codex-gtd smoke --model gpt-5.4")));
+    assert.ok(plan.commands.some((command) => command.includes("codex-gtd run --task")));
+
     const result = runCli(["status", "--run-dir", runDir]);
 
     assert.equal(result.status, 0);
@@ -579,6 +586,8 @@ test("status reclassifies historical observer-failed sdk reconnect summaries", a
     assert.match(result.stdout, /Failure category: sdk_failed/);
     assert.match(result.stdout, /Protocol health: clean/);
     assert.match(result.stdout, /Recommended action: inspect/);
+    assert.match(result.stdout, /Codex SDK\/CLI failed/);
+    assert.match(result.stdout, /codex-gtd smoke --model gpt-5\.4/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
