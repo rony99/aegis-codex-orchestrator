@@ -1365,6 +1365,9 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   }
 
   const resumePlan = await buildResumePlan({ runDir });
+  const recommendedAction = resumePlan.action === "resume_sdk" && !resumePlan.ready
+    ? statusFallbackAction(resumePlan)
+    : resumePlan.action;
   return {
     runDir,
     terminalStatus: summary.status,
@@ -1374,10 +1377,17 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
     protocolHealth,
     protocolIssues,
     diagnostic,
-    recommendedAction: resumePlan.action,
+    recommendedAction,
     summary: resumePlan.summary,
     commands: resumePlan.commands,
   };
+}
+
+function statusFallbackAction(plan: ResumePlan): RunStatusAction {
+  if (plan.commands.some((command) => command.includes("codex-gtd run --task"))) {
+    return "rerun";
+  }
+  return "inspect";
 }
 
 export async function exportWorkspacePatch(options: ExportWorkspaceOptions): Promise<ExportWorkspaceResult> {
@@ -1463,7 +1473,8 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
 
   if (isSdkRecoverableRepairPlan(repairPlan)) {
     const summary = await readRunSummary(runDir);
-    const target = summary ? await selectResumeSdkTarget(runDir, summary, repairPlan.failureCategory) : undefined;
+    const selection = summary ? await selectResumeSdkTarget(runDir, summary, repairPlan.failureCategory) : {};
+    const target = selection.target;
     const action: ResumePlanAction = "resume_sdk";
     const command = `codex-gtd resume --run-dir ${shellQuote(runDir)} --execute`;
 
@@ -1474,7 +1485,7 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
         ready: false,
         source: "resume",
         summary: "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.",
-        issues: ["No resumable thread found for the recoverable failure. Re-run the original task if the local Codex session is unavailable."],
+        issues: [selection.blockedReason ?? "No resumable thread found for the recoverable failure. Re-run the original task if the local Codex session is unavailable."],
         commands: repairPlan.commands,
       };
     }
@@ -1550,13 +1561,17 @@ type SessionLogEntry = {
   prompt?: string;
   startedAt: string;
   isError: boolean;
+  diagnostic?: {
+    classification?: string;
+    lastEventType?: string;
+  };
 };
 
 async function selectResumeSdkTarget(
   runDir: string,
   summary: RunSummary,
   failureCategory: FailureCategory,
-): Promise<ResumeSdkTarget | undefined> {
+): Promise<{ target?: ResumeSdkTarget; blockedReason?: string }> {
   const entries = await readSessionLogEntries(runDir);
   const managerLoop = summary.metrics.roleTurns.manager ?? 0;
   const nextLoop = Math.min(managerLoop + 1, summary.maxLoops + 1);
@@ -1571,17 +1586,33 @@ async function selectResumeSdkTarget(
     });
   }
 
-  if (!selected) return undefined;
+  if (!selected) return {};
   const role = normalizeResumableRole(selected.role);
-  if (!role || !selected.threadId) return undefined;
+  if (!role || !selected.threadId) return {};
+  if (failureCategory === "turn_timeout" && isIncompleteTimeoutThread(selected)) {
+    return {
+      blockedReason: "Saved SDK thread timed out before completing any SDK work; resume may reconnect to an incomplete turn. Re-run the original task instead.",
+    };
+  }
 
   return {
-    role,
-    threadId: selected.threadId,
-    prompt: selected.prompt,
-    sessionLogFile: selected.file,
-    nextLoop,
+    target: {
+      role,
+      threadId: selected.threadId,
+      prompt: selected.prompt,
+      sessionLogFile: selected.file,
+      nextLoop,
+    },
   };
+}
+
+function isIncompleteTimeoutThread(entry: SessionLogEntry): boolean {
+  const classification = entry.diagnostic?.classification;
+  if (classification !== "idle_until_turn_timeout" && classification !== "no_sdk_events_before_turn_timeout") {
+    return false;
+  }
+  const lastEventType = entry.diagnostic?.lastEventType;
+  return lastEventType === undefined || lastEventType === "turn.started";
 }
 
 async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]> {
@@ -1602,7 +1633,9 @@ async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]>
         threadId?: unknown;
         prompt?: unknown;
         startedAt?: unknown;
+        diagnostic?: unknown;
       };
+      const diagnostic = isSessionLogDiagnostic(parsed.diagnostic) ? parsed.diagnostic : undefined;
       entries.push({
         file: path.join("session-log", file),
         role: typeof parsed.role === "string" ? parsed.role : inferRoleFromSessionLogName(file),
@@ -1610,6 +1643,7 @@ async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]>
         prompt: typeof parsed.prompt === "string" && parsed.prompt.trim().length > 0 ? parsed.prompt : undefined,
         startedAt: typeof parsed.startedAt === "string" && parsed.startedAt.trim().length > 0 ? parsed.startedAt : file,
         isError: file.endsWith("-error.json"),
+        diagnostic,
       });
     } catch {
       continue;
@@ -1617,6 +1651,13 @@ async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]>
   }
 
   return entries;
+}
+
+function isSessionLogDiagnostic(value: unknown): value is SessionLogEntry["diagnostic"] {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { classification?: unknown; lastEventType?: unknown };
+  return (candidate.classification === undefined || typeof candidate.classification === "string")
+    && (candidate.lastEventType === undefined || typeof candidate.lastEventType === "string");
 }
 
 function latestSessionLogEntry(entries: SessionLogEntry[], predicate: (entry: SessionLogEntry) => boolean): SessionLogEntry | undefined {

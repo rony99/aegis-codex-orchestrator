@@ -165,7 +165,7 @@
   - recoverable categories: `turn_timeout` / `unsupported_tool` / `role_failed` / `invalid_manager_decision` / `max_loops`
   - `resume --execute` 使用 Codex SDK `resumeThread()` 恢复 role thread，并追加续跑到原 run 目录
   - manager 恢复会重新生成当前 run 状态下的 manager prompt；researcher/developer/tester 恢复优先复用失败 session log 中保存的 prompt
-  - blocker、discovery_needed、sdk_failed、observer_failed、协议健康失败或缺失 threadId 不会自动续跑
+  - blocker、discovery_needed、sdk_failed、observer_failed、协议健康失败、缺失 threadId 或仅到达 `turn.started` 的不完整 timeout thread 不会自动续跑
 - [x] SDK/model failure classification:
   - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`

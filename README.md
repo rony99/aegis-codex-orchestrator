@@ -163,7 +163,7 @@ node dist/cli.js status --run-dir runs/<timestamp>
 node dist/cli.js status --run-dir runs/<timestamp> --json
 ```
 
-The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`. Use `--json` when a script or monitor needs machine-readable output.
+The status command is local-only. It reads `run-summary.json`, protocol health, progress drift, and `session-log/inflight/` diagnostics, then recommends the next action such as `wait`, `rerun`, `export_workspace`, `resume_sdk`, `repair_protocol`, or `inspect`. Use `--json` when a script or monitor needs machine-readable output.
 
 ### Get a repair plan for a failed run
 
@@ -203,7 +203,7 @@ node dist/cli.js resume --run-dir runs/<timestamp> --execute --model gpt-5.4 --t
 
 This command is a planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs with `turn_timeout`, `unsupported_tool`, `role_failed`, `invalid_manager_decision`, or `max_loops`, it plans `resume_sdk` when a saved non-observer role `threadId` exists in `session-log/`. With `--execute`, `resume_sdk` reconstructs that Codex SDK thread and appends continuation output to the original run directory. Applying workspace output still stays dry-run unless `--write` is also present.
 
-Resume does not bypass user blockers: `blocker`, `discovery_needed`, `sdk_failed`, `observer_failed`, missing protocol files, protocol drift, or missing local Codex session IDs still require repair, user input, or a fresh run.
+Resume does not bypass user blockers: `blocker`, `discovery_needed`, `sdk_failed`, `observer_failed`, missing protocol files, protocol drift, or missing local Codex session IDs still require repair, user input, or a fresh run. Timeout threads that only reached `turn.started` and completed no SDK work are also treated as rerun-only because resuming that incomplete turn can reconnect to a broken SDK stream.
 
 ### Run the included pilot task
 
