@@ -70,6 +70,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd repair-plan --run-dir <run-dir>`
 - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
+- `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -104,6 +105,7 @@ The manager decides one next action at a time:
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
+- Resume command (`codex-gtd resume`) that chooses the next local recovery step without invoking Codex or writing target files.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -175,6 +177,15 @@ node dist/cli.js apply-workspace --run-dir runs/<timestamp> --target /path/to/re
 ```
 
 By default this only checks the patch. With `--write`, it applies the patch after verifying that the target is a git repository, the target working tree is clean, and `git apply --check` passes.
+
+### Choose the next recovery step
+
+```bash
+node dist/cli.js resume --run-dir runs/<timestamp>
+node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo
+```
+
+This command is a local planner. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`.
 
 ### Run the included pilot task
 
@@ -256,6 +267,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 ```
 
@@ -324,8 +336,7 @@ The repository is configured to publish only code and documentation:
 Near-term hardening:
 
 - Continue discovery hardening for non-interactive and ambiguous tasks.
-- Turn `repair-plan` into actual `resume` once role checkpoints are precise enough.
-- Add resume orchestration on top of `repair-plan`, `export-workspace`, and `apply-workspace`.
+- Turn local `resume` planning into SDK-backed continuation once role checkpoints are precise enough.
 - Run more medium/large dogfood passes now that observer and manager input are compacted.
 - Run more `--observe` dogfood passes and refine lesson quality.
 - Run more real SDK tasks to build a small corpus of failure categories and observer lessons.

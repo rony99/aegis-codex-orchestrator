@@ -8,6 +8,7 @@ import {
   buildProgressDocument,
   buildRunRepairPlan,
   buildRunSummary,
+  buildResumePlan,
   evaluateCloseoutGate,
   applyWorkspacePatch,
   exportWorkspacePatch,
@@ -149,6 +150,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
+  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -627,6 +629,80 @@ test("apply-workspace refuses dirty target repositories", async () => {
   } finally {
     await rm(runsDir, { recursive: true, force: true });
     await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test("resume plans export or apply for completed runs with workspace output", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-plan-"));
+  const targetDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-target-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-done", {
+      status: "done",
+      failureCategory: "none",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-done");
+    await writeFile(path.join(runDir, "workspace", "tool.js"), "console.log('tool');\n", "utf8");
+    execFileSync("git", ["init"], { cwd: targetDir, stdio: "ignore" });
+
+    const exportPlan = await buildResumePlan({ runDir });
+    assert.equal(exportPlan.action, "export_workspace");
+    assert.equal(exportPlan.ready, true);
+    assert.ok(exportPlan.commands.some((command) => command.includes("export-workspace")));
+
+    const applyPlan = await buildResumePlan({ runDir, targetDir });
+    assert.equal(applyPlan.action, "apply_workspace");
+    assert.equal(applyPlan.ready, true);
+    assert.ok(applyPlan.commands.some((command) => command.includes("apply-workspace")));
+    assert.ok(applyPlan.commands.some((command) => command.includes("--write")));
+
+    const cliResult = runCli(["resume", "--run-dir", runDir, "--target", targetDir]);
+    assert.equal(cliResult.status, 0);
+    assert.match(cliResult.stdout, /Resume plan:/);
+    assert.match(cliResult.stdout, /Action: apply_workspace/);
+    assert.match(cliResult.stdout, /apply-workspace/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test("resume delegates failed runs to repair-plan", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-failed-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Manager failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const plan = await buildResumePlan({ runDir });
+
+    assert.equal(plan.action, "rerun");
+    assert.equal(plan.ready, false);
+    assert.equal(plan.source, "repair-plan");
+    assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms")));
+
+    const cliResult = runCli(["resume", "--run-dir", runDir]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stdout, /Source: repair-plan/);
+    assert.match(cliResult.stdout, /Action: rerun/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
   }
 });
 

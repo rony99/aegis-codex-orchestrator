@@ -164,6 +164,26 @@ export type ApplyWorkspaceResult = {
   applied: boolean;
 };
 
+export type ResumePlanOptions = {
+  runDir: string;
+  targetDir?: string;
+};
+
+export type ResumePlanAction =
+  | "export_workspace"
+  | "apply_workspace"
+  | RepairPlanAction;
+
+export type ResumePlan = {
+  runDir: string;
+  action: ResumePlanAction;
+  ready: boolean;
+  source: "resume" | "repair-plan";
+  summary: string;
+  issues: string[];
+  commands: string[];
+};
+
 export type ObserveResult = {
   runDir: string;
   status: "done" | "failed";
@@ -1215,6 +1235,64 @@ export async function applyWorkspacePatch(options: ApplyWorkspaceOptions): Promi
     fileCount: exportResult.fileCount,
     byteCount: exportResult.byteCount,
     applied: Boolean(options.write),
+  };
+}
+
+export async function buildResumePlan(options: ResumePlanOptions): Promise<ResumePlan> {
+  const runDir = path.resolve(options.runDir);
+  const repairPlan = await buildRunRepairPlan({ runDir });
+
+  if (repairPlan.action !== "none") {
+    return {
+      runDir,
+      action: repairPlan.action,
+      ready: false,
+      source: "repair-plan",
+      summary: repairPlan.summary,
+      issues: repairPlan.issues,
+      commands: repairPlan.commands,
+    };
+  }
+
+  const workspaceFiles = await collectWorkspaceTextFiles(path.join(runDir, "workspace"));
+  if (workspaceFiles.length === 0) {
+    return {
+      runDir,
+      action: "inspect",
+      ready: false,
+      source: "resume",
+      summary: "Run is done, but workspace is empty. Nothing can be exported or applied.",
+      issues: ["workspace is empty"],
+      commands: [],
+    };
+  }
+
+  if (options.targetDir) {
+    const targetDir = path.resolve(options.targetDir);
+    return {
+      runDir,
+      action: "apply_workspace",
+      ready: true,
+      source: "resume",
+      summary: "Run is done and workspace output is ready for guarded apply.",
+      issues: [],
+      commands: [
+        `codex-gtd apply-workspace --run-dir ${shellQuote(runDir)} --target ${shellQuote(targetDir)}`,
+        `codex-gtd apply-workspace --run-dir ${shellQuote(runDir)} --target ${shellQuote(targetDir)} --write`,
+      ],
+    };
+  }
+
+  return {
+    runDir,
+    action: "export_workspace",
+    ready: true,
+    source: "resume",
+    summary: "Run is done and workspace output is ready to export as a reviewable patch.",
+    issues: [],
+    commands: [
+      `codex-gtd export-workspace --run-dir ${shellQuote(runDir)}`,
+    ],
   };
 }
 

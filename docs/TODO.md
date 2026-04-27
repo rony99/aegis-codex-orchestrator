@@ -14,6 +14,7 @@
   - `codex-gtd repair-plan --run-dir <run-dir>`
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
+  - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
 - [x] Codex SDK web search 接入:
@@ -142,6 +143,11 @@
   - 默认 dry-run，只执行导出与 `git apply --check`
   - `--write` 才实际写入目标 repo
   - 目标必须是 git repo 且工作区干净，否则阻断
+- [x] local resume planner:
+  - `resume --run-dir <run-dir> [--target <repo-dir>]`
+  - completed run + workspace 输出: 建议 `export_workspace`
+  - completed run + target repo: 建议 `apply_workspace`
+  - failed run: 委托 `repair-plan` 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`
 - [x] SDK/model failure classification:
   - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
@@ -456,6 +462,6 @@
 
 ## 当前判断
 
-v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan 指标化、workspace patch 导出与 guarded apply、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
+v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan/resume 指标化、workspace patch 导出与 guarded apply、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
 
-但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时把 `repair-plan` / `export-workspace` / `apply-workspace` 编排成真正的 `resume` 命令。
+但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时把本地 `resume` planner 推进为 SDK-backed continuation。
