@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  auditSnippets,
   buildProgressDocument,
   buildRunRepairPlan,
   buildRunSummary,
@@ -155,6 +156,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
   assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\] \[--model <model>\] \[--web-search <disabled\|cached\|live>\] \[--snippets-dir <dir>\] \[--turn-timeout-ms <ms>\] \[--max-loops <n>\] \[--observe\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
+  assert.match(output, /codex-gtd audit-snippets \[--snippets-dir <dir>\] \[--json\]/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
   assert.match(output, /codex-gtd status --run-dir <run-dir> \[--json\]/);
@@ -2732,12 +2734,109 @@ test("snippet candidate parser ignores unstructured bullet lists", () => {
 test("published snippets are focused reusable snippets, not raw candidate bundles", async () => {
   const snippetsDir = path.join(new URL("..", import.meta.url).pathname, "snippets");
   const files = (await readdir(snippetsDir)).filter((file) => file.endsWith(".md") && file !== "INDEX.md");
+  const audit = await auditSnippets({ snippetsDir });
 
   assert.ok(files.length > 0);
+  assert.equal(audit.failed, 0);
   for (const file of files) {
     const content = await readFile(path.join(snippetsDir, file), "utf8");
     assert.doesNotMatch(content, /^# Snippet candidates/m, `${file} should not embed raw candidate bundles`);
     assert.doesNotMatch(content, /^## Candidates extracted from observer lessons/m, `${file} should not embed candidate extraction sections`);
+  }
+});
+
+test("auditSnippets checks first-version snippet quality without requiring SDK", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-snippet-audit-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+
+  try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(path.join(snippetsDir, "good.md"), `# Snippet: Good parser
+
+<!-- snippet-promotion: {"status":"approved","source":"candidate.md","createdBy":"test"} -->
+
+## Purpose
+
+Use this when parser behavior needs local fixture coverage.
+
+## Dependencies
+
+Node.js 20 and node:test.
+
+## Apply when
+
+The task needs deterministic text parsing.
+
+## Verification
+
+Run node --test.
+
+## Common pitfalls
+
+Avoid broad regexes without edge cases.
+`, "utf8");
+    await writeFile(path.join(snippetsDir, "weak.md"), `# Snippet: Weak parser
+
+## Purpose
+
+Reusable parser guidance.
+
+## Dependencies
+
+Node.js.
+`, "utf8");
+    await writeFile(path.join(snippetsDir, "bad.md"), `# Bad parser
+
+## Purpose
+
+Missing required title format.
+
+## Dependencies
+
+Node.js.
+`, "utf8");
+    await mkdir(path.join(snippetsDir, "_candidates"), { recursive: true });
+    await writeFile(path.join(snippetsDir, "_candidates", "ignored.md"), "# Bad candidate\n", "utf8");
+    await writeFile(path.join(snippetsDir, "INDEX.md"), "# Index\n", "utf8");
+
+    const result = await auditSnippets({ snippetsDir });
+
+    assert.equal(result.snippetCount, 3);
+    assert.equal(result.passed, 2);
+    assert.equal(result.failed, 1);
+    assert.equal(result.warnings, 6);
+    assert.equal(result.entries.find((entry) => entry.file === "good.md")?.metadata?.createdBy, "test");
+    assert.deepEqual(
+      result.entries.find((entry) => entry.file === "bad.md")?.issues.map((issue) => issue.code),
+      ["missing_snippet_title", "missing_verification", "missing_pitfalls", "missing_apply_when"],
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("audit-snippets CLI emits JSON and fails only on error-level issues", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-snippet-audit-cli-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+
+  try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(path.join(snippetsDir, "bad.md"), `# Snippet: Bad parser
+
+## Purpose
+
+Missing dependency section.
+`, "utf8");
+
+    const result = runCli(["audit-snippets", "--snippets-dir", snippetsDir, "--json"]);
+    const parsed = JSON.parse(result.stdout);
+
+    assert.equal(result.status, 1);
+    assert.equal(parsed.snippetCount, 1);
+    assert.equal(parsed.failed, 1);
+    assert.ok(parsed.entries[0].issues.some((issue) => issue.code === "missing_dependencies"));
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
   }
 });
 

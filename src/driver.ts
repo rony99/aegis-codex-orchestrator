@@ -3984,6 +3984,40 @@ export type PromoteSnippetResult = {
   indexFile: string;
 };
 
+export type SnippetAuditIssue = {
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+};
+
+export type SnippetAuditEntry = {
+  file: string;
+  title: string;
+  slug: string;
+  metadata?: {
+    status?: string;
+    source?: string;
+    createdBy?: string;
+  };
+  sections: {
+    purpose: boolean;
+    dependencies: boolean;
+    verification: boolean;
+    pitfalls: boolean;
+    applyWhen: boolean;
+  };
+  issues: SnippetAuditIssue[];
+};
+
+export type SnippetAuditResult = {
+  snippetsDir: string;
+  snippetCount: number;
+  passed: number;
+  failed: number;
+  warnings: number;
+  entries: SnippetAuditEntry[];
+};
+
 export async function promoteSnippetCandidate(options: PromoteSnippetOptions): Promise<PromoteSnippetResult> {
   validateSnippetSlug(options.slug);
 
@@ -4031,6 +4065,115 @@ export async function promoteSnippetCandidate(options: PromoteSnippetOptions): P
     snippetFile,
     indexFile,
   };
+}
+
+export async function auditSnippets(options: { snippetsDir: string }): Promise<SnippetAuditResult> {
+  const snippetsDir = path.resolve(options.snippetsDir);
+  const entries = await readdir(snippetsDir, { withFileTypes: true });
+  const snippetFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "INDEX.md")
+    .map((entry) => entry.name)
+    .sort();
+
+  const auditEntries: SnippetAuditEntry[] = [];
+  for (const file of snippetFiles) {
+    const content = await readFile(path.join(snippetsDir, file), "utf8");
+    auditEntries.push(auditSnippetFile(file, content));
+  }
+
+  return {
+    snippetsDir,
+    snippetCount: auditEntries.length,
+    passed: auditEntries.filter((entry) => !entry.issues.some((issue) => issue.severity === "error")).length,
+    failed: auditEntries.filter((entry) => entry.issues.some((issue) => issue.severity === "error")).length,
+    warnings: auditEntries.reduce((count, entry) => count + entry.issues.filter((issue) => issue.severity === "warning").length, 0),
+    entries: auditEntries,
+  };
+}
+
+function auditSnippetFile(file: string, content: string): SnippetAuditEntry {
+  const issues: SnippetAuditIssue[] = [];
+  const titleMatch = content.match(/^#\s+Snippet:\s+(.+?)\s*$/m);
+  const title = titleMatch?.[1]?.trim() ?? "";
+  const sections = {
+    purpose: hasMarkdownSection(content, ["Purpose"]),
+    dependencies: hasMarkdownSection(content, ["Dependencies"]),
+    verification: hasMarkdownSection(content, ["Verification", "Example Verification", "Example Verification Skeleton", "Test", "Testing", "Sample response", "Code"]),
+    pitfalls: hasMarkdownSection(content, ["Common pitfalls", "Pitfalls", "Anti-patterns"]),
+    applyWhen: hasMarkdownSection(content, ["Apply when", "Use this when"]) || /use this when/i.test(extractMarkdownSection(content, "Purpose")),
+  };
+
+  if (!title) {
+    issues.push({
+      severity: "error",
+      code: "missing_snippet_title",
+      message: "Snippet files must start with '# Snippet: <title>'.",
+    });
+  }
+  if (!sections.purpose) {
+    issues.push({
+      severity: "error",
+      code: "missing_purpose",
+      message: "Add a Purpose section that explains the reusable behavior.",
+    });
+  }
+  if (!sections.dependencies) {
+    issues.push({
+      severity: "error",
+      code: "missing_dependencies",
+      message: "Add a Dependencies section that names runtime, library, or environment assumptions.",
+    });
+  }
+  if (!sections.verification) {
+    issues.push({
+      severity: "warning",
+      code: "missing_verification",
+      message: "Add verification guidance, a test skeleton, sample response, or command evidence.",
+    });
+  }
+  if (!sections.pitfalls) {
+    issues.push({
+      severity: "warning",
+      code: "missing_pitfalls",
+      message: "Add Common pitfalls, Pitfalls, or Anti-patterns so future runs know when not to apply it.",
+    });
+  }
+  if (!sections.applyWhen) {
+    issues.push({
+      severity: "warning",
+      code: "missing_apply_when",
+      message: "Add Apply when / Use this when guidance or equivalent Purpose wording.",
+    });
+  }
+
+  return {
+    file,
+    title,
+    slug: path.basename(file, ".md"),
+    metadata: parseSnippetPromotionMetadata(content),
+    sections,
+    issues,
+  };
+}
+
+function hasMarkdownSection(markdown: string, headings: string[]): boolean {
+  return headings.some((heading) => extractMarkdownSection(markdown, heading).trim().length > 0);
+}
+
+function parseSnippetPromotionMetadata(content: string): SnippetAuditEntry["metadata"] | undefined {
+  const match = content.match(/<!--\s*snippet-promotion:\s*(\{.*?\})\s*-->/s);
+  if (!match) return undefined;
+
+  try {
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+    return {
+      status: typeof parsed.status === "string" ? parsed.status : undefined,
+      source: typeof parsed.source === "string" ? parsed.source : undefined,
+      createdBy: typeof parsed.createdBy === "string" ? parsed.createdBy : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function generateSnippetCandidates(options: SnippetCandidateOptions): Promise<string[]> {

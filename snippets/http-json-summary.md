@@ -9,6 +9,11 @@ Fetch a JSON payload from a public endpoint and print a short summary for downst
 - `curl`
 - `python3`
 
+## Apply when
+
+- The task needs a small public JSON probe before implementation.
+- The endpoint is no-key, stable enough for local smoke checks, and the response can be summarized without storing secrets.
+
 ## Configuration / secrets
 
 - No secrets.

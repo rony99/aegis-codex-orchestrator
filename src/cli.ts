@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -222,6 +222,7 @@ Usage:
   codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd status --run-dir <run-dir> [--json]
   codex-gtd repair-plan --run-dir <run-dir> [--json]
@@ -447,6 +448,28 @@ function printSdkProbe(result: SdkProbeResult): void {
   }
 }
 
+function printSnippetAudit(result: SnippetAuditResult): void {
+  console.log("Snippet audit:");
+  console.log(`Snippets directory: ${result.snippetsDir}`);
+  console.log(`Snippets: ${result.snippetCount}`);
+  console.log(`Passed: ${result.passed}`);
+  console.log(`Failed: ${result.failed}`);
+  console.log(`Warnings: ${result.warnings}`);
+
+  const entriesWithIssues = result.entries.filter((entry) => entry.issues.length > 0);
+  if (entriesWithIssues.length === 0) {
+    console.log("All snippets pass the first-version quality gate.");
+    return;
+  }
+
+  console.log("Issues:");
+  for (const entry of entriesWithIssues) {
+    for (const issue of entry.issues) {
+      console.log(`- ${entry.file}: ${issue.severity}/${issue.code}: ${issue.message}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -566,6 +589,22 @@ async function main(): Promise<void> {
     console.log(`Snippet status: ${result.status}`);
     console.log(`Snippet file: ${result.snippetFile}`);
     console.log(`Index file: ${result.indexFile}`);
+    return;
+  }
+
+  if (args.command === "audit-snippets") {
+    const result = await auditSnippets({
+      snippetsDir: args.snippetsDir ?? "snippets",
+    });
+
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      printSnippetAudit(result);
+    }
+    if (result.failed > 0) {
+      process.exitCode = 1;
+    }
     return;
   }
 

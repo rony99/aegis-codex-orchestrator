@@ -107,6 +107,7 @@ The manager decides one next action at a time:
 - Role-level fallback from spark to `gpt-5.4` for unsupported tool/model errors and spark turn timeouts.
 - Observer pass command (`codex-gtd observe`) to generate `lessons.md` with protocol health context, or use `--observe` with `run` to auto-run it.
 - Snippet promotion command (`codex-gtd promote-snippet`) to move reviewed candidates into the reusable catalog.
+- Snippet audit command (`codex-gtd audit-snippets`) to check the first-version quality gate for reusable snippet files.
 - Report command (`codex-gtd report`) for done/ask-user/max-loop counts, failure categories, SDK/observer failures, protocol health, and recent run summaries, including timeout and unsupported-tool classification.
 - Status command (`codex-gtd status`) for one-run diagnostics, including protocol health, latest inflight role diagnosis, and the recommended next operator action.
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
@@ -286,6 +287,16 @@ node dist/cli.js promote-snippet \
 
 The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
 
+### Audit snippet quality
+
+Run the local snippet quality gate before relying on promoted snippets in dogfood tasks:
+
+```bash
+node dist/cli.js audit-snippets --snippets-dir snippets
+```
+
+Use `--json` for automation. The first-version gate fails snippets that are missing the `# Snippet: <title>` heading, `Purpose`, or `Dependencies`. Missing verification guidance, common pitfalls, or apply-when guidance are warnings so the existing catalog can be improved incrementally.
+
 ### Generated files and privacy
 
 Run artifacts are written to `runs/` and are intentionally ignored by git and npm packaging. They can contain local file paths, prompts, model traces, and generated workspace code. Do not publish `runs/` unless you have reviewed and sanitized it.
@@ -296,6 +307,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd status --run-dir <run-dir> [--json]
   codex-gtd repair-plan --run-dir <run-dir> [--json]

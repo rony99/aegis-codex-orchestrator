@@ -9,6 +9,11 @@ Read markdown files and emit a JSON array of TODO-like items.
 - Node.js runtime
 - No external API dependencies
 
+## Apply when
+
+- The task is a local markdown-to-JSON extraction utility.
+- TODO syntax is simple enough for a bounded parser fixture and does not require full markdown semantics.
+
 ## Configuration / secrets
 
 - No secrets.

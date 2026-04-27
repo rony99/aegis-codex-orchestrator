@@ -30,6 +30,7 @@
 
 - [ ] Parallel developer roles.
 - [ ] Snippet category/tag governance and broader reusable snippet coverage.
+  - First step done: `audit-snippets` checks the minimal reusable-snippet quality gate; broader categories/tags and more templates remain deferred.
 - [ ] API probe quality gates across runs.
 - [x] Finer SDK/CLI diagnostic subcategories beyond the original `sdk_error` / `sdk_reconnect_failed` split.
 
@@ -56,6 +57,11 @@
   - `sdk_stream_incomplete`
   - `turn_timeout`
   - `unsupported_tool`
+- [x] Snippet audit quality gate added:
+  - command: `node dist/cli.js audit-snippets --snippets-dir snippets`
+  - gate: missing title, `Purpose`, or `Dependencies` fails; missing verification, pitfalls, or apply-when guidance warns.
+  - use: run before/after candidate promotion so weak snippets are visible without blocking current dogfood work.
+  - current catalog verification: 3 snippets passed, 0 failed, 0 warnings.
 - [x] First-version small success run:
   - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 2 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-success`
   - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
@@ -83,6 +89,7 @@
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
   - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
+  - `codex-gtd audit-snippets [--snippets-dir <dir>] [--json]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
   - `codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
 - [x] Codex SDK web search 接入:
