@@ -14,7 +14,7 @@
   - `codex-gtd repair-plan --run-dir <run-dir>`
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
-  - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]`
+  - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]`
   - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
 - [x] Codex SDK web search 接入:
@@ -149,6 +149,12 @@
   - completed run + target repo: 建议 `apply_workspace`
   - failed run: 委托 `repair-plan` 输出 `rerun` / `repair_protocol` / `answer_user` / `inspect`
   - `--execute` 只执行本地 export/apply step；apply 仍默认 dry-run，只有 `--write` 才写目标 repo
+- [x] SDK-backed resume:
+  - recoverable failed run + saved non-observer role `threadId`: 建议 `resume_sdk`
+  - recoverable categories: `turn_timeout` / `unsupported_tool` / `role_failed` / `invalid_manager_decision` / `max_loops`
+  - `resume --execute` 使用 Codex SDK `resumeThread()` 恢复 role thread，并追加续跑到原 run 目录
+  - manager 恢复会重新生成当前 run 状态下的 manager prompt；researcher/developer/tester 恢复优先复用失败 session log 中保存的 prompt
+  - blocker、discovery_needed、sdk_failed、observer_failed、协议健康失败或缺失 threadId 不会自动续跑
 - [x] SDK/model failure classification:
   - `AbortError` / `operation was aborted` now classifies as `turn_timeout`
   - unsupported model/tool errors such as `Tool 'image_generation' is not supported` now classify as `unsupported_tool`
@@ -463,6 +469,6 @@
 
 ## 当前判断
 
-v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan/resume 指标化、workspace patch 导出与 guarded apply、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
+v0.5 alpha 已完成: discovery 接入、API probe 与 snippet 检索通路、prompt 接入、progress/run summary/report/repair-plan/resume 指标化、workspace patch 导出与 guarded apply、SDK-backed resume、observer lessons、protocol health context、observer 输入压缩、snippet candidate 生成与 promotion 入库、版本与文档同步都已打通。
 
-但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时把本地 `resume` planner 推进为 SDK-backed continuation。
+但它仍需要更多真实 run 数据。下一步继续跑更多 `--observe` dogfood，重点检查 promoted snippets 是否在后续任务中真实命中并提升开发质量；同时用真实 timeout/manager-failure run 继续验证 `resume --execute --model gpt-5.4 --turn-timeout-ms 600000 --observe` 的稳定性。
