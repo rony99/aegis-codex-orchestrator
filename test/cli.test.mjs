@@ -545,6 +545,45 @@ test("status recommends inspect when no summary exists and no turn is running", 
   }
 });
 
+test("status reclassifies historical observer-failed sdk reconnect summaries", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-reconnect-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-reconnect", {
+      status: "ask_user",
+      reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      failureCategory: "observer_failed",
+      terminalRole: "observer",
+      observer: {
+        runDir: path.join(runsDir, "run-reconnect"),
+        status: "failed",
+        reason: "Observer failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+      },
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-reconnect");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "observer",
+      loop: 2,
+      terminal: true,
+      reason: "Manager failed: Error: Reconnecting... 2/5 (timeout waiting for child process to exit)",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    const result = runCli(["status", "--run-dir", runDir]);
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Terminal status: ask_user/);
+    assert.match(result.stdout, /Failure category: sdk_failed/);
+    assert.match(result.stdout, /Protocol health: clean/);
+    assert.match(result.stdout, /Recommended action: inspect/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
 test("parseSnippetDecision reads structured spec decisions", () => {
   assert.deepEqual(parseSnippetDecision(`# Spec
 
@@ -1468,7 +1507,7 @@ test("run summary captures machine-readable terminal state", () => {
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
 });
 
-test("failure classification keeps primary role failures ahead of observer failures", () => {
+test("failure classification keeps sdk reconnect failures ahead of observer failures", () => {
   const failureCategory = classifyRunFailure({
     runDir: "/tmp/aegis-run",
     status: "ask_user",
@@ -1481,7 +1520,7 @@ test("failure classification keeps primary role failures ahead of observer failu
     snippetCandidates: [],
   }, "manager");
 
-  assert.equal(failureCategory, "role_failed");
+  assert.equal(failureCategory, "sdk_failed");
 });
 
 test("resolveRoleFallbackModel falls back from spark on unsupported tool and timeout errors", () => {

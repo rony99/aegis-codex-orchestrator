@@ -2284,7 +2284,7 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
 
 function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   const normalized = normalizeFailureCategory(summary.failureCategory);
-  if (normalized !== "role_failed") return normalized;
+  if (normalized !== "role_failed" && normalized !== "observer_failed") return normalized;
 
   return classifyRunFailure({
     runDir: summary.runDir,
@@ -2305,6 +2305,7 @@ export function classifyRunFailure(result: RunResult, terminalRole?: string): Fa
   if (reason.includes("discovery")) return "discovery_needed";
   if (reason.includes("aborterror") || reason.includes("operation was aborted")) return "turn_timeout";
   if (reason.includes("not supported") && reason.includes("tool")) return "unsupported_tool";
+  if (reason.includes("reconnecting") || reason.includes("timeout waiting for child process to exit")) return "sdk_failed";
   if (reason.includes("invalid decision") || reason.includes("invalid next_action")) {
     return "invalid_manager_decision";
   }
