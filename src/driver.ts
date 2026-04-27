@@ -172,7 +172,18 @@ export type ResumePlanOptions = {
 export type ResumePlanAction =
   | "export_workspace"
   | "apply_workspace"
+  | "resume_sdk"
   | RepairPlanAction;
+
+type ResumableRole = "researcher" | "manager" | "developer" | "tester";
+
+export type ResumeSdkTarget = {
+  role: ResumableRole;
+  threadId: string;
+  prompt?: string;
+  sessionLogFile: string;
+  nextLoop: number;
+};
 
 export type ResumePlan = {
   runDir: string;
@@ -182,10 +193,18 @@ export type ResumePlan = {
   summary: string;
   issues: string[];
   commands: string[];
+  sdkTarget?: ResumeSdkTarget;
 };
 
 export type ExecuteResumeOptions = ResumePlanOptions & {
   write?: boolean;
+  model?: string;
+  snippetsDir?: string;
+  observe?: boolean;
+  webSearchMode?: WebSearchMode;
+  turnTimeoutMs?: number;
+  maxLoops?: number;
+  codex?: CodexClient;
 };
 
 export type ExecuteResumeResult = {
@@ -193,6 +212,7 @@ export type ExecuteResumeResult = {
   executed: boolean;
   exportResult?: ExportWorkspaceResult;
   applyResult?: ApplyWorkspaceResult;
+  runResult?: RunResult;
 };
 
 export type ObserveResult = {
@@ -378,8 +398,10 @@ type DiscoveryDecision = {
   open_questions: string[];
 };
 
+export type CodexClient = Pick<Codex, "startThread" | "resumeThread">;
+
 type RunContext = {
-  codex: Codex;
+  codex: CodexClient;
   model: string;
   turnTimeoutMs: number;
   runDir: string;
@@ -391,7 +413,7 @@ type RunContext = {
 };
 
 type ObserverContext = {
-  codex: Codex;
+  codex: CodexClient;
   model: string;
   turnTimeoutMs: number;
   runDir: string;
@@ -735,10 +757,46 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     }, runMeta);
   }
 
+  const loopResult = await runExecutionLoop(context, maxLoops, 1);
+  const finalStatus = loopResult.status;
+  const finalReason = loopResult.reason;
+
+  const observer = options.observe
+    ? await safeRunObserver({
+      runDir,
+      model: options.model,
+      snippetsDir: options.snippetsDir,
+      turnTimeoutMs: options.turnTimeoutMs,
+      webSearchMode,
+    })
+    : undefined;
+
+  const snippetCandidates = finalStatus === "done" && observer?.status === "done"
+    ? await safeGenerateSnippetCandidates({
+      runDir,
+      snippetsDir,
+    })
+    : [];
+
+  return await finishRun(context, {
+    runDir,
+    status: finalStatus,
+    reason: finalReason,
+    observer,
+    snippetCandidates,
+    sdkMonitor,
+  }, runMeta);
+}
+
+async function runExecutionLoop(
+  context: RunContext,
+  maxLoops: number,
+  startLoop: number,
+): Promise<{ status: RunResult["status"]; reason?: string }> {
   let finalStatus: RunResult["status"] = "max_loops_reached";
   let finalReason: string | undefined;
 
-  for (let loop = 1; loop <= maxLoops; loop += 1) {
+  for (let loop = startLoop; loop <= maxLoops; loop += 1) {
     const managerRoleResult = await runRole(context, "manager", await managerPrompt(loop, context.runDir, context.snippetsDir));
     if (!managerRoleResult.ok) {
       const reason = `Manager failed: ${managerRoleResult.reason}`;
@@ -836,31 +894,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
     await appendBlocker(context.runDir, finalReason);
   }
 
-  const observer = options.observe
-    ? await safeRunObserver({
-      runDir,
-      model: options.model,
-      snippetsDir: options.snippetsDir,
-      turnTimeoutMs: options.turnTimeoutMs,
-      webSearchMode,
-    })
-    : undefined;
-
-  const snippetCandidates = finalStatus === "done" && observer?.status === "done"
-    ? await safeGenerateSnippetCandidates({
-      runDir,
-      snippetsDir,
-    })
-    : [];
-
-  return await finishRun(context, {
-    runDir,
-    status: finalStatus,
-    reason: finalReason,
-    observer,
-    snippetCandidates,
-    sdkMonitor,
-  }, runMeta);
+  return { status: finalStatus, reason: finalReason };
 }
 
 async function runSdkHealthCheck(options: {
@@ -1253,7 +1287,7 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
   const runDir = path.resolve(options.runDir);
   const repairPlan = await buildRunRepairPlan({ runDir });
 
-  if (repairPlan.action !== "none") {
+  if (repairPlan.action !== "none" && !isSdkRecoverableRepairPlan(repairPlan)) {
     return {
       runDir,
       action: repairPlan.action,
@@ -1262,6 +1296,36 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
       summary: repairPlan.summary,
       issues: repairPlan.issues,
       commands: repairPlan.commands,
+    };
+  }
+
+  if (isSdkRecoverableRepairPlan(repairPlan)) {
+    const summary = await readRunSummary(runDir);
+    const target = summary ? await selectResumeSdkTarget(runDir, summary, repairPlan.failureCategory) : undefined;
+    const action: ResumePlanAction = "resume_sdk";
+    const command = `codex-gtd resume --run-dir ${shellQuote(runDir)} --execute`;
+
+    if (!target) {
+      return {
+        runDir,
+        action,
+        ready: false,
+        source: "resume",
+        summary: "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.",
+        issues: ["No resumable thread found for the recoverable failure. Re-run the original task if the local Codex session is unavailable."],
+        commands: repairPlan.commands,
+      };
+    }
+
+    return {
+      runDir,
+      action,
+      ready: true,
+      source: "resume",
+      summary: `Resume ${target.role} from saved Codex SDK thread ${target.threadId}.`,
+      issues: [],
+      commands: [command],
+      sdkTarget: target,
     };
   }
 
@@ -1307,6 +1371,107 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
   };
 }
 
+function isSdkRecoverableRepairPlan(plan: RunRepairPlan): boolean {
+  return plan.status !== "done" && (
+    plan.failureCategory === "turn_timeout"
+    || plan.failureCategory === "unsupported_tool"
+    || plan.failureCategory === "role_failed"
+    || plan.failureCategory === "invalid_manager_decision"
+    || plan.failureCategory === "max_loops"
+  );
+}
+
+type SessionLogEntry = {
+  file: string;
+  role: string;
+  threadId?: string;
+  prompt?: string;
+  startedAt: string;
+  isError: boolean;
+};
+
+async function selectResumeSdkTarget(
+  runDir: string,
+  summary: RunSummary,
+  failureCategory: FailureCategory,
+): Promise<ResumeSdkTarget | undefined> {
+  const entries = await readSessionLogEntries(runDir);
+  const managerLoop = summary.metrics.roleTurns.manager ?? 0;
+  const nextLoop = Math.min(managerLoop + 1, summary.maxLoops + 1);
+
+  let selected: SessionLogEntry | undefined;
+  if (failureCategory === "invalid_manager_decision" || failureCategory === "max_loops") {
+    selected = latestSessionLogEntry(entries, (entry) => normalizeResumableRole(entry.role) === "manager");
+  } else {
+    selected = latestSessionLogEntry(entries, (entry) => {
+      const role = normalizeResumableRole(entry.role);
+      return entry.isError && role !== undefined;
+    });
+  }
+
+  if (!selected) return undefined;
+  const role = normalizeResumableRole(selected.role);
+  if (!role || !selected.threadId) return undefined;
+
+  return {
+    role,
+    threadId: selected.threadId,
+    prompt: selected.prompt,
+    sessionLogFile: selected.file,
+    nextLoop,
+  };
+}
+
+async function readSessionLogEntries(runDir: string): Promise<SessionLogEntry[]> {
+  const sessionLogDir = path.join(runDir, "session-log");
+  let files: string[];
+  try {
+    files = (await readdir(sessionLogDir)).filter((entry) => entry.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+
+  const entries: SessionLogEntry[] = [];
+  for (const file of files) {
+    try {
+      const raw = await readFile(path.join(sessionLogDir, file), "utf8");
+      const parsed = JSON.parse(raw) as {
+        role?: unknown;
+        threadId?: unknown;
+        prompt?: unknown;
+        startedAt?: unknown;
+      };
+      entries.push({
+        file: path.join("session-log", file),
+        role: typeof parsed.role === "string" ? parsed.role : inferRoleFromSessionLogName(file),
+        threadId: typeof parsed.threadId === "string" && parsed.threadId.trim().length > 0 ? parsed.threadId : undefined,
+        prompt: typeof parsed.prompt === "string" && parsed.prompt.trim().length > 0 ? parsed.prompt : undefined,
+        startedAt: typeof parsed.startedAt === "string" && parsed.startedAt.trim().length > 0 ? parsed.startedAt : file,
+        isError: file.endsWith("-error.json"),
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return entries;
+}
+
+function latestSessionLogEntry(entries: SessionLogEntry[], predicate: (entry: SessionLogEntry) => boolean): SessionLogEntry | undefined {
+  return entries
+    .filter(predicate)
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    .at(-1);
+}
+
+function normalizeResumableRole(role: string): ResumableRole | undefined {
+  const normalized = role.replace(/-fallback$/, "");
+  if (normalized === "researcher" || normalized === "manager" || normalized === "developer" || normalized === "tester") {
+    return normalized;
+  }
+  return undefined;
+}
+
 export async function executeResumePlan(options: ExecuteResumeOptions): Promise<ExecuteResumeResult> {
   const plan = await buildResumePlan(options);
   if (!plan.ready) {
@@ -1337,7 +1502,138 @@ export async function executeResumePlan(options: ExecuteResumeOptions): Promise<
     };
   }
 
+  if (plan.action === "resume_sdk") {
+    return {
+      plan,
+      executed: true,
+      runResult: await executeSdkResumePlan(options, plan),
+    };
+  }
+
   throw new Error(`resume action is not executable: ${plan.action}`);
+}
+
+async function executeSdkResumePlan(options: ExecuteResumeOptions, plan: ResumePlan): Promise<RunResult> {
+  if (!plan.sdkTarget) {
+    throw new Error("resume sdk requires a saved thread target");
+  }
+
+  const runDir = path.resolve(options.runDir);
+  const summary = await readRunSummary(runDir);
+  if (!summary) {
+    throw new Error("resume sdk requires a readable run-summary.json");
+  }
+
+  const model = resolveModel(options.model ?? summary.model);
+  const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
+  const webSearchMode = resolveWebSearchMode(options.webSearchMode ?? summary.options.webSearchMode);
+  const turnTimeoutMs = resolveTurnTimeout(options.turnTimeoutMs ?? summary.turnTimeoutMs);
+  const maxLoops = Math.max(options.maxLoops ?? summary.maxLoops, plan.sdkTarget.nextLoop);
+  const task = await readFile(path.join(runDir, "task.md"), "utf8");
+  await ensureSnippetCatalog(snippetsDir);
+
+  const context: RunContext = {
+    codex: options.codex ?? new Codex(),
+    model,
+    turnTimeoutMs,
+    runDir,
+    workspaceDir: path.join(runDir, "workspace"),
+    snippetsDir,
+    task,
+    webSearchMode,
+    threads: new Map<Role, Thread>(),
+  };
+
+  const startedAtMs = Number.isFinite(Date.parse(summary.startedAt)) ? Date.parse(summary.startedAt) : Date.now();
+  const runMeta: RunMeta = {
+    taskFile: summary.taskFile,
+    startedAt: summary.startedAt,
+    startedAtMs,
+    maxLoops,
+    turnTimeoutMs,
+    observe: options.observe ?? summary.options.observe,
+    monitorSdk: false,
+    skipDiscovery: summary.options.skipDiscovery,
+    webSearchMode,
+  };
+
+  const target = plan.sdkTarget;
+  const resumedThread = resumeRoleThread(context, target.role, target.threadId, model);
+  context.threads.set(target.role, resumedThread);
+  await appendProgress(context.runDir, `\n## Resume\n\nResuming ${target.role} from ${target.sessionLogFile} with thread ${target.threadId}.\n`, {
+    status: "running",
+    model,
+    startedAt: summary.startedAt,
+    lastUpdatedAt: new Date().toISOString(),
+    lastRole: "driver",
+    loop: summary.metrics.roleTurns.manager ?? 0,
+    terminal: false,
+  });
+
+  let preLoopFailure: string | undefined;
+  if (target.role !== "manager") {
+    if (!target.prompt) {
+      preLoopFailure = `Resume target ${target.role} is missing its saved prompt.`;
+    } else {
+      const roleResult = await runRole(context, target.role, target.prompt);
+      if (!roleResult.ok) {
+        preLoopFailure = `${capitalizeRole(target.role)} failed during resume: ${roleResult.reason}`;
+      }
+    }
+  }
+
+  if (preLoopFailure) {
+    await appendProgress(context.runDir, `\n## Failed\n\n${preLoopFailure}\n`);
+    await appendBlocker(context.runDir, preLoopFailure);
+    return await finishRun(context, {
+      runDir,
+      status: "ask_user",
+      reason: preLoopFailure,
+      observer: undefined,
+      snippetCandidates: [],
+      sdkMonitor: summary.sdkMonitor,
+    }, runMeta);
+  }
+
+  const loopResult = await runExecutionLoop(context, maxLoops, Math.max(1, target.nextLoop));
+  const observer = (options.observe ?? summary.options.observe)
+    ? await safeRunObserver({
+      runDir,
+      model,
+      snippetsDir,
+      turnTimeoutMs,
+      webSearchMode,
+    })
+    : undefined;
+
+  const snippetCandidates = loopResult.status === "done" && observer?.status === "done"
+    ? await safeGenerateSnippetCandidates({ runDir, snippetsDir })
+    : [];
+
+  return await finishRun(context, {
+    runDir,
+    status: loopResult.status,
+    reason: loopResult.reason,
+    observer,
+    snippetCandidates,
+    sdkMonitor: summary.sdkMonitor,
+  }, runMeta);
+}
+
+function resumeRoleThread(context: RunContext, role: Role, threadId: string, model: string): Thread {
+  return context.codex.resumeThread(threadId, {
+    model,
+    workingDirectory: context.runDir,
+    skipGitRepoCheck: true,
+    sandboxMode: role === "smoke" ? "read-only" : "workspace-write",
+    approvalPolicy: "never",
+    networkAccessEnabled: true,
+    webSearchMode: context.webSearchMode,
+  });
+}
+
+function capitalizeRole(role: string): string {
+  return role.slice(0, 1).toUpperCase() + role.slice(1);
 }
 
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {

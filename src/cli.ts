@@ -206,7 +206,7 @@ Usage:
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -344,6 +344,12 @@ function printResumeExecution(result: ExecuteResumeResult): void {
   }
   if (result.applyResult) {
     printWorkspaceApply(result.applyResult);
+  }
+  if (result.runResult) {
+    console.log(`Run status: ${result.runResult.status}`);
+    console.log(`Run directory: ${result.runResult.runDir}`);
+    if (result.runResult.reason) console.log(`Reason: ${result.runResult.reason}`);
+    if (result.runResult.observer) console.log(`Observer status: ${result.runResult.observer.status}`);
   }
 }
 
@@ -513,9 +519,18 @@ async function main(): Promise<void> {
         runDir: args.runDir,
         targetDir: args.targetDir,
         write: args.write,
+        model: args.model,
+        snippetsDir: args.snippetsDir,
+        observe: args.observe,
+        webSearchMode: args.webSearchMode,
+        turnTimeoutMs: args.turnTimeoutMs,
+        maxLoops: args.maxLoops,
       });
       printResumePlan(result.plan);
       printResumeExecution(result);
+      if (result.runResult && (result.runResult.status !== "done" || result.runResult.observer?.status === "failed")) {
+        process.exitCode = 1;
+      }
       return;
     }
 
