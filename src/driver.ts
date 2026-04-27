@@ -105,6 +105,7 @@ export type ObserveOptions = {
   snippetsDir?: string;
   turnTimeoutMs?: number;
   webSearchMode?: WebSearchMode;
+  expectRunSummary?: boolean;
 };
 
 export type ReportOptions = {
@@ -1122,6 +1123,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
               model: options.model,
               snippetsDir: options.snippetsDir,
               turnTimeoutMs: options.turnTimeoutMs,
+              expectRunSummary: false,
             })
             : undefined,
           sdkMonitor,
@@ -1145,6 +1147,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
               model: options.model,
               snippetsDir: options.snippetsDir,
               turnTimeoutMs: options.turnTimeoutMs,
+              expectRunSummary: false,
             })
             : undefined,
           sdkMonitor,
@@ -1166,6 +1169,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
               model: options.model,
               snippetsDir: options.snippetsDir,
               turnTimeoutMs: options.turnTimeoutMs,
+              expectRunSummary: false,
             })
             : undefined,
           sdkMonitor,
@@ -1190,6 +1194,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
               model: options.model,
               snippetsDir: options.snippetsDir,
               turnTimeoutMs: options.turnTimeoutMs,
+              expectRunSummary: false,
             })
             : undefined,
           sdkMonitor,
@@ -1214,6 +1219,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
           model: options.model,
           snippetsDir: options.snippetsDir,
           turnTimeoutMs: options.turnTimeoutMs,
+          expectRunSummary: false,
         })
         : undefined,
       sdkMonitor,
@@ -1232,6 +1238,7 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
       snippetsDir: options.snippetsDir,
       turnTimeoutMs: options.turnTimeoutMs,
       webSearchMode,
+      expectRunSummary: false,
     })
     : undefined;
 
@@ -2267,6 +2274,7 @@ async function executeSdkResumePlan(options: ExecuteResumeOptions, plan: ResumeP
       snippetsDir,
       turnTimeoutMs,
       webSearchMode,
+      expectRunSummary: false,
     })
     : undefined;
 
@@ -2698,13 +2706,16 @@ export function buildObserverProtocolHealthSection(input: ObserverProtocolHealth
   return `${lines.join("\n")}\n`;
 }
 
-async function buildObserverProtocolHealthSectionForRun(runDir: string): Promise<string> {
+export async function buildObserverProtocolHealthSectionForRun(runDir: string, options: { expectRunSummary?: boolean } = {}): Promise<string> {
+  const expectRunSummary = options.expectRunSummary ?? true;
   try {
-    const [runProtocol, apiProbesReadme, progressDrift] = await Promise.all([
-      validateRunProtocol(runDir),
+    const [runProtocol, apiProbesReadme] = await Promise.all([
+      validateRunProtocol(runDir, expectRunSummary ? RUN_PROTOCOL_ENTRIES : CLOSEOUT_PROTOCOL_ENTRIES),
       validateApiProbesReadme(runDir),
-      compareProgressRunSummary(runDir),
     ]);
+    const progressDrift = expectRunSummary
+      ? await compareProgressRunSummary(runDir)
+      : { ok: true, mismatches: [], details: [] };
     return buildObserverProtocolHealthSection({
       runProtocol,
       apiProbesReadme,
@@ -2965,7 +2976,9 @@ export async function runObserver(options: ObserveOptions): Promise<ObserveResul
     threads: new Map<Role, Thread>(),
   };
 
-  const protocolHealth = await buildObserverProtocolHealthSectionForRun(runDir);
+  const protocolHealth = await buildObserverProtocolHealthSectionForRun(runDir, {
+    expectRunSummary: options.expectRunSummary,
+  });
   const observerResult = await runObserverRole(context, await observerPrompt(runDir, context.snippetsDir, protocolHealth));
   if (!observerResult.ok) {
     return { runDir, status: "failed", reason: `Observer failed: ${observerResult.reason}` };

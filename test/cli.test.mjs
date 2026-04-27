@@ -18,6 +18,7 @@ import {
   runSdkProbe,
   resolveRoleFallbackModel,
   buildObserverProtocolHealthSection,
+  buildObserverProtocolHealthSectionForRun,
   initializeRunProtocol,
   parseManagerDecision,
   parseSnippetCandidateEntries,
@@ -2559,6 +2560,32 @@ test("observer protocol health section describes clean and unhealthy runs", () =
   assert.match(unhealthy, /Protocol health details:/);
   assert.match(unhealthy, /- progress\.md missing valid progress state block/);
   assert.match(unhealthy, /Mention these protocol health issues in lessons\.md\./);
+});
+
+test("observer protocol health ignores run-summary before driver finalization", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-observer-health-"));
+  const runDir = path.join(runsDir, "run-a");
+
+  try {
+    await initializeRunProtocol({
+      runDir,
+      task: "# Task\n\nBuild a local CLI.",
+      model: "gpt-5.4",
+      startedAt: "2026-04-24T00:00:00.000Z",
+    });
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nDone.\n", "utf8");
+    await writeFile(path.join(runDir, "interfaces.md"), "# Interfaces\n\nDone.\n", "utf8");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), VALID_API_PROBES_README, "utf8");
+
+    const liveObserverHealth = await buildObserverProtocolHealthSectionForRun(runDir, { expectRunSummary: false });
+    const postRunObserverHealth = await buildObserverProtocolHealthSectionForRun(runDir, { expectRunSummary: true });
+
+    assert.match(liveObserverHealth, /Protocol Health is clean\./);
+    assert.doesNotMatch(liveObserverHealth, /run-summary\.json/);
+    assert.match(postRunObserverHealth, /run-summary\.json/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
 });
 
 test("observer prompt includes protocol health context", async () => {

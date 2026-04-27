@@ -25,6 +25,9 @@
 - [ ] SDK reconnect/stream failures can happen before a role writes full protocol artifacts.
   - Impact: failed runs may need fresh rerun instead of SDK resume when no saved usable role `threadId` exists.
   - Workaround: run `status --json`, inspect `session-log/*-error.json` and `eventTraceFile`, then use `sdk-probe` and `sdk-probe --raw-cli` to separate SDK wrapper vs CLI subprocess failures.
+- [ ] Observer lessons can still mention transient mid-run state from session logs even when final `status` / `report` protocol health is clean.
+  - Impact: lessons may contain useful but noisy endgame observations, such as duplicate closeout loops or pre-finalization progress state.
+  - Workaround: treat final `status --json` and `report` protocol health as the source of truth; use lessons for patterns, not final protocol verdicts.
 
 ## Enhancements after usable
 
@@ -62,6 +65,20 @@
   - gate: missing title, `Purpose`, or `Dependencies` fails; missing verification, pitfalls, or apply-when guidance warns.
   - use: run before/after candidate promotion so weak snippets are visible without blocking current dogfood work.
   - current catalog verification: 3 snippets passed, 0 failed, 0 warnings.
+- [x] v0.6 dogfood public API probe run:
+  - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 4 --turn-timeout-ms 600000 --observe --runs-dir /tmp/codex-gtd-v06-dogfood-public`
+  - run: `/tmp/codex-gtd-v06-dogfood-public/2026-04-27T11-55-49Z`
+  - status: `done`, observer: `done`, protocol health clean, `report` readable
+  - snippet usage: `used` with `snippets/http-json-summary.md`
+  - event traces: 7
+  - finding: observer lessons saw pre-finalization `run-summary.json` as missing; fixed by letting internal observer use closeout protocol entries before driver finalization.
+- [x] v0.6 dogfood TODO exporter run:
+  - command: `node dist/cli.js run --task examples/todo-exporter-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 4 --turn-timeout-ms 600000 --observe --runs-dir /tmp/codex-gtd-v06-dogfood-todo`
+  - run: `/tmp/codex-gtd-v06-dogfood-todo/2026-04-27T12-06-00Z`
+  - status: `done`, observer: `done`, protocol health clean, `report` readable
+  - snippet usage: `used` with `snippets/markdown-todo-exporter.md`
+  - event traces: 9
+  - verification: `lessons.md` Protocol Health is clean and no longer mentions missing `run-summary.json`.
 - [x] First-version small success run:
   - command: `node dist/cli.js run --task examples/public-api-probe-task.md --model gpt-5.4 --skip-discovery --skip-sdk-monitor --max-loops 2 --turn-timeout-ms 600000 --runs-dir /tmp/codex-gtd-first-version-success`
   - initial status: `max_loops_reached`, `failureCategory=max_loops`, protocol health clean, recommended action `resume_sdk`
