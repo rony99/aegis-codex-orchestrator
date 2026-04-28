@@ -38,7 +38,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:local": "npm run build && node --test test/*.test.mjs",
+    "test:core": "npm run build && node --test test/cli.test.mjs",
+    "test:server": "npm run build && node --test test/server.test.mjs",
+    "test:local": "npm run build && node --test test/cli.test.mjs && node --test test/server.test.mjs",
     "dev": "tsx src/cli.ts",
     "smoke": "tsx src/cli.ts smoke --model gpt-5.4",
     "server": "node dist/server/index.js",

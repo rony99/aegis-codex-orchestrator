@@ -7,7 +7,7 @@ import { createRunDirectory } from "../driver.js";
 const DEFAULT_RUNS_DIR = path.resolve(process.cwd(), "runs");
 const CLI_PATH = path.resolve(process.cwd(), "dist", "cli.js");
 
-export type TaskStatus = "queued" | "running" | "done" | "ask_user" | "max_loops_reached" | "failed" | "unknown";
+export type TaskStatus = "queued" | "running" | "done" | "ask_user" | "max_loops_reached" | "failed" | "stopped" | "unknown";
 
 export interface Task {
   id: string;
@@ -28,7 +28,7 @@ interface ActiveTask {
   process: TaskProcess;
 }
 
-type TaskProcess = Pick<ReturnType<typeof spawn>, "on">;
+type TaskProcess = Pick<ReturnType<typeof spawn>, "on" | "kill">;
 type TaskProcessRunner = (
   command: string,
   args: string[],
@@ -88,6 +88,7 @@ function normalizeTaskStatus(status: unknown): TaskStatus {
     || status === "ask_user"
     || status === "max_loops_reached"
     || status === "failed"
+    || status === "stopped"
     || status === "unknown"
     ? status
     : "unknown";
@@ -486,6 +487,46 @@ Use the user reply as authoritative context. Continue implementation with the ex
   const details = await getTaskDetails(taskId, { runsDir: options.runsDir });
   if (!details) {
     throw new Error(`Task ${taskId} not found after reply`);
+  }
+  return details;
+}
+
+export async function stopTask(
+  taskId: string,
+  options: { runsDir?: string } = {},
+): Promise<NonNullable<Awaited<ReturnType<typeof getTaskDetails>>>> {
+  const task = await getTask(taskId, { runsDir: options.runsDir });
+  if (!task) {
+    throw new Error(`Task ${taskId} not found`);
+  }
+
+  const activeTask = activeTasks.get(taskId);
+  if (!activeTask) {
+    throw new Error(`Task ${taskId} is not running`);
+  }
+
+  const now = new Date().toISOString();
+  task.status = "stopped";
+  task.endedAt = now;
+  task.reason = "Stopped from Web";
+  task.failureCategory = "stopped_by_user";
+  taskStore.set(taskId, task);
+  activeTasks.delete(taskId);
+
+  await writeFile(path.join(task.runDir, "run-summary.json"), `${JSON.stringify({
+    status: "stopped",
+    reason: task.reason,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    terminalRole: task.terminalRole,
+    failureCategory: task.failureCategory,
+  }, null, 2)}\n`, "utf8");
+
+  activeTask.process.kill("SIGTERM");
+
+  const details = await getTaskDetails(taskId, { runsDir: options.runsDir });
+  if (!details) {
+    throw new Error(`Task ${taskId} not found after stop`);
   }
   return details;
 }

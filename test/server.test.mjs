@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
+import http from "node:http";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { startServer } from "../dist/server/index.js";
 import {
   createTask,
   getTaskDetails,
@@ -11,6 +13,7 @@ import {
   replyToTask,
   resetTaskManagerForTest,
   setTaskProcessRunnerForTest,
+  stopTask,
 } from "../dist/server/task-manager.js";
 
 function fakeChild() {
@@ -19,6 +22,61 @@ function fakeChild() {
 
 test.afterEach(() => {
   resetTaskManagerForTest();
+});
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    http.get(url, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          statusCode: response.statusCode,
+          body: JSON.parse(body),
+        });
+      });
+    }).on("error", reject);
+  });
+}
+
+test("server falls back to the next port when the requested port is busy", async () => {
+  const blocker = http.createServer((_req, res) => {
+    res.end("busy");
+  });
+  await new Promise((resolve) => blocker.listen(0, resolve));
+
+  const requestedPort = blocker.address().port;
+  const originalLog = console.log;
+  let server;
+
+  try {
+    console.log = () => {};
+    server = await startServer(requestedPort);
+    const actualPort = server.address().port;
+
+    assert.equal(actualPort, requestedPort + 1);
+
+    const response = await getJson(`http://127.0.0.1:${actualPort}/api/tasks?limit=1`);
+
+    assert.equal(response.statusCode, 200);
+    assert.ok(Array.isArray(response.body.tasks));
+  } finally {
+    console.log = originalLog;
+    if (server) await closeServer(server);
+    await closeServer(blocker);
+  }
 });
 
 test("server task list restores existing runs from disk", async () => {
@@ -182,4 +240,31 @@ test("server reply records user input and restarts ask_user tasks", async () => 
   assert.ok(runnerCalls[0].args.includes("--run-dir"));
   assert.equal(runnerCalls[0].args[runnerCalls[0].args.indexOf("--run-dir") + 1], runDir);
   assert.ok(runnerCalls[0].args.includes("--skip-discovery"));
+});
+
+test("server stop terminates the active task and records a stopped summary", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-server-stop-"));
+  let killedWithSignal;
+
+  setTaskProcessRunnerForTest(() => {
+    const child = fakeChild();
+    child.kill = (signal) => {
+      killedWithSignal = signal;
+      return true;
+    };
+    return child;
+  });
+
+  const task = await createTask("Stop this task from the web UI.", {
+    runsDir,
+    skipDiscovery: true,
+  });
+
+  const details = await stopTask(task.id, { runsDir });
+  const summary = JSON.parse(await readFile(path.join(task.runDir, "run-summary.json"), "utf8"));
+
+  assert.equal(killedWithSignal, "SIGTERM");
+  assert.equal(details.task.status, "stopped");
+  assert.equal(summary.status, "stopped");
+  assert.equal(summary.failureCategory, "stopped_by_user");
 });

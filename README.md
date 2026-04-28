@@ -159,8 +159,14 @@ Normal role turns also write ordered event traces under `session-log/events/<tim
 npm run test:local
 ```
 
-These tests cover CLI parsing and fast-fail behavior without invoking the Codex SDK.
-They also validate the machine-readable `run-summary.json` shape.
+`test:local` runs the CLI/core Codex team tests first, then the Web/server protocol tests. Treat `test:core` as the core orchestration gate and `test:server` as the Web/API communication gate:
+
+```bash
+npm run test:core
+npm run test:server
+```
+
+The core tests cover CLI parsing, run/status/resume/repair-plan behavior, progress files, SDK diagnostics, and the machine-readable `run-summary.json` shape without invoking live Codex SDK turns. The server tests cover Web task submission, same-runDir tracking, diagnostics exposure, ask_user replies, and stopping active tasks.
 
 ### Summarize runs
 

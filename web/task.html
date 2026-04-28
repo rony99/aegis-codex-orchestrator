@@ -118,7 +118,8 @@
 
     .status-badge.ask_user,
     .status-badge.max_loops_reached,
-    .status-badge.failed {
+    .status-badge.failed,
+    .status-badge.stopped {
       background-color: #fee2e2;
       color: var(--danger);
     }
@@ -150,6 +151,12 @@
       font-size: 14px;
       font-weight: 500;
       color: var(--gray-800);
+    }
+
+    .path-value {
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
     }
 
     .description-box {
@@ -396,6 +403,15 @@
       background-color: var(--gray-200);
     }
 
+    .btn-danger {
+      background-color: var(--danger);
+      color: white;
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background-color: #b91c1c;
+    }
+
     .refresh-btn {
       padding: 8px 16px;
       font-size: 13px;
@@ -524,6 +540,16 @@
       });
     }
 
+    function formatDuration(ms) {
+      if (typeof ms !== 'number' || Number.isNaN(ms)) return '-';
+      if (ms < 1000) return `${ms}ms`;
+      const seconds = Math.round(ms / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = seconds % 60;
+      return `${minutes}m ${remainingSeconds}s`;
+    }
+
     function getStatusLabel(status) {
       const labels = {
         queued: '排队中',
@@ -532,6 +558,7 @@
         ask_user: '需要用户',
         max_loops_reached: '超出循环',
         failed: '失败',
+        stopped: '已停止',
         unknown: '未知'
       };
       return labels[status] || status;
@@ -575,6 +602,7 @@
         }
       } catch (error) {
         console.error('Failed to fetch task details:', error);
+        renderError(`无法连接任务 API：${error.message}`);
       }
     }
 
@@ -606,15 +634,24 @@
               <button type="button" class="btn btn-secondary refresh-btn" onclick="fetchTaskDetails()">
                 刷新
               </button>
+              ${isRunning ? `
+                <button type="button" class="btn btn-danger refresh-btn" id="stopTaskBtn" onclick="stopCurrentTask()">
+                  停止
+                </button>
+              ` : ''}
             </div>
           </div>
 
           <div class="info-grid">
             <div class="info-item">
               <div class="info-label">任务 ID</div>
-              <div class="info-value" style="font-family: monospace; font-size: 12px;">
+              <div class="info-value path-value">
                 ${escapeHtml(task.id)}
               </div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Run 目录</div>
+              <div class="info-value path-value">${escapeHtml(task.runDir)}</div>
             </div>
             <div class="info-item">
               <div class="info-label">创建时间</div>
@@ -672,6 +709,24 @@
                 <div class="info-label">分类</div>
                 <div class="info-value">${escapeHtml(diagnostic.classification)}</div>
               </div>
+              <div class="info-item">
+                <div class="info-label">最近更新</div>
+                <div class="info-value">${formatDate(diagnostic.lastUpdatedAt)}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">最近事件</div>
+                <div class="info-value">${formatDate(diagnostic.lastEventAt)}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">空闲时间</div>
+                <div class="info-value">${formatDuration(diagnostic.idleMs)}</div>
+              </div>
+              ${diagnostic.lastEventType ? `
+                <div class="info-item">
+                  <div class="info-label">事件类型</div>
+                  <div class="info-value">${escapeHtml(diagnostic.lastEventType)}</div>
+                </div>
+              ` : ''}
             </div>
             <div class="diagnostic-detail">
               ${escapeHtml(diagnostic.detail)}
@@ -802,6 +857,30 @@
           nextSubmitBtn.disabled = false;
           nextSubmitBtn.textContent = '提交回复并继续';
         }
+      }
+    }
+
+    async function stopCurrentTask() {
+      const stopBtn = document.getElementById('stopTaskBtn');
+      if (stopBtn) {
+        stopBtn.disabled = true;
+        stopBtn.textContent = '停止中...';
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/tasks/${currentTaskId}/stop`, {
+          method: 'POST'
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          renderError(data.message || '停止失败');
+          return;
+        }
+
+        renderTaskDetails(data);
+      } catch (error) {
+        renderError('网络错误: ' + error.message);
       }
     }
 

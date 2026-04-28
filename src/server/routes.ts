@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { createTask, getTask, listTasks, getTaskDetails, replyToTask, type Task } from "./task-manager.js";
+import { createTask, getTask, listTasks, getTaskDetails, replyToTask, stopTask, type Task } from "./task-manager.js";
 
 const router = Router();
 
@@ -136,6 +136,32 @@ router.post("/tasks/:id/reply", async (req: Request, res: Response) => {
       summary: details.summary,
       diagnostic: details.diagnostic,
       message: "Reply recorded and task restarted",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.includes("not found") ? 404 : 400;
+    res.status(status).json({
+      error: status === 404 ? "Not Found" : "Bad Request",
+      message,
+    });
+  }
+});
+
+router.post("/tasks/:id/stop", async (req: Request, res: Response) => {
+  try {
+    const taskIdParam = req.params.id;
+    const taskId = Array.isArray(taskIdParam) ? taskIdParam[0] : taskIdParam;
+    const details = await stopTask(taskId);
+
+    res.json({
+      task: formatTaskResponse(details.task),
+      progress: details.progress,
+      log: details.log,
+      blockers: details.blockers,
+      spec: details.spec,
+      summary: details.summary,
+      diagnostic: details.diagnostic,
+      message: "Task stopped",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

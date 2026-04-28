@@ -436,10 +436,28 @@
       try {
         const response = await fetch(`${API_BASE}/tasks?limit=20`);
         const data = await response.json();
+
+        if (!response.ok) {
+          renderTaskListError(data.message || '加载任务列表失败');
+          return;
+        }
+
         renderTasks(data.tasks);
       } catch (error) {
         console.error('Failed to fetch tasks:', error);
+        renderTaskListError(`无法连接任务 API：${error.message}`);
       }
+    }
+
+    function renderTaskListError(message) {
+      const taskList = document.getElementById('taskList');
+      taskList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">!</div>
+          <p>${escapeHtml(message)}</p>
+          <p style="margin-top: 8px; font-size: 12px;">确认 Web server 正在运行后再刷新</p>
+        </div>
+      `;
     }
 
     function renderTasks(tasks) {
@@ -540,7 +558,7 @@
           document.getElementById('skipDiscovery').checked = false;
 
           setTimeout(() => {
-            fetchTasks();
+            window.location.href = `/task/${data.task.id}`;
           }, 500);
         } else {
           showAlert(alertEl, data.message || '创建任务失败');
