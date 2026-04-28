@@ -961,6 +961,31 @@ async function readSdkVersion(): Promise<string> {
   }
 }
 
+function sdkHealthBaselinePath(): string {
+  return path.join(path.resolve(SDK_MONITOR_DIR), SDK_MONITOR_FILE);
+}
+
+async function readSdkHealthBaseline(): Promise<SdkHealthResult | undefined> {
+  try {
+    const baselineContent = await readFile(sdkHealthBaselinePath(), "utf8");
+    return JSON.parse(baselineContent) as SdkHealthResult;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatSdkHealthBaselineDetail(baseline: Partial<SdkHealthResult>): string {
+  return baseline.checkedAt
+    ? `${baseline.status ?? "unknown"} at ${baseline.checkedAt}`
+    : baseline.status ?? "unknown";
+}
+
+function computeDoctorStatus(checks: DoctorCheck[]): DoctorResult["status"] {
+  return checks
+    .filter((check) => check.name !== "sdk-health-baseline")
+    .some((check) => check.status === "warning") ? "warning" : "ok";
+}
+
 export function buildSdkHealthResult(input: {
   model: string;
   sdkVersion: string;
@@ -1014,20 +1039,17 @@ export async function runDoctor(): Promise<DoctorResult> {
     suggestions.push("Add npm to PATH before running package scripts.");
   }
 
-  try {
-    const baselineContent = await readFile(path.join(path.resolve(SDK_MONITOR_DIR), SDK_MONITOR_FILE), "utf8");
-    const baseline = JSON.parse(baselineContent) as Partial<SdkHealthResult>;
+  const baseline = await readSdkHealthBaseline();
+  if (baseline) {
     checks.push({
       name: "sdk-health-baseline",
       status: baseline.passed === false ? "warning" : "ok",
-      detail: baseline.checkedAt
-        ? `${baseline.status ?? "unknown"} at ${baseline.checkedAt}`
-        : baseline.status ?? "unknown",
+      detail: formatSdkHealthBaselineDetail(baseline),
     });
     if (baseline.passed === false && typeof baseline.reason === "string") {
       suggestions.push(`Last SDK health check failed: ${baseline.reason}`);
     }
-  } catch {
+  } else {
     checks.push({
       name: "sdk-health-baseline",
       status: "warning",
@@ -1036,9 +1058,7 @@ export async function runDoctor(): Promise<DoctorResult> {
   }
 
   return {
-    status: checks
-      .filter((check) => check.name !== "sdk-health-baseline")
-      .some((check) => check.status === "warning") ? "warning" : "ok",
+    status: computeDoctorStatus(checks),
     nodeVersion: process.version,
     npmVersion,
     sdkVersion,
@@ -1498,16 +1518,9 @@ async function runSdkHealthCheck(options: {
   const checkedAt = new Date().toISOString();
   const sdkVersion = await readSdkVersion();
   const monitorDir = path.resolve(SDK_MONITOR_DIR);
-  const baselinePath = path.join(monitorDir, SDK_MONITOR_FILE);
+  const baselinePath = sdkHealthBaselinePath();
   await mkdir(monitorDir, { recursive: true });
-
-  let previous: SdkHealthResult | undefined;
-  try {
-    const baselineContent = await readFile(baselinePath, "utf8");
-    previous = JSON.parse(baselineContent) as SdkHealthResult;
-  } catch {
-    previous = undefined;
-  }
+  const previous = await readSdkHealthBaseline();
 
   let smokeError: string | undefined;
   try {

@@ -142,6 +142,8 @@ npm run smoke
 
 The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the most reliable default for this project. You can still pass `--model codex-5.3-spark` for faster experimental runs when that model is supported by your Codex account.
 
+For a CLI-first manual trial of `doctor`, `sdk-probe`, `run`, `status`, `resume`, and workspace export/apply, see [docs/CLI_TRIAL.md](docs/CLI_TRIAL.md).
+
 For SDK stream debugging, use the probe command to keep the ordered event transcript:
 
 ```bash
