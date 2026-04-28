@@ -12,10 +12,13 @@ type ParsedArgs = {
   candidate?: string;
   slug?: string;
   title?: string;
+  category?: string;
+  tags?: string[];
   outFile?: string;
   targetDir?: string;
   write?: boolean;
   execute?: boolean;
+  sdkContinue?: boolean;
   observe?: boolean;
   monitorSdk?: boolean;
   skipDiscovery?: boolean;
@@ -103,6 +106,20 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--category") {
+      if (!next) throw new Error("--category requires a category name");
+      parsed.category = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--tags") {
+      if (!next) throw new Error("--tags requires a comma-separated list");
+      parsed.tags = next.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+      i += 1;
+      continue;
+    }
+
     if (arg === "--out") {
       if (!next) throw new Error("--out requires a patch file path");
       parsed.outFile = next;
@@ -124,6 +141,11 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--execute") {
       parsed.execute = true;
+      continue;
+    }
+
+    if (arg === "--sdk-continue") {
+      parsed.sdkContinue = true;
       continue;
     }
 
@@ -201,12 +223,12 @@ function printHelp(): void {
 Usage:
   codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
-  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
-  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]
+  codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--sdk-continue] [--write]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
 
 Defaults:
@@ -233,6 +255,7 @@ function formatDuration(ms: number): string {
 
 function printReport(report: RunReport): void {
   console.log(`Runs directory: ${report.runsDir}`);
+  console.log(`Snippets directory: ${report.snippetsDir}`);
   console.log(`Total runs: ${report.totalRuns}`);
   console.log(`Done: ${report.statuses.done}`);
   console.log(`Ask user: ${report.statuses.ask_user}`);
@@ -241,6 +264,7 @@ function printReport(report: RunReport): void {
   console.log(`SDK monitor failures: ${report.sdkMonitorFailures}`);
   console.log(`Observer failures: ${report.observerFailures}`);
   console.log(`Snippet usage: used=${report.snippetUsage.used} rejected=${report.snippetUsage.rejected} none=${report.snippetUsage.none} unknown=${report.snippetUsage.unknown}`);
+  console.log(`Snippet metadata usage: categories=${formatCountMap(report.snippetMetadataUsage.categories)} tags=${formatCountMap(report.snippetMetadataUsage.tags)} unmatched-used=${report.snippetMetadataUsage.unmatchedUsedDecisions}`);
   console.log(`Protocol health: missing-required-entries=${report.protocolHealth.missingRequiredProtocolEntriesCount}`);
   console.log(`Protocol health: invalid-or-missing-api-probes-readme-sections=${report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount}`);
   console.log(`Protocol health: progress-run-summary-drift=${report.protocolHealth.progressRunSummaryDriftCount}`);
@@ -268,6 +292,12 @@ function printReport(report: RunReport): void {
     const protocolHealth = hasProtocolIssue ? ` protocolHealth=${JSON.stringify(run.protocolHealth)}` : "";
     console.log(`- ${run.endedAt} ${run.status}/${run.failureCategory} ${formatDuration(run.durationMs)} ${run.model} ${run.runDir}${snippet}${protocolHealth}${reason}`);
   }
+}
+
+function formatCountMap(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (entries.length === 0) return "none";
+  return entries.map(([key, value]) => `${key}:${value}`).join(",");
 }
 
 function printRepairPlan(plan: RunRepairPlan): void {
@@ -339,6 +369,11 @@ function printResumePlan(plan: ResumePlan): void {
 
 function printResumeExecution(result: ExecuteResumeResult): void {
   console.log(`Executed: ${result.plan.action}`);
+  if (result.rerunResult) {
+    console.log(`Rerun directory: ${result.rerunResult.runDir}`);
+    console.log(`Rerun status: ${result.rerunResult.status}`);
+    if (result.rerunResult.reason) console.log(`Rerun reason: ${result.rerunResult.reason}`);
+  }
   if (result.exportResult) {
     printWorkspaceExport(result.exportResult);
   }
@@ -442,6 +477,8 @@ async function main(): Promise<void> {
       snippetsDir: args.snippetsDir ?? "snippets",
       slug: args.slug,
       title: args.title,
+      category: args.category,
+      tags: args.tags,
     });
 
     console.log(`Snippet status: ${result.status}`);
@@ -453,6 +490,7 @@ async function main(): Promise<void> {
   if (args.command === "report") {
     const report = await runReport({
       runsDir: args.runsDir,
+      snippetsDir: args.snippetsDir,
       limit: args.limit,
     });
     printReport(report);
@@ -513,6 +551,7 @@ async function main(): Promise<void> {
         runDir: args.runDir,
         targetDir: args.targetDir,
         write: args.write,
+        sdkContinue: args.sdkContinue,
       });
       printResumePlan(result.plan);
       printResumeExecution(result);

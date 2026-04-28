@@ -15,7 +15,7 @@
   - `codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]`
   - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
   - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write]`
-  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
+  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]`
   - `codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]`
 - [x] Codex SDK web search 接入:
   - CLI 支持 `--web-search disabled|cached|live`
@@ -297,8 +297,8 @@
 - [x] discovery 仍有改进空间，但已落地前置澄清。
   - 当前: `run` 已支持 discovery 阶段与 TTY 追问；`--skip-discovery` 用于非交互环境。
   - 目标: 维持一次澄清+一次追问的真实闭环，继续减少不必要的人机往返。
-- [ ] API probes 仍是 run-local 文件,已具备本地 validator,但未对接跨 run 的质量门控。
-- [ ] Snippets 还在扩充中，缺少覆盖关键场景的模板和治理规则。
+- [x] API probes 仍是 run-local 文件；已接入跨 run 质量门控（report 聚合 + run 终态 gate + repair-plan 修复建议）。
+- [x] Snippets 已补齐首批高频模板（CLI 参数解析、HTTP JSON 错误契约、文件系统原子写入/回滚），后续继续治理扩展。
 - [x] observer 命令可生成 lessons（基础版），且 `run --observe` 已挂接到主循环。
 - [ ] 还没有并行 developer。
 
@@ -333,8 +333,8 @@
 
 ## v0.3 TODO — Snippet 池
 
-- [ ] 增加 snippets 分类与标签。
-- [ ] 补齐常见 API/CLI 场景模板。
+- [x] 增加 snippets 分类与标签。
+- [x] 补齐常见 API/CLI 场景模板。
 - [x] 记录并追踪 snippet 命中率。
 - [x] researcher 写入选用 snippet 的原因和替代决策。
 
@@ -361,7 +361,7 @@
 - [x] observer 判断通过测试实现是否值得抽象（通过 lessons 中候选片段区提取）。
 - [x] 自动生成 `/snippets/_candidates/`。
 - [x] 用户审核后入库:
-  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]`
+  - `codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]`
   - 写入 `snippets/<slug>.md`
   - 幂等更新 `snippets/INDEX.md`
   - promoted snippet 包含 `snippet-promotion` JSON metadata comment
@@ -460,6 +460,28 @@
   - `report` showed clean protocol health and `Snippet usage: used=1 rejected=0 none=0 unknown=0`
   - observer generated structured candidates: `Protocol closeout guard`, `Line-number-safe TODO extraction loop`, `Deterministic fixture validation command block`
 - [ ] 用 2-4 个更多真实 candidate promotion 验证 snippets 后续命中质量。
+
+## 下一步执行计划（v0.5 alpha → beta）
+
+1. **先补“可验证的数据闭环”（1-2 天）**
+   - [x] 在 `report` 增加 snippet 元数据统计维度（按 category/tags 聚合），验证新加分类标签是否真的提升命中率。
+   - [x] 增加一条本地测试：`INDEX.md` 中已有同 slug 但不同 metadata 的行为是否符合预期（保持幂等/拒绝覆盖策略清晰）。
+
+2. **再补“跨 run 质量门控”（2-3 天）**
+   - [x] 把 `api-probes/README.md` validator 的结果接入 `run` 终态 gate（不仅 report 聚合，还要在单次 run 内可阻断 done）。
+   - [x] 为 `repair-plan` 增加针对 probe 缺失的标准修复命令模板，减少人工判断。
+
+3. **补齐高频模板（2-4 天）**
+   - [x] 优先新增 3 组 snippets：CLI 参数解析、HTTP JSON 错误契约、文件系统原子写入/回滚。
+   - [x] 每个 snippet 都要附带“适用/不适用边界”和最小验证命令块，避免再次入库原始候选草稿。
+
+4. **推进运行稳定性（并行）**
+   - [ ] 继续 `--observe` dogfood（至少 4 个不同任务规模），记录 spark 回退到 `gpt-5.4` 的触发率。
+   - [x] 对超时 run 增加“最短重试路径”建议（优先调整 `--turn-timeout-ms` / `--model` / `--skip-discovery`）。
+
+5. **beta 前收口项（最后 1-2 天）**
+   - [ ] 评估“并行 developer”最小实现方案（先只并行 develop/test，不扩展更多角色）。
+   - [x] 把 `resume` 从 local planner 推进到 SDK-backed continuation 的最小可用版本（`resume --execute --sdk-continue` 支持执行 rerun）。
 
 ## 当前判断
 
