@@ -10,6 +10,7 @@ runs-*/
 coverage/
 .nyc_output/
 .cache/
+.omx/
 .codex-gtd/
 snippets/_candidates/
 tmp/
