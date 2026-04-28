@@ -113,7 +113,7 @@ The manager decides one next action at a time:
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
-- Resume command (`codex-gtd resume`) that routes completed runs to export/apply and recoverable failed runs to SDK-backed continuation using saved role thread IDs.
+- Resume command (`codex-gtd resume`) that routes completed runs to export/apply and recoverable failed runs to SDK-backed continuation using saved role thread IDs, with `--sdk-continue` accepted for retry guidance compatibility.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -221,6 +221,7 @@ node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute --write
 node dist/cli.js resume --run-dir runs/<timestamp> --execute --model gpt-5.4 --turn-timeout-ms 600000 --observe
+node dist/cli.js resume --run-dir runs/<timestamp> --execute --sdk-continue
 ```
 
 This command is a planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs with `turn_timeout`, `unsupported_tool`, `role_failed`, `invalid_manager_decision`, or `max_loops`, it plans `resume_sdk` when a saved non-observer role `threadId` exists in `session-log/`. With `--execute`, `resume_sdk` reconstructs that Codex SDK thread and appends continuation output to the original run directory. Applying workspace output still stays dry-run unless `--write` is also present.
@@ -288,10 +289,12 @@ After a successful `--observe` run produces `snippets/_candidates/*.md`, review 
 node dist/cli.js promote-snippet \
   --candidate snippets/_candidates/example-candidates.md \
   --slug approved-parser \
-  --title "Approved parser"
+  --title "Approved parser" \
+  --category parser \
+  --tags validation,edge-cases
 ```
 
-The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
+The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. Optional `--category` and `--tags` metadata are validated (lowercase letters/numbers/hyphens), stored in snippet metadata, and appended to index entries for faster retrieval. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
 
 ### Audit snippet quality
 
@@ -312,7 +315,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ```text
   codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
-  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]
   codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd status --run-dir <run-dir> [--json]

@@ -111,6 +111,7 @@ export type ObserveOptions = {
 
 export type ReportOptions = {
   runsDir?: string;
+  snippetsDir?: string;
   limit?: number;
 };
 
@@ -208,6 +209,7 @@ export type ExecuteResumeOptions = ResumePlanOptions & {
   turnTimeoutMs?: number;
   maxLoops?: number;
   codex?: CodexClient;
+  sdkContinue?: boolean;
 };
 
 export type ExecuteResumeResult = {
@@ -216,6 +218,7 @@ export type ExecuteResumeResult = {
   exportResult?: ExportWorkspaceResult;
   applyResult?: ApplyWorkspaceResult;
   runResult?: RunResult;
+  rerunResult?: RunResult;
 };
 
 export type RunStatusOptions = {
@@ -253,10 +256,16 @@ export type CloseoutGateResult = {
 
 export type RunReport = {
   runsDir: string;
+  snippetsDir: string;
   totalRuns: number;
   statuses: Record<RunResult["status"], number>;
   failureCategories: Record<FailureCategory, number>;
   snippetUsage: Record<SnippetDecisionStatus, number>;
+  snippetMetadataUsage: {
+    categories: Record<string, number>;
+    tags: Record<string, number>;
+    unmatchedUsedDecisions: number;
+  };
   averageDurationMs: number;
   sdkMonitorFailures: number;
   observerFailures: number;
@@ -288,6 +297,13 @@ export type SnippetDecision = {
   status: SnippetDecisionStatus;
   snippet?: string;
   reason?: string;
+};
+
+type SnippetMetadataEntry = {
+  slug: string;
+  title: string;
+  category: string;
+  tags: string[];
 };
 
 export type RunProtocolValidation = {
@@ -1459,9 +1475,11 @@ export function buildRunSummary(input: RunSummaryInput): RunSummary {
 
 export async function runReport(options: ReportOptions = {}): Promise<RunReport> {
   const runsDir = path.resolve(options.runsDir ?? DEFAULT_RUNS_DIR);
+  const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
   const limit = options.limit ?? 10;
   const summaries = await readRunSummaries(runsDir);
   summaries.sort((a, b) => b.endedAt.localeCompare(a.endedAt));
+  const snippetCatalog = await readSnippetMetadataCatalog(snippetsDir);
 
   const statuses: Record<RunResult["status"], number> = {
     done: 0,
@@ -1480,6 +1498,11 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     invalidOrMissingApiProbesReadmeSectionsCount: 0,
     progressRunSummaryDriftCount: 0,
   };
+  const snippetMetadataUsage = {
+    categories: {} as Record<string, number>,
+    tags: {} as Record<string, number>,
+    unmatchedUsedDecisions: 0,
+  };
 
   for (const summary of summaries) {
     statuses[summary.status] += 1;
@@ -1496,6 +1519,17 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     const snippetDecision = await readRunSnippetDecision(summary.runDir);
     snippetDecisionByRunDir.set(summary.runDir, snippetDecision);
     snippetUsage[snippetDecision.status] += 1;
+    if (snippetDecision.status === "used" && snippetDecision.snippet) {
+      const metadata = resolveSnippetMetadata(snippetCatalog, snippetDecision.snippet);
+      if (!metadata) {
+        snippetMetadataUsage.unmatchedUsedDecisions += 1;
+      } else {
+        snippetMetadataUsage.categories[metadata.category] = (snippetMetadataUsage.categories[metadata.category] ?? 0) + 1;
+        for (const tag of metadata.tags) {
+          snippetMetadataUsage.tags[tag] = (snippetMetadataUsage.tags[tag] ?? 0) + 1;
+        }
+      }
+    }
 
     const runProtocol = await validateRunProtocol(summary.runDir);
     const apiProbesReadme = await validateApiProbesReadme(summary.runDir);
@@ -1519,10 +1553,12 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
 
   return {
     runsDir,
+    snippetsDir,
     totalRuns: summaries.length,
     statuses,
     failureCategories,
     snippetUsage,
+    snippetMetadataUsage,
     averageDurationMs: summaries.length === 0 ? 0 : Math.round(totalDurationMs / summaries.length),
     sdkMonitorFailures,
     observerFailures,
@@ -1582,6 +1618,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
 
   const failureCategory = normalizeSummaryFailureCategory(summary);
   if (issues.length > 0) {
+    const commands = buildApiProbesRepairCommands(runDir, apiProbesReadme.missingSections);
     return {
       runDir,
       action: "repair_protocol",
@@ -1592,7 +1629,7 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       reason: summary.reason,
       summary: "Run has protocol health issues; repair the file protocol before rerunning or resuming.",
       issues,
-      commands: [],
+      commands,
     };
   }
 
@@ -1623,9 +1660,10 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       reason: summary.reason,
       summary: "The last run timed out. Re-run the original task with the stable model and a longer turn timeout.",
       issues: [],
-      commands: [
-        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL, turnTimeoutMs: timeoutMs }),
-      ],
+      commands: buildShortestRetryPathCommands(summary, {
+        model: ROLE_FALLBACK_MODEL,
+        turnTimeoutMs: timeoutMs,
+      }),
     };
   }
 
@@ -1640,9 +1678,9 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       reason: summary.reason,
       summary: "The selected model hit an unsupported tool path. Re-run the task with the stable model.",
       issues: [],
-      commands: [
-        buildRunRerunCommand(summary, { model: ROLE_FALLBACK_MODEL }),
-      ],
+      commands: buildShortestRetryPathCommands(summary, {
+        model: ROLE_FALLBACK_MODEL,
+      }),
     };
   }
 
@@ -1691,6 +1729,9 @@ export async function buildRunRepairPlan(options: RepairPlanOptions): Promise<Ru
       summary: "Run reached the loop limit. Inspect progress.md, then re-run with a higher loop budget if the remaining work is clear.",
       issues: [],
       commands: [
+        ...buildShortestRetryPathCommands(summary, {
+          model: summary.model,
+        }),
         buildRunRerunCommand(summary, { model: summary.model, maxLoops: summary.maxLoops + 2 }),
       ],
     };
@@ -1929,12 +1970,15 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
   const repairPlan = await buildRunRepairPlan({ runDir });
 
   if (repairPlan.action !== "none" && !isSdkRecoverableRepairPlan(repairPlan)) {
+    const rerunReady = repairPlan.action === "rerun";
     return {
       runDir,
       action: repairPlan.action,
-      ready: false,
+      ready: rerunReady,
       source: "repair-plan",
-      summary: repairPlan.summary,
+      summary: rerunReady
+        ? `${repairPlan.summary} You can execute this rerun via resume --execute --sdk-continue.`
+        : repairPlan.summary,
       issues: repairPlan.issues,
       commands: repairPlan.commands,
     };
@@ -2152,6 +2196,36 @@ export async function executeResumePlan(options: ExecuteResumeOptions): Promise<
     throw new Error(`resume plan is not ready: ${plan.action}`);
   }
 
+  if (plan.action === "rerun") {
+    if (!options.sdkContinue) {
+      throw new Error("resume rerun requires --sdk-continue to execute a new SDK-backed run");
+    }
+    const summary = await readRunSummary(path.resolve(options.runDir));
+    if (!summary) {
+      throw new Error("resume rerun requires a readable run-summary.json");
+    }
+    return {
+      plan,
+      executed: true,
+      rerunResult: await runOrchestration({
+        taskFile: summary.taskFile,
+        model: summary.failureCategory === "unsupported_tool" || summary.failureCategory === "turn_timeout"
+          ? ROLE_FALLBACK_MODEL
+          : summary.model,
+        turnTimeoutMs: summary.failureCategory === "turn_timeout"
+          ? Math.max(summary.turnTimeoutMs * 2, 600_000)
+          : summary.turnTimeoutMs,
+        runsDir: path.dirname(path.resolve(options.runDir)),
+        snippetsDir: DEFAULT_SNIPPETS_DIR,
+        observe: summary.options.observe,
+        monitorSdk: false,
+        skipDiscovery: true,
+        webSearchMode: summary.options.webSearchMode,
+        maxLoops: summary.maxLoops,
+      }),
+    };
+  }
+
   if (plan.action === "export_workspace") {
     return {
       plan,
@@ -2309,6 +2383,24 @@ function resumeRoleThread(context: RunContext, role: Role, threadId: string, mod
 
 function capitalizeRole(role: string): string {
   return role.slice(0, 1).toUpperCase() + role.slice(1);
+}
+
+function buildShortestRetryPathCommands(
+  summary: RunSummary,
+  overrides: {
+    model?: string;
+    turnTimeoutMs?: number;
+  },
+): string[] {
+  const retryModel = overrides.model ?? summary.model;
+  const retryTimeoutMs = overrides.turnTimeoutMs ?? summary.turnTimeoutMs;
+  const webSearchArgs = summary.options.webSearchMode
+    ? ` --web-search ${shellQuote(summary.options.webSearchMode)}`
+    : "";
+  return [
+    `codex-gtd run --task ${shellQuote(summary.taskFile)} --model ${shellQuote(retryModel)} --turn-timeout-ms ${retryTimeoutMs} --skip-discovery --skip-sdk-monitor${webSearchArgs}`,
+    `codex-gtd resume --run-dir ${shellQuote(summary.runDir)} --execute --sdk-continue`,
+  ];
 }
 
 async function readRunSummaries(runsDir: string): Promise<RunSummary[]> {
@@ -2583,7 +2675,7 @@ export async function evaluateCloseoutGate(runDir: string): Promise<CloseoutGate
 
   const apiProbesReadme = await validateApiProbesReadme(runDir);
   if (!apiProbesReadme.ok) {
-    issues.push(`missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")}`);
+    issues.push(`missing api-probes/README.md sections: ${apiProbesReadme.missingSections.join(", ")} (run: codex-gtd repair-plan --run-dir ${runDir})`);
   }
 
   try {
@@ -2614,6 +2706,36 @@ export async function evaluateCloseoutGate(runDir: string): Promise<CloseoutGate
     ok: issues.length === 0,
     issues,
   };
+}
+
+function buildApiProbesRepairCommands(runDir: string, missingSections: string[]): string[] {
+  if (missingSections.length === 0) return [];
+
+  const readmePath = path.join(runDir, "api-probes", "README.md");
+  const template = [
+    "# API Probes",
+    "",
+    "## Probe Decision",
+    "Describe whether probes are required.",
+    "",
+    "## External Dependencies",
+    "List APIs/SDKs or write `None`.",
+    "",
+    "## Probe Artifacts",
+    "List scripts/notes/samples or write `None`.",
+    "",
+    "## Recorded Results",
+    "Record command outputs, samples, or no-probe decision evidence.",
+    "",
+    "## Known Limitations",
+    "Describe gaps, blockers, or write `None`.",
+    "",
+  ].join("\\n");
+
+  return [
+    `python - <<'PY'\\nfrom pathlib import Path\\npath = Path(${JSON.stringify(readmePath)})\\npath.parent.mkdir(parents=True, exist_ok=True)\\npath.write_text(${JSON.stringify(template)} + \"\\n\", encoding=\"utf-8\")\\nprint(f\"wrote {path}\")\\nPY`,
+    `codex-gtd repair-plan --run-dir ${shellQuote(runDir)}`,
+  ];
 }
 
 export async function compareProgressRunSummary(runDir: string): Promise<ProtocolDriftReport> {
@@ -2779,6 +2901,57 @@ function createSnippetUsageCounts(): Record<SnippetDecisionStatus, number> {
     none: 0,
     unknown: 0,
   };
+}
+
+async function readSnippetMetadataCatalog(snippetsDir: string): Promise<SnippetMetadataEntry[]> {
+  try {
+    const entries = await readdir(snippetsDir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "INDEX.md")
+      .map((entry) => entry.name)
+      .sort();
+
+    const catalog: SnippetMetadataEntry[] = [];
+    for (const file of files) {
+      const content = await readFile(path.join(snippetsDir, file), "utf8");
+      catalog.push(extractSnippetMetadata(file, content));
+    }
+    return catalog;
+  } catch {
+    return [];
+  }
+}
+
+function extractSnippetMetadata(file: string, content: string): SnippetMetadataEntry {
+  const slug = file.replace(/\.md$/i, "");
+  const title = content.match(/^#\s+Snippet:\s+(.+?)\s*$/im)?.[1]?.trim() ?? titleFromSlug(slug);
+  const metadataMatch = content.match(/<!--\s*snippet-promotion:\s*({[\s\S]*?})\s*-->/i);
+
+  if (!metadataMatch) {
+    return { slug, title, category: "general", tags: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(metadataMatch[1]) as { category?: unknown; tags?: unknown };
+    const category = normalizeSnippetCategory(typeof parsed.category === "string" ? parsed.category : undefined) ?? "general";
+    const tags = normalizeSnippetTags(Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : []);
+    return { slug, title, category, tags };
+  } catch {
+    return { slug, title, category: "general", tags: [] };
+  }
+}
+
+function resolveSnippetMetadata(catalog: SnippetMetadataEntry[], snippet: string): SnippetMetadataEntry | undefined {
+  const normalized = snippet.trim().toLowerCase();
+  const slugCandidate = normalized
+    .replace(/^\.?\/?snippets\//, "")
+    .replace(/\.md$/i, "")
+    .replace(/^snippet:\s*/i, "")
+    .trim();
+
+  return catalog.find((entry) => entry.slug.toLowerCase() === slugCandidate)
+    ?? catalog.find((entry) => entry.title.trim().toLowerCase() === normalized)
+    ?? catalog.find((entry) => entry.slug.replaceAll("-", " ").toLowerCase() === normalized);
 }
 
 async function readRunSnippetDecision(runDir: string): Promise<SnippetDecision> {
@@ -4010,6 +4183,8 @@ export type PromoteSnippetOptions = {
   snippetsDir: string;
   slug: string;
   title?: string;
+  category?: string;
+  tags?: string[];
 };
 
 export type PromoteSnippetResult = {
@@ -4060,12 +4235,16 @@ export async function promoteSnippetCandidate(options: PromoteSnippetOptions): P
   const snippetFile = path.join(snippetsDir, `${options.slug}.md`);
   const indexFile = path.join(snippetsDir, "INDEX.md");
   const title = options.title?.trim() || titleFromSlug(options.slug);
+  const category = normalizeSnippetCategory(options.category);
+  const tags = normalizeSnippetTags(options.tags);
   const candidateContent = await readFile(candidateFile, "utf8");
   const promotedContent = formatPromotedSnippet({
     title,
     slug: options.slug,
     candidateFile,
     candidateContent,
+    category,
+    tags,
   });
 
   await ensureSnippetCatalog(snippetsDir);
@@ -4089,6 +4268,8 @@ export async function promoteSnippetCandidate(options: PromoteSnippetOptions): P
   const updatedIndex = addSnippetToIndex(index, {
     title,
     slug: options.slug,
+    category,
+    tags,
   });
   if (updatedIndex !== index) {
     await writeFile(indexFile, updatedIndex, "utf8");
@@ -4342,6 +4523,31 @@ function formatSnippetCandidateDocument(params: { runDir: string; entries: Snipp
   return `${lines.join("\n")}\n`;
 }
 
+
+function normalizeSnippetCategory(category: string | undefined): string | undefined {
+  const normalized = category?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(normalized)) {
+    throw new Error("category must use lowercase letters, numbers, and hyphens (max 32 chars)");
+  }
+  return normalized;
+}
+
+function normalizeSnippetTags(tags: string[] | undefined): string[] {
+  if (!tags || tags.length === 0) return [];
+
+  const normalized = tags
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag) => tag.length > 0);
+
+  for (const tag of normalized) {
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(tag)) {
+      throw new Error(`invalid tag: ${tag}. Tags must use lowercase letters, numbers, and hyphens (max 32 chars)`);
+    }
+  }
+
+  return [...new Set(normalized)];
+}
 function validateSnippetSlug(slug: string): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
     throw new Error("slug must use lowercase letters, numbers, and hyphens");
@@ -4360,6 +4566,8 @@ function formatPromotedSnippet(params: {
   slug: string;
   candidateFile: string;
   candidateContent: string;
+  category?: string;
+  tags: string[];
 }): string {
   return `# Snippet: ${params.title}
 
@@ -4369,6 +4577,8 @@ function formatPromotedSnippet(params: {
     source: path.basename(params.candidateFile),
     status: "approved",
     createdBy: "promote-snippet",
+    category: params.category ?? "general",
+    tags: params.tags,
   })} -->
 
 ## Promotion
@@ -4377,6 +4587,8 @@ function formatPromotedSnippet(params: {
 - Slug: ${params.slug}
 - Source candidate: ${path.basename(params.candidateFile)}
 - Promoted by: codex-gtd promote-snippet
+- Category: ${params.category ?? "general"}
+- Tags: ${params.tags.length > 0 ? params.tags.join(", ") : "none"}
 
 ## Content
 
@@ -4391,8 +4603,13 @@ function sanitizePromotedSnippetContent(content: string): string {
   );
 }
 
-function addSnippetToIndex(index: string, params: { title: string; slug: string }): string {
-  const entry = `- [${params.title}](./${params.slug}.md)`;
+function addSnippetToIndex(index: string, params: { title: string; slug: string; category?: string; tags: string[] }): string {
+  const metadataParts: string[] = [];
+  metadataParts.push(`category=${params.category ?? "general"}`);
+  if (params.tags.length > 0) {
+    metadataParts.push(`tags=${params.tags.join(",")}`);
+  }
+  const entry = `- [${params.title}](./${params.slug}.md) (${metadataParts.join("; ")})`;
   if (index.includes(`](./${params.slug}.md)`)) {
     return index;
   }
