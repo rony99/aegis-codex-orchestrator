@@ -24,6 +24,7 @@
     "src/",
     "docs/",
     "examples/",
+    "web/",
     "snippets/*.md",
     "test/",
     "README.md",
@@ -39,12 +40,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:local": "npm run build && node --test test/*.test.mjs",
     "dev": "tsx src/cli.ts",
-    "smoke": "tsx src/cli.ts smoke --model gpt-5.4"
+    "smoke": "tsx src/cli.ts smoke --model gpt-5.4",
+    "server": "node dist/server/index.js",
+    "dev-server": "tsx src/server/index.ts"
   },
   "dependencies": {
-    "@openai/codex-sdk": "0.123.0"
+    "@openai/codex-sdk": "0.123.0",
+    "express": "^5.0.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^24.10.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"

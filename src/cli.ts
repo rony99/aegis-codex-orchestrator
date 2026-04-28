@@ -219,7 +219,7 @@ function printHelp(): void {
   console.log(`codex-gtd v0.5
 
 Usage:
-  codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
+  codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
   codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
@@ -511,6 +511,7 @@ async function main(): Promise<void> {
     const result = await runOrchestration({
       taskFile: args.task,
       model: args.model,
+      runDir: args.runDir,
       runsDir: args.runsDir,
       snippetsDir: args.snippetsDir,
       observe: args.observe,

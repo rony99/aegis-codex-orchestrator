@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>任务详情 - Aegis Codex Orchestrator</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #059669;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+      --gray-900: #111827;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--gray-50);
+      color: var(--gray-800);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    header {
+      background: linear-gradient(135deg, var(--gray-900) 0%, var(--gray-800) 100%);
+      color: white;
+      padding: 24px 0;
+      margin-bottom: 24px;
+    }
+
+    header .container {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    header h1 {
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    header .back-link {
+      color: var(--gray-300);
+      text-decoration: none;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header .back-link:hover {
+      color: white;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--gray-200);
+    }
+
+    .card-header h2 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .status-badge.done {
+      background-color: #d1fae5;
+      color: var(--success);
+    }
+
+    .status-badge.running,
+    .status-badge.queued {
+      background-color: #dbeafe;
+      color: var(--primary);
+    }
+
+    .status-badge.ask_user,
+    .status-badge.max_loops_reached,
+    .status-badge.failed {
+      background-color: #fee2e2;
+      color: var(--danger);
+    }
+
+    .status-badge.unknown {
+      background-color: var(--gray-100);
+      color: var(--gray-600);
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+
+    .info-item {
+      padding: 12px;
+      background-color: var(--gray-50);
+      border-radius: 8px;
+    }
+
+    .info-label {
+      font-size: 12px;
+      color: var(--gray-500);
+      margin-bottom: 4px;
+    }
+
+    .info-value {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--gray-800);
+    }
+
+    .description-box {
+      background-color: var(--gray-50);
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .progress-card {
+      margin-bottom: 24px;
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .progress-info {
+      display: flex;
+      gap: 24px;
+    }
+
+    .progress-info-item {
+      text-align: center;
+    }
+
+    .progress-info-label {
+      font-size: 12px;
+      color: var(--gray-500);
+    }
+
+    .progress-info-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--gray-800);
+    }
+
+    .log-container {
+      background-color: var(--gray-900);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--gray-300);
+      max-height: 500px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-container::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .log-container::-webkit-scrollbar-track {
+      background: var(--gray-800);
+      border-radius: 4px;
+    }
+
+    .log-container::-webkit-scrollbar-thumb {
+      background: var(--gray-600);
+      border-radius: 4px;
+    }
+
+    .blockers-box {
+      background-color: #fef2f2;
+      border-left: 4px solid var(--danger);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 24px;
+    }
+
+    .blockers-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--danger);
+      margin-bottom: 8px;
+    }
+
+    .blockers-content {
+      font-size: 14px;
+      color: var(--gray-700);
+      white-space: pre-wrap;
+    }
+
+    .diagnostic-box {
+      background-color: #eff6ff;
+      border-left: 4px solid var(--primary);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 24px;
+    }
+
+    .diagnostic-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+
+    .diagnostic-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .diagnostic-detail {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--gray-700);
+    }
+
+    .reply-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .reply-form textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 12px;
+      border: 1px solid var(--gray-300);
+      border-radius: 8px;
+      font: inherit;
+      resize: vertical;
+    }
+
+    .reply-form textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .reply-alert {
+      display: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .reply-alert.error {
+      display: block;
+      background-color: #fee2e2;
+      color: var(--danger);
+    }
+
+    .reply-alert.success {
+      display: block;
+      background-color: #d1fae5;
+      color: var(--success);
+    }
+
+    .spec-box {
+      background-color: var(--gray-50);
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .spec-box h1, .spec-box h2, .spec-box h3 {
+      margin-top: 16px;
+      margin-bottom: 8px;
+      color: var(--gray-900);
+    }
+
+    .spec-box h1 { font-size: 18px; }
+    .spec-box h2 { font-size: 16px; }
+    .spec-box h3 { font-size: 14px; }
+
+    .spec-box ul, .spec-box ol {
+      margin-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    .spec-box li {
+      margin-bottom: 4px;
+    }
+
+    .spec-box code {
+      background-color: var(--gray-200);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', monospace;
+      font-size: 12px;
+    }
+
+    .spec-box pre {
+      background-color: var(--gray-900);
+      color: var(--gray-300);
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+
+    .spec-box pre code {
+      background: none;
+      padding: 0;
+      color: inherit;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background-color: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background-color: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background-color: var(--gray-100);
+      color: var(--gray-700);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background-color: var(--gray-200);
+    }
+
+    .refresh-btn {
+      padding: 8px 16px;
+      font-size: 13px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--gray-200);
+      padding-bottom: 1px;
+    }
+
+    .tab-btn {
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      background: none;
+      border: none;
+      color: var(--gray-500);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: var(--gray-700);
+    }
+
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 48px;
+      color: var(--gray-500);
+    }
+
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--gray-200);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .error-message {
+      text-align: center;
+      padding: 48px;
+      color: var(--danger);
+    }
+
+    .error-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .pulse {
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <a href="/" class="back-link">
+        <span>←</span>
+        <span>返回任务列表</span>
+      </a>
+      <h1>任务详情</h1>
+    </div>
+  </header>
+
+  <div class="container">
+    <div id="taskContent">
+      <div class="loading">
+        <div class="loading-spinner"></div>
+        <p>加载中...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    let currentTaskId = null;
+    let refreshInterval = null;
+
+    function getTaskIdFromUrl() {
+      const path = window.location.pathname;
+      const match = path.match(/\/task\/(.+)$/);
+      return match ? match[1] : null;
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      const date = new Date(dateStr);
+      return date.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    }
+
+    function getStatusLabel(status) {
+      const labels = {
+        queued: '排队中',
+        running: '运行中',
+        done: '已完成',
+        ask_user: '需要用户',
+        max_loops_reached: '超出循环',
+        failed: '失败',
+        unknown: '未知'
+      };
+      return labels[status] || status;
+    }
+
+    function getRoleLabel(role) {
+      const labels = {
+        researcher: '研究员',
+        manager: '管理者',
+        developer: '开发者',
+        tester: '测试者',
+        observer: '观察者',
+        discovery: '发现者'
+      };
+      return labels[role] || role;
+    }
+
+    async function fetchTaskDetails() {
+      if (!currentTaskId) return;
+
+      try {
+        const response = await fetch(`${API_BASE}/tasks/${currentTaskId}`);
+
+        if (response.status === 404) {
+          renderError('任务不存在');
+          return;
+        }
+
+        const data = await response.json();
+        renderTaskDetails(data);
+
+        if (data.task.status === 'running' || data.task.status === 'queued') {
+          if (!refreshInterval) {
+            refreshInterval = setInterval(fetchTaskDetails, 3000);
+          }
+        } else {
+          if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch task details:', error);
+      }
+    }
+
+    function renderError(message) {
+      const content = document.getElementById('taskContent');
+      content.innerHTML = `
+        <div class="error-message">
+          <div class="error-icon">😕</div>
+          <p>${message}</p>
+        </div>
+      `;
+    }
+
+    function renderTaskDetails(data) {
+      const content = document.getElementById('taskContent');
+      const { task, progress, log, blockers, spec, summary, diagnostic } = data;
+
+      const isRunning = task.status === 'running' || task.status === 'queued';
+      const needsReply = task.status === 'ask_user';
+
+      content.innerHTML = `
+        <div class="card">
+          <div class="card-header">
+            <h2>任务信息</h2>
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <span class="status-badge ${task.status} ${isRunning ? 'pulse' : ''}">
+                ${getStatusLabel(task.status)}
+              </span>
+              <button type="button" class="btn btn-secondary refresh-btn" onclick="fetchTaskDetails()">
+                刷新
+              </button>
+            </div>
+          </div>
+
+          <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">任务 ID</div>
+              <div class="info-value" style="font-family: monospace; font-size: 12px;">
+                ${escapeHtml(task.id)}
+              </div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">创建时间</div>
+              <div class="info-value">${formatDate(task.createdAt)}</div>
+            </div>
+            ${task.startedAt ? `
+              <div class="info-item">
+                <div class="info-label">开始时间</div>
+                <div class="info-value">${formatDate(task.startedAt)}</div>
+              </div>
+            ` : ''}
+            ${task.endedAt ? `
+              <div class="info-item">
+                <div class="info-label">结束时间</div>
+                <div class="info-value">${formatDate(task.endedAt)}</div>
+              </div>
+            ` : ''}
+          </div>
+
+          ${progress ? `
+            <div style="margin-top: 20px;">
+              <div class="progress-meta">
+                <div class="progress-info">
+                  <div class="progress-info-item">
+                    <div class="progress-info-label">当前循环</div>
+                    <div class="progress-info-value">${progress.loop}</div>
+                  </div>
+                  <div class="progress-info-item">
+                    <div class="progress-info-label">最后角色</div>
+                    <div class="progress-info-value">${getRoleLabel(progress.lastRole)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        </div>
+
+        ${diagnostic ? `
+          <div class="diagnostic-box">
+            <div class="diagnostic-title">SDK 运行状态</div>
+            <div class="diagnostic-grid">
+              <div class="info-item">
+                <div class="info-label">角色</div>
+                <div class="info-value">${escapeHtml(getRoleLabel(diagnostic.role))}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">模型</div>
+                <div class="info-value">${escapeHtml(diagnostic.model)}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">状态</div>
+                <div class="info-value">${escapeHtml(diagnostic.status)}</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">分类</div>
+                <div class="info-value">${escapeHtml(diagnostic.classification)}</div>
+              </div>
+            </div>
+            <div class="diagnostic-detail">
+              ${escapeHtml(diagnostic.detail)}
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="card">
+          <div class="card-header">
+            <h2>任务描述</h2>
+          </div>
+          <div class="description-box">
+            ${escapeHtml(task.description)}
+          </div>
+        </div>
+
+        ${task.reason ? `
+          <div class="card">
+            <div class="card-header">
+              <h2>结果说明</h2>
+            </div>
+            <div class="description-box">
+              ${escapeHtml(task.reason)}
+            </div>
+          </div>
+        ` : ''}
+
+        ${blockers ? `
+          <div class="blockers-box">
+            <div class="blockers-title">⚠️ 阻塞项</div>
+            <div class="blockers-content">${escapeHtml(blockers)}</div>
+            ${needsReply ? `
+              <form class="reply-form" onsubmit="submitReply(event)">
+                <div id="replyAlert" class="reply-alert"></div>
+                <textarea id="userReply" placeholder="补充决策、账号/API key 操作结果、授权状态或其他阻塞项回复" required></textarea>
+                <div>
+                  <button type="submit" class="btn btn-primary" id="replySubmitBtn">提交回复并继续</button>
+                </div>
+              </form>
+            ` : ''}
+          </div>
+        ` : ''}
+
+        <div class="card">
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="log">运行日志</button>
+            <button class="tab-btn" data-tab="spec">规格文档</button>
+            ${summary ? `<button class="tab-btn" data-tab="summary">运行摘要</button>` : ''}
+          </div>
+
+          <div class="tab-content active" id="tab-log">
+            ${log ? `
+              <div class="log-container">${escapeHtml(log)}</div>
+            ` : `
+              <div class="loading">
+                <p>暂无日志</p>
+              </div>
+            `}
+          </div>
+
+          <div class="tab-content" id="tab-spec">
+            ${spec ? `
+              <div class="spec-box">${renderMarkdown(spec)}</div>
+            ` : `
+              <div class="loading">
+                <p>规格文档尚未生成</p>
+              </div>
+            `}
+          </div>
+
+          ${summary ? `
+            <div class="tab-content" id="tab-summary">
+              <div class="log-container">${JSON.stringify(summary, null, 2)}</div>
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tabId = btn.dataset.tab;
+
+          document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+          btn.classList.add('active');
+          document.getElementById(`tab-${tabId}`).classList.add('active');
+        });
+      });
+    }
+
+    async function submitReply(event) {
+      event.preventDefault();
+      const replyEl = document.getElementById('userReply');
+      const submitBtn = document.getElementById('replySubmitBtn');
+      const reply = replyEl ? replyEl.value.trim() : '';
+
+      if (!reply) {
+        showReplyAlert('请输入回复内容', 'error');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '提交中...';
+      showReplyAlert('正在提交回复...', 'success');
+
+      try {
+        const response = await fetch(`${API_BASE}/tasks/${currentTaskId}/reply`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ reply })
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          showReplyAlert(data.message || '提交失败', 'error');
+          return;
+        }
+
+        renderTaskDetails(data);
+      } catch (error) {
+        showReplyAlert('网络错误: ' + error.message, 'error');
+      } finally {
+        const nextSubmitBtn = document.getElementById('replySubmitBtn');
+        if (nextSubmitBtn) {
+          nextSubmitBtn.disabled = false;
+          nextSubmitBtn.textContent = '提交回复并继续';
+        }
+      }
+    }
+
+    function showReplyAlert(message, type) {
+      const alertEl = document.getElementById('replyAlert');
+      if (!alertEl) return;
+      alertEl.textContent = message;
+      alertEl.className = `reply-alert ${type}`;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function renderMarkdown(text) {
+      if (!text) return '';
+      let html = escapeHtml(text);
+
+      html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+      html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+      html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+      html = html.split('\n').map(line => {
+        if (line.startsWith('- ') || line.startsWith('* ')) {
+          return `<li>${line.slice(2)}</li>`;
+        }
+        if (line.match(/^\d+\./)) {
+          return `<li>${line}</li>`;
+        }
+        return line;
+      }).join('\n');
+
+      html = html.replace(/(<li>.+<\/li>\n?)+/g, match => {
+        if (match.match(/<li>\d+\./)) {
+          return `<ol>${match.replace(/<li>(\d+)\.\s*/g, '<li>')}</ol>`;
+        }
+        return `<ul>${match}</ul>`;
+      });
+
+      return html;
+    }
+
+    currentTaskId = getTaskIdFromUrl();
+    if (currentTaskId) {
+      fetchTaskDetails();
+    }
+  </script>
+</body>
+</html>

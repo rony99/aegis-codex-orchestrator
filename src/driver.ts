@@ -80,6 +80,7 @@ export type FailureCategory =
 export type RunOptions = {
   taskFile: string;
   model?: string;
+  runDir?: string;
   runsDir?: string;
   snippetsDir?: string;
   observe?: boolean;
@@ -998,7 +999,9 @@ export async function runOrchestration(options: RunOptions): Promise<RunResult> 
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
   const model = resolveModel(options.model);
-  const runDir = await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
+  const runDir = options.runDir
+    ? await useRunDirectory(options.runDir)
+    : await createRunDirectory(options.runsDir ?? DEFAULT_RUNS_DIR);
   const workspaceDir = path.join(runDir, "workspace");
   const apiProbesDir = path.join(runDir, "api-probes");
   const snippetsDir = path.resolve(options.snippetsDir ?? DEFAULT_SNIPPETS_DIR);
@@ -3775,13 +3778,31 @@ function parseJsonObject(text: string): unknown {
   }
 }
 
-async function createRunDirectory(runsDir: string): Promise<string> {
+export async function createRunDirectory(runsDir: string, now = new Date()): Promise<string> {
   const absoluteRunsDir = path.resolve(runsDir);
   await mkdir(absoluteRunsDir, { recursive: true });
-  const stamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
-  const runDir = path.join(absoluteRunsDir, stamp);
-  await mkdir(runDir, { recursive: true });
-  return runDir;
+  const stamp = now.toISOString().replaceAll(":", "-").replace(".", "-");
+
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const runDir = path.join(absoluteRunsDir, `${stamp}${suffix}`);
+    try {
+      await mkdir(runDir);
+      return runDir;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Unable to create a unique run directory under ${absoluteRunsDir}`);
+}
+
+async function useRunDirectory(runDir: string): Promise<string> {
+  const absoluteRunDir = path.resolve(runDir);
+  await mkdir(absoluteRunDir, { recursive: true });
+  return absoluteRunDir;
 }
 
 export async function initializeRunProtocol(options: RunProtocolInitOptions): Promise<void> {

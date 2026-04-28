@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegis Codex Orchestrator</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #059669;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+      --gray-900: #111827;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--gray-50);
+      color: var(--gray-800);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    header {
+      background: linear-gradient(135deg, var(--gray-900) 0%, var(--gray-800) 100%);
+      color: white;
+      padding: 24px 0;
+      margin-bottom: 32px;
+    }
+
+    header .container {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    header h1 {
+      font-size: 24px;
+      font-weight: 600;
+    }
+
+    header .subtitle {
+      color: var(--gray-400);
+      font-size: 14px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 768px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding: 24px;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .card-header h2 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--gray-700);
+      margin-bottom: 8px;
+    }
+
+    .form-group textarea,
+    .form-group input,
+    .form-group select {
+      width: 100%;
+      padding: 12px 16px;
+      border: 1px solid var(--gray-300);
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .form-group textarea:focus,
+    .form-group input:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 200px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: auto;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background-color: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background-color: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background-color: var(--gray-100);
+      color: var(--gray-700);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background-color: var(--gray-200);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .status-badge.done {
+      background-color: #d1fae5;
+      color: var(--success);
+    }
+
+    .status-badge.running,
+    .status-badge.queued {
+      background-color: #dbeafe;
+      color: var(--primary);
+    }
+
+    .status-badge.ask_user,
+    .status-badge.max_loops_reached,
+    .status-badge.failed {
+      background-color: #fee2e2;
+      color: var(--danger);
+    }
+
+    .status-badge.unknown {
+      background-color: var(--gray-100);
+      color: var(--gray-600);
+    }
+
+    .task-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .task-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 16px;
+      background-color: var(--gray-50);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .task-item:hover {
+      background-color: var(--gray-100);
+    }
+
+    .task-item-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .task-item-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--gray-900);
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .task-item-meta {
+      font-size: 12px;
+      color: var(--gray-500);
+    }
+
+    .task-item-status {
+      margin-left: 12px;
+      flex-shrink: 0;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--gray-500);
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+
+    .alert-success {
+      background-color: #d1fae5;
+      color: var(--success);
+    }
+
+    .alert-error {
+      background-color: #fee2e2;
+      color: var(--danger);
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 12px;
+    }
+
+    .refresh-btn {
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <div>
+        <h1>Aegis Codex Orchestrator</h1>
+        <div class="subtitle">AI 驱动的开发编排系统</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <main>
+      <section class="card">
+        <div class="card-header">
+          <h2>发布新任务</h2>
+        </div>
+
+        <form id="createTaskForm">
+          <div id="formAlert" style="display: none;"></div>
+
+          <div class="form-group">
+            <label for="taskDescription">任务描述</label>
+            <textarea
+              id="taskDescription"
+              name="description"
+              placeholder="描述您想要完成的开发任务...
+
+例如：
+- 创建一个简单的 CLI 工具，用于转换 CSV 到 JSON
+- 实现一个 REST API 服务，包含用户认证功能
+- 编写一个数据可视化脚本，用于分析销售数据"
+              required
+            ></textarea>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="model">模型</label>
+              <select id="model" name="model">
+                <option value="">默认 (gpt-5.4)</option>
+                <option value="codex-5.3-spark">codex-5.3-spark (快速)</option>
+                <option value="gpt-5.4">gpt-5.4 (稳定)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="maxLoops">最大循环次数</label>
+              <input
+                type="number"
+                id="maxLoops"
+                name="maxLoops"
+                min="1"
+                max="100"
+                placeholder="8"
+              >
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="checkbox-group">
+              <input type="checkbox" id="skipDiscovery" name="skipDiscovery">
+              <label for="skipDiscovery" style="margin-bottom: 0;">跳过发现阶段 (非交互模式)</label>
+            </div>
+          </div>
+
+          <div class="btn-group">
+            <button type="submit" class="btn btn-primary" id="submitBtn">
+              发布任务
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>任务列表</h2>
+          <button type="button" class="btn btn-secondary refresh-btn" id="refreshBtn">
+            刷新
+          </button>
+        </div>
+
+        <div id="taskList">
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p>暂无任务</p>
+            <p style="margin-top: 8px; font-size: 12px;">创建一个任务开始使用</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+
+    function showAlert(element, message, type = 'error') {
+      element.textContent = message;
+      element.className = `alert alert-${type}`;
+      element.style.display = 'block';
+    }
+
+    function hideAlert(element) {
+      element.style.display = 'none';
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      const date = new Date(dateStr);
+      return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function getStatusLabel(status) {
+      const labels = {
+        queued: '排队中',
+        running: '运行中',
+        done: '已完成',
+        ask_user: '需要用户',
+        max_loops_reached: '超出循环',
+        failed: '失败',
+        unknown: '未知'
+      };
+      return labels[status] || status;
+    }
+
+    async function fetchTasks() {
+      try {
+        const response = await fetch(`${API_BASE}/tasks?limit=20`);
+        const data = await response.json();
+        renderTasks(data.tasks);
+      } catch (error) {
+        console.error('Failed to fetch tasks:', error);
+      }
+    }
+
+    function renderTasks(tasks) {
+      const taskList = document.getElementById('taskList');
+
+      if (!tasks || tasks.length === 0) {
+        taskList.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p>暂无任务</p>
+            <p style="margin-top: 8px; font-size: 12px;">创建一个任务开始使用</p>
+          </div>
+        `;
+        return;
+      }
+
+      taskList.innerHTML = `
+        <div class="task-list">
+          ${tasks.map(task => `
+            <div class="task-item" onclick="viewTask('${task.id}')">
+              <div class="task-item-content">
+                <div class="task-item-title">${escapeHtml(task.description)}</div>
+                <div class="task-item-meta">
+                  ${formatDate(task.createdAt)}
+                  ${task.endedAt ? ` • ${formatDate(task.endedAt)} 结束` : ''}
+                </div>
+              </div>
+              <div class="task-item-status">
+                <span class="status-badge ${task.status}">
+                  ${getStatusLabel(task.status)}
+                </span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function viewTask(taskId) {
+      window.location.href = `/task/${taskId}`;
+    }
+
+    document.getElementById('createTaskForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const alertEl = document.getElementById('formAlert');
+      const submitBtn = document.getElementById('submitBtn');
+      const description = document.getElementById('taskDescription').value.trim();
+      const model = document.getElementById('model').value;
+      const maxLoops = document.getElementById('maxLoops').value;
+      const skipDiscovery = document.getElementById('skipDiscovery').checked;
+
+      if (!description) {
+        showAlert(alertEl, '请输入任务描述');
+        return;
+      }
+
+      hideAlert(alertEl);
+      submitBtn.disabled = true;
+      submitBtn.textContent = '提交中...';
+
+      try {
+        const body = {
+          description
+        };
+
+        if (model) {
+          body.model = model;
+        }
+        if (maxLoops) {
+          body.maxLoops = parseInt(maxLoops, 10);
+        }
+        if (skipDiscovery) {
+          body.skipDiscovery = true;
+        }
+
+        const response = await fetch(`${API_BASE}/tasks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          showAlert(alertEl, '任务创建成功！正在开始执行...', 'success');
+          document.getElementById('taskDescription').value = '';
+          document.getElementById('maxLoops').value = '';
+          document.getElementById('skipDiscovery').checked = false;
+
+          setTimeout(() => {
+            fetchTasks();
+          }, 500);
+        } else {
+          showAlert(alertEl, data.message || '创建任务失败');
+        }
+      } catch (error) {
+        showAlert(alertEl, '网络错误: ' + error.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '发布任务';
+      }
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      fetchTasks();
+    });
+
+    fetchTasks();
+
+    setInterval(() => {
+      const taskList = document.querySelector('.task-list');
+      if (taskList) {
+        const hasRunning = taskList.querySelector('.status-badge.running, .status-badge.queued');
+        if (hasRunning) {
+          fetchTasks();
+        }
+      }
+    }, 5000);
+  </script>
+</body>
+</html>

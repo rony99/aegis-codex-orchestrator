@@ -32,6 +32,7 @@ import {
   validateApiProbesReadme,
   validateRunProtocol,
   compareProgressRunSummary,
+  createRunDirectory,
 } from "../dist/driver.js";
 import {
   MANAGER_PROMPT_MAX_CHARS,
@@ -151,6 +152,7 @@ test("help documents run options without invoking Codex SDK", () => {
 
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
+  assert.match(output, /codex-gtd run --task <task-file> \[--run-dir <run-dir>\]/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
@@ -2254,6 +2256,24 @@ test("initializeRunProtocol creates required files and directories without invok
       loop: 0,
       terminal: false,
     });
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("createRunDirectory creates distinct directories for same-millisecond starts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-run-dir-collision-"));
+  const now = new Date("2026-04-28T03:30:00.123Z");
+
+  try {
+    const first = await createRunDirectory(runsDir, now);
+    const second = await createRunDirectory(runsDir, now);
+
+    assert.notEqual(first, second);
+    assert.equal(path.dirname(first), runsDir);
+    assert.equal(path.dirname(second), runsDir);
+    assert.match(path.basename(first), /^2026-04-28T03-30-00-123Z/);
+    assert.match(path.basename(second), /^2026-04-28T03-30-00-123Z/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

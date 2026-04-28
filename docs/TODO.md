@@ -98,7 +98,7 @@
 - [x] TypeScript 项目初始化。
 - [x] 使用 `@openai/codex-sdk@0.123.0`。
 - [x] CLI:
-  - `codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
+  - `codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]`
   - `codex-gtd report [--runs-dir <dir>] [--limit <n>]`
   - `codex-gtd status --run-dir <run-dir> [--json]`
   - `codex-gtd repair-plan --run-dir <run-dir> [--json]`
