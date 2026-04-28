@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./driver.js";
+import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runDoctor, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type DoctorResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -252,6 +252,7 @@ Usage:
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--sdk-continue] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
+  codex-gtd doctor [--json]
   codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 
 Defaults:
@@ -483,6 +484,24 @@ function printSdkProbe(result: SdkProbeResult): void {
   }
 }
 
+function printDoctor(result: DoctorResult): void {
+  console.log("CLI doctor:");
+  console.log(`Status: ${result.status}`);
+  console.log(`Node.js: ${result.nodeVersion}`);
+  console.log(`npm: ${result.npmVersion ?? "unavailable"}`);
+  console.log(`Codex SDK: ${result.sdkVersion}`);
+  console.log("Checks:");
+  for (const check of result.checks) {
+    console.log(`- ${check.name}: ${check.status} - ${check.detail}`);
+  }
+  if (result.suggestions.length > 0) {
+    console.log("Suggestions:");
+    for (const suggestion of result.suggestions) {
+      console.log(`- ${suggestion}`);
+    }
+  }
+}
+
 function printSnippetAudit(result: SnippetAuditResult): void {
   console.log("Snippet audit:");
   console.log(`Snippets directory: ${result.snippetsDir}`);
@@ -516,6 +535,16 @@ async function main(): Promise<void> {
   if (args.command === "smoke") {
     const result = await runSmokeTest({ model: args.model, webSearchMode: args.webSearchMode });
     console.log(result.finalResponse);
+    return;
+  }
+
+  if (args.command === "doctor") {
+    const result = await runDoctor();
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      printDoctor(result);
+    }
     return;
   }
 

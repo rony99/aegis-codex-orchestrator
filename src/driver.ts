@@ -336,7 +336,7 @@ export type ObserverProtocolHealthInput = {
   progressDrift: ProtocolDriftReport;
 };
 
-type SdkHealthResult = {
+export type SdkHealthResult = {
   status: "ok" | "failed" | "degraded";
   model: string;
   sdkVersion: string;
@@ -345,6 +345,21 @@ type SdkHealthResult = {
   previousPassed?: boolean;
   previousReason?: string;
   checkedAt: string;
+};
+
+export type DoctorCheck = {
+  name: string;
+  status: "ok" | "warning";
+  detail: string;
+};
+
+export type DoctorResult = {
+  status: "ok" | "warning";
+  nodeVersion: string;
+  npmVersion?: string;
+  sdkVersion: string;
+  checks: DoctorCheck[];
+  suggestions: string[];
 };
 
 export type RunSummary = {
@@ -946,6 +961,92 @@ async function readSdkVersion(): Promise<string> {
   }
 }
 
+export function buildSdkHealthResult(input: {
+  model: string;
+  sdkVersion: string;
+  checkedAt: string;
+  previous?: SdkHealthResult;
+  smokeError?: string;
+}): SdkHealthResult {
+  const currentPassed = input.smokeError === undefined;
+  const health: SdkHealthResult = {
+    status: currentPassed ? "ok" : "failed",
+    model: input.model,
+    sdkVersion: input.sdkVersion,
+    passed: currentPassed,
+    checkedAt: input.checkedAt,
+    previousPassed: input.previous?.passed,
+    previousReason: currentPassed ? undefined : input.previous?.reason,
+  };
+
+  if (input.previous?.passed === true && !currentPassed) {
+    health.status = "degraded";
+    health.reason = `SDK health regressed since last run: ${input.previous.reason ?? "previous smoke passed"} -> now failed (${input.smokeError ?? "no response"})`;
+  } else if (!currentPassed && input.smokeError) {
+    health.reason = input.smokeError;
+  }
+
+  return health;
+}
+
+export async function runDoctor(): Promise<DoctorResult> {
+  const sdkVersion = await readSdkVersion();
+  const checks: DoctorCheck[] = [
+    {
+      name: "node",
+      status: "ok",
+      detail: process.version,
+    },
+    {
+      name: "codex-sdk",
+      status: sdkVersion === "unknown" ? "warning" : "ok",
+      detail: sdkVersion,
+    },
+  ];
+  const suggestions: string[] = [];
+
+  let npmVersion: string | undefined;
+  try {
+    npmVersion = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+    checks.push({ name: "npm", status: "ok", detail: npmVersion });
+  } catch {
+    checks.push({ name: "npm", status: "warning", detail: "npm is not available on PATH" });
+    suggestions.push("Add npm to PATH before running package scripts.");
+  }
+
+  try {
+    const baselineContent = await readFile(path.join(path.resolve(SDK_MONITOR_DIR), SDK_MONITOR_FILE), "utf8");
+    const baseline = JSON.parse(baselineContent) as Partial<SdkHealthResult>;
+    checks.push({
+      name: "sdk-health-baseline",
+      status: baseline.passed === false ? "warning" : "ok",
+      detail: baseline.checkedAt
+        ? `${baseline.status ?? "unknown"} at ${baseline.checkedAt}`
+        : baseline.status ?? "unknown",
+    });
+    if (baseline.passed === false && typeof baseline.reason === "string") {
+      suggestions.push(`Last SDK health check failed: ${baseline.reason}`);
+    }
+  } catch {
+    checks.push({
+      name: "sdk-health-baseline",
+      status: "warning",
+      detail: "No local SDK health baseline yet. Run codex-gtd sdk-probe or codex-gtd run.",
+    });
+  }
+
+  return {
+    status: checks
+      .filter((check) => check.name !== "sdk-health-baseline")
+      .some((check) => check.status === "warning") ? "warning" : "ok",
+    nodeVersion: process.version,
+    npmVersion,
+    sdkVersion,
+    checks,
+    suggestions,
+  };
+}
+
 async function runDiscovery(
   context: RunContext,
   task: string,
@@ -1415,25 +1516,13 @@ async function runSdkHealthCheck(options: {
     smokeError = summarizeError(error);
   }
 
-  const currentPassed = smokeError === undefined;
-  const health: SdkHealthResult = {
-    status: currentPassed ? "ok" : "failed",
+  const health = buildSdkHealthResult({
     model,
     sdkVersion,
-    passed: currentPassed,
     checkedAt,
-    previousPassed: previous?.passed,
-    previousReason: previous?.reason,
-  };
-
-  if (previous && previous.passed === true && !currentPassed) {
-    health.status = "degraded";
-    health.reason = `SDK health regressed since last run: ${previous.reason ?? "previous smoke passed"} -> now failed (${smokeError ?? "no response"})`;
-  } else if (!currentPassed && smokeError) {
-    health.reason = smokeError;
-  } else {
-    health.reason = smokeError;
-  }
+    previous,
+    smokeError,
+  });
 
   await writeFile(baselinePath, `${JSON.stringify({
     checkedAt: health.checkedAt,
@@ -1989,9 +2078,8 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
     const selection = summary ? await selectResumeSdkTarget(runDir, summary, repairPlan.failureCategory) : {};
     const target = selection.target;
     const action: ResumePlanAction = "resume_sdk";
-    const command = `codex-gtd resume --run-dir ${shellQuote(runDir)} --execute`;
 
-    if (!target) {
+    if (!summary || !target) {
       const summaryText = selection.blockedReason
         ?? "Run is recoverable, but no resumable Codex SDK thread could be found in session-log/.";
       return {
@@ -2012,7 +2100,7 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
       source: "resume",
       summary: `Resume ${target.role} from saved Codex SDK thread ${target.threadId}.`,
       issues: [],
-      commands: [command],
+      commands: [buildResumeSdkCommand(runDir, summary, target)],
       sdkTarget: target,
     };
   }
@@ -2057,6 +2145,31 @@ export async function buildResumePlan(options: ResumePlanOptions): Promise<Resum
       `codex-gtd export-workspace --run-dir ${shellQuote(runDir)}`,
     ],
   };
+}
+
+function buildResumeSdkCommand(runDir: string, summary: RunSummary, target: ResumeSdkTarget): string {
+  const parts = [
+    "codex-gtd",
+    "resume",
+    "--run-dir",
+    shellQuote(runDir),
+    "--execute",
+    "--model",
+    shellQuote(summary.model),
+    "--turn-timeout-ms",
+    String(summary.turnTimeoutMs),
+    "--max-loops",
+    String(Math.max(summary.maxLoops, target.nextLoop)),
+  ];
+
+  if (summary.options.webSearchMode) {
+    parts.push("--web-search", shellQuote(summary.options.webSearchMode));
+  }
+  if (summary.options.observe) {
+    parts.push("--observe");
+  }
+
+  return parts.join(" ");
 }
 
 function isSdkRecoverableRepairPlan(plan: RunRepairPlan): boolean {

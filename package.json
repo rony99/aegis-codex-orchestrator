@@ -43,6 +43,7 @@
     "test:local": "npm run build && node --test test/cli.test.mjs && node --test test/server.test.mjs",
     "dev": "tsx src/cli.ts",
     "smoke": "tsx src/cli.ts smoke --model gpt-5.4",
+    "smoke:cli-local": "npm run build && node dist/cli.js doctor && node dist/cli.js sdk-probe --model gpt-5.4 --raw-cli --json",
     "server": "node dist/server/index.js",
     "dev-server": "tsx src/server/index.ts"
   },

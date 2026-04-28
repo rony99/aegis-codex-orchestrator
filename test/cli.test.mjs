@@ -9,6 +9,7 @@ import {
   buildProgressDocument,
   buildRunRepairPlan,
   buildRunSummary,
+  buildSdkHealthResult,
   buildResumePlan,
   classifyRunFailure,
   evaluateCloseoutGate,
@@ -164,8 +165,31 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /--web-search <disabled\|cached\|live>/);
   assert.match(output, /codex-gtd status --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd sdk-probe \[--model <model>\]/);
+  assert.match(output, /codex-gtd doctor \[--json\]/);
   assert.match(output, /\[--raw-cli\]/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
+});
+
+test("doctor reports local CLI prerequisites without invoking Codex SDK", () => {
+  const result = runCli(["doctor", "--json"]);
+
+  assert.equal(result.status, 0);
+  const doctor = JSON.parse(result.stdout);
+  assert.equal(doctor.status, "ok");
+  assert.match(doctor.nodeVersion, /^v\d+\./);
+  assert.equal(doctor.sdkVersion, "0.123.0");
+  assert.ok(Array.isArray(doctor.checks));
+  assert.ok(doctor.checks.some((check) => check.name === "node"));
+  assert.ok(doctor.checks.some((check) => check.name === "npm"));
+  assert.ok(doctor.checks.some((check) => check.name === "codex-sdk"));
+});
+
+test("package exposes a local CLI smoke script", async () => {
+  const packageJson = JSON.parse(await readFile(path.join(new URL("..", import.meta.url).pathname, "package.json"), "utf8"));
+
+  assert.match(packageJson.scripts["smoke:cli-local"], /doctor/);
+  assert.match(packageJson.scripts["smoke:cli-local"], /sdk-probe/);
+  assert.match(packageJson.scripts["smoke:cli-local"], /--raw-cli/);
 });
 
 test("run requires a task path before any SDK call", () => {
@@ -1419,6 +1443,9 @@ test("resume plans sdk continuation for recoverable failed runs", async () => {
     assert.match(plan.summary, /Resume manager/);
     assert.ok(plan.commands.some((command) => command.includes("resume")));
     assert.ok(plan.commands.some((command) => command.includes("--execute")));
+    assert.ok(plan.commands.some((command) => command.includes("--model gpt-5.4")));
+    assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms 300000")));
+    assert.ok(plan.commands.some((command) => command.includes("--max-loops 8")));
 
     const cliResult = runCli(["resume", "--run-dir", runDir]);
     assert.equal(cliResult.status, 0);
@@ -2135,6 +2162,28 @@ test("run summary captures machine-readable terminal state", () => {
   assert.deepEqual(summary.metrics.roleTurns, { manager: 2 });
   assert.deepEqual(summary.protocol.requiredEntries, RUN_PROTOCOL_ENTRIES);
   assert.ok(summary.protocol.requiredEntries.includes("run-summary.json"));
+});
+
+test("sdk health result omits stale failure reason after a passing check", () => {
+  const health = buildSdkHealthResult({
+    model: "gpt-5.4",
+    sdkVersion: "0.123.0",
+    checkedAt: "2026-04-28T00:00:00.000Z",
+    previous: {
+      status: "failed",
+      model: "gpt-5.4",
+      sdkVersion: "0.123.0",
+      passed: false,
+      reason: "AbortError: The operation was aborted",
+      checkedAt: "2026-04-27T00:00:00.000Z",
+    },
+  });
+
+  assert.equal(health.status, "ok");
+  assert.equal(health.passed, true);
+  assert.equal(health.reason, undefined);
+  assert.equal(health.previousPassed, false);
+  assert.equal(health.previousReason, undefined);
 });
 
 test("failure classification keeps sdk reconnect failures ahead of observer failures", () => {
