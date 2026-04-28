@@ -151,7 +151,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir>/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
   assert.match(output, /codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> \[--write\]/);
-  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--write\]/);
+  assert.match(output, /codex-gtd resume --run-dir <run-dir> \[--target <repo-dir>\] \[--execute\] \[--sdk-continue\] \[--write\]/);
   assert.match(output, /codex-gtd promote-snippet --candidate <candidate-file> --slug <slug>/);
   assert.match(output, /--monitor-sdk\|--skip-sdk-monitor/);
   assert.match(output, /--web-search <disabled\|cached\|live>/);
@@ -208,8 +208,14 @@ test("promote-snippet rejects unsafe slugs before any SDK call", () => {
 
 test("report summarizes run-summary files without invoking Codex SDK", async () => {
   const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-report-"));
+  const snippetsDir = path.join(runsDir, "snippets");
 
   try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(path.join(snippetsDir, "parser-edge-case-validation.md"), `# Snippet: Parser edge-case validation
+
+<!-- snippet-promotion: {"slug":"parser-edge-case-validation","title":"Parser edge-case validation","source":"candidate.md","status":"approved","createdBy":"promote-snippet","category":"parser","tags":["validation","edge-cases"]} -->
+`, "utf8");
     await writeSummary(runsDir, "run-a", {
       status: "done",
       reason: "finished",
@@ -286,19 +292,27 @@ Reason: Task has no HTTP dependency.
       durationMs: 250,
     });
 
-    const report = await runReport({ runsDir, limit: 2 });
+    const report = await runReport({ runsDir, snippetsDir, limit: 2 });
     assert.deepEqual(report.snippetUsage, {
       used: 1,
       rejected: 1,
       none: 1,
       unknown: 2,
     });
+    assert.deepEqual(report.snippetMetadataUsage.categories, {
+      parser: 1,
+    });
+    assert.deepEqual(report.snippetMetadataUsage.tags, {
+      "edge-cases": 1,
+      validation: 1,
+    });
+    assert.equal(report.snippetMetadataUsage.unmatchedUsedDecisions, 0);
     assert.equal(report.failureCategories.turn_timeout, 1);
     assert.equal(report.failureCategories.unsupported_tool, 1);
     assert.equal(report.recentRuns[0].failureCategory, "none");
     assert.equal(report.recentRuns[1].failureCategory, "sdk_failed");
 
-    const result = runCli(["report", "--runs-dir", runsDir, "--limit", "5"]);
+    const result = runCli(["report", "--runs-dir", runsDir, "--snippets-dir", snippetsDir, "--limit", "5"]);
 
     assert.equal(result.status, 0);
     assert.match(result.stdout, /Total runs: 5/);
@@ -310,6 +324,7 @@ Reason: Task has no HTTP dependency.
     assert.match(result.stdout, /Observer failures: 1/);
     assert.match(result.stdout, /Failure categories:/);
     assert.match(result.stdout, /Snippet usage: used=1 rejected=1 none=1 unknown=2/);
+    assert.match(result.stdout, /Snippet metadata usage: categories=parser:1 tags=edge-cases:1,validation:1 unmatched-used=0/);
     assert.match(result.stdout, /none: 1/);
     assert.match(result.stdout, /sdk_failed: 1/);
     assert.match(result.stdout, /turn_timeout: 1/);
@@ -499,11 +514,46 @@ test("repair-plan blocks resume when protocol health is broken", async () => {
     assert.equal(plan.resumable, false);
     assert.match(plan.summary, /protocol health/i);
     assert.ok(plan.issues.some((issue) => issue.includes("Missing required protocol entries: interfaces.md")));
+    assert.deepEqual(plan.commands, []);
 
     const result = runCli(["repair-plan", "--run-dir", runDir]);
     assert.equal(result.status, 1);
     assert.match(result.stdout, /Action: repair_protocol/);
     assert.match(result.stdout, /Missing required protocol entries: interfaces\.md/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("repair-plan suggests api-probes README template commands when sections are missing", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-repair-probe-template-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-missing-probe-sections", {
+      status: "ask_user",
+      reason: "Manager blocked on protocol",
+      failureCategory: "blocker",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:04.000Z",
+    });
+    const runDir = path.join(runsDir, "run-missing-probe-sections");
+    await writeFile(path.join(runDir, "api-probes", "README.md"), `# API Probes
+
+## Probe Decision
+No external dependency.
+`, "utf8");
+
+    const plan = await buildRunRepairPlan({ runDir });
+
+    assert.equal(plan.action, "repair_protocol");
+    assert.ok(plan.issues.some((issue) => issue.includes("Missing api-probes/README.md sections")));
+    assert.ok(plan.commands.some((command) => command.includes("## External Dependencies")));
+    assert.ok(plan.commands.some((command) => command.includes("codex-gtd repair-plan --run-dir")));
+
+    const result = runCli(["repair-plan", "--run-dir", runDir]);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Suggested commands:/);
+    assert.match(result.stdout, /External Dependencies/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -694,14 +744,15 @@ test("resume delegates failed runs to repair-plan", async () => {
     const plan = await buildResumePlan({ runDir });
 
     assert.equal(plan.action, "rerun");
-    assert.equal(plan.ready, false);
+    assert.equal(plan.ready, true);
     assert.equal(plan.source, "repair-plan");
     assert.ok(plan.commands.some((command) => command.includes("--turn-timeout-ms")));
 
     const cliResult = runCli(["resume", "--run-dir", runDir]);
-    assert.equal(cliResult.status, 1);
+    assert.equal(cliResult.status, 0);
     assert.match(cliResult.stdout, /Source: repair-plan/);
     assert.match(cliResult.stdout, /Action: rerun/);
+    assert.match(cliResult.stdout, /Ready: yes/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -774,8 +825,8 @@ test("resume execute refuses non-ready repair plans", async () => {
   try {
     await writeHealthyRunSummary(runsDir, "run-timeout", {
       status: "ask_user",
-      reason: "Manager failed: AbortError: The operation was aborted",
-      failureCategory: "turn_timeout",
+      reason: "Manager failed: malformed decision JSON",
+      failureCategory: "invalid_manager_decision",
       terminalRole: "manager",
       endedAt: "2026-04-24T00:00:03.000Z",
     });
@@ -786,7 +837,7 @@ test("resume execute refuses non-ready repair plans", async () => {
       lastRole: "manager",
       loop: 2,
       terminal: true,
-      reason: "Manager failed: AbortError: The operation was aborted",
+      reason: "Manager failed: malformed decision JSON",
     });
     await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
 
@@ -798,6 +849,41 @@ test("resume execute refuses non-ready repair plans", async () => {
     const cliResult = runCli(["resume", "--run-dir", runDir, "--execute"]);
     assert.equal(cliResult.status, 1);
     assert.match(cliResult.stderr, /resume plan is not ready/);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("resume execute rerun requires explicit sdk-continue flag", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-resume-sdk-continue-"));
+
+  try {
+    await writeHealthyRunSummary(runsDir, "run-timeout", {
+      status: "ask_user",
+      reason: "Researcher failed: AbortError: The operation was aborted",
+      failureCategory: "turn_timeout",
+      terminalRole: "manager",
+      endedAt: "2026-04-24T00:00:03.000Z",
+    });
+    const runDir = path.join(runsDir, "run-timeout");
+    const progress = updateProgressDocument(await readFile(path.join(runDir, "progress.md"), "utf8"), {
+      status: "failed",
+      lastUpdatedAt: "2026-04-24T00:00:03.000Z",
+      lastRole: "manager",
+      loop: 2,
+      terminal: true,
+      reason: "Researcher failed: AbortError: The operation was aborted",
+    });
+    await writeFile(path.join(runDir, "progress.md"), progress, "utf8");
+
+    await assert.rejects(
+      () => executeResumePlan({ runDir }),
+      /resume rerun requires --sdk-continue/,
+    );
+
+    const cliResult = runCli(["resume", "--run-dir", runDir, "--execute"]);
+    assert.equal(cliResult.status, 1);
+    assert.match(cliResult.stderr, /resume rerun requires --sdk-continue/);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -1648,12 +1734,16 @@ Use a small parser and keep tests local.
       snippetsDir,
       slug: "approved-parser",
       title: "Approved parser",
+      category: "parser",
+      tags: ["validation", "edge-cases", "validation"],
     });
     const second = await promoteSnippetCandidate({
       candidateFile: candidatePath,
       snippetsDir,
       slug: "approved-parser",
       title: "Approved parser",
+      category: "parser",
+      tags: ["validation", "edge-cases"],
     });
 
     const snippet = await readFile(path.join(snippetsDir, "approved-parser.md"), "utf8");
@@ -1663,12 +1753,49 @@ Use a small parser and keep tests local.
     assert.equal(second.status, "unchanged");
     assert.match(snippet, /# Snippet: Approved parser/);
     assert.match(snippet, /<!-- snippet-promotion: \{"slug":"approved-parser","title":"Approved parser"/);
+    assert.match(snippet, /"category":"parser"/);
+    assert.match(snippet, /"tags":\["validation","edge-cases"\]/);
     assert.match(snippet, /Source candidate:/);
     assert.match(snippet, /Use a small parser and keep tests local\./);
     assert.doesNotMatch(snippet, /\/tmp\/codex-gtd-test/);
     assert.match(snippet, /Source run: \(redacted local path\)\/run-a/);
     assert.equal((index.match(/approved-parser\.md/g) ?? []).length, 1);
-    assert.match(index, /- \[Approved parser\]\(\.\/approved-parser\.md\)/);
+    assert.match(index, /- \[Approved parser\]\(\.\/approved-parser\.md\) \(category=parser; tags=validation,edge-cases\)/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+
+
+test("promoteSnippetCandidate validates category and tag format", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-promote-tags-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+  const candidatePath = path.join(rootDir, "candidate.md");
+
+  try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(candidatePath, "# Candidate\n\nApproved content.\n", "utf8");
+
+    await assert.rejects(
+      () => promoteSnippetCandidate({
+        candidateFile: candidatePath,
+        snippetsDir,
+        slug: "approved-parser",
+        category: "parser core",
+      }),
+      /category must use lowercase letters, numbers, and hyphens/,
+    );
+
+    await assert.rejects(
+      () => promoteSnippetCandidate({
+        candidateFile: candidatePath,
+        snippetsDir,
+        slug: "approved-parser",
+        tags: ["ok", "bad tag"],
+      }),
+      /invalid tag: bad tag/,
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
@@ -1689,6 +1816,40 @@ test("promoteSnippetCandidate rejects conflicting existing snippet files", async
         candidateFile: candidatePath,
         snippetsDir,
         slug: "approved-parser",
+      }),
+      /Refusing to overwrite existing snippet/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("promoteSnippetCandidate rejects same slug when metadata changes", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-promote-metadata-conflict-"));
+  const snippetsDir = path.join(rootDir, "snippets");
+  const candidatePath = path.join(rootDir, "candidate.md");
+
+  try {
+    await mkdir(snippetsDir, { recursive: true });
+    await writeFile(candidatePath, "# Candidate\n\nApproved content.\n", "utf8");
+
+    await promoteSnippetCandidate({
+      candidateFile: candidatePath,
+      snippetsDir,
+      slug: "approved-parser",
+      title: "Approved parser",
+      category: "parser",
+      tags: ["validation"],
+    });
+
+    await assert.rejects(
+      () => promoteSnippetCandidate({
+        candidateFile: candidatePath,
+        snippetsDir,
+        slug: "approved-parser",
+        title: "Approved parser",
+        category: "parser",
+        tags: ["edge-cases"],
       }),
       /Refusing to overwrite existing snippet/,
     );

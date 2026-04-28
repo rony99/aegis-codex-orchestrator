@@ -105,7 +105,7 @@ The manager decides one next action at a time:
 - Repair plan command (`codex-gtd repair-plan`) for deterministic local recovery guidance after failed runs.
 - Workspace export command (`codex-gtd export-workspace`) to turn generated `workspace/` output into a reviewable patch before applying it elsewhere.
 - Guarded apply command (`codex-gtd apply-workspace`) that checks the target git repo is clean and validates the patch before writing.
-- Resume command (`codex-gtd resume`) that chooses the next local recovery step without invoking Codex or writing target files.
+- Resume command (`codex-gtd resume`) with local planning plus optional SDK-backed continuation for deterministic rerun cases.
 - Snippet usage reporting from `spec.md` decisions (`used`, `rejected`, `none`, `unknown`).
 - Included pilot task: Markdown TODO exporter.
 
@@ -185,9 +185,10 @@ node dist/cli.js resume --run-dir runs/<timestamp>
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute
 node dist/cli.js resume --run-dir runs/<timestamp> --target /path/to/repo --execute --write
+node dist/cli.js resume --run-dir runs/<timestamp> --execute --sdk-continue
 ```
 
-This command is a local planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`. With `--execute`, it runs only the selected local export/apply step. Applying still stays dry-run unless `--write` is also present.
+This command is a local planner by default. For completed runs it suggests `export-workspace` or `apply-workspace`; for failed runs it delegates to `repair-plan`. With `--execute`, it runs the selected step. `--sdk-continue` enables SDK-backed rerun execution when the repair plan action is `rerun`. Applying still stays dry-run unless `--write` is also present.
 
 ### Run the included pilot task
 
@@ -250,10 +251,12 @@ After a successful `--observe` run produces `snippets/_candidates/*.md`, review 
 node dist/cli.js promote-snippet \
   --candidate snippets/_candidates/example-candidates.md \
   --slug approved-parser \
-  --title "Approved parser"
+  --title "Approved parser" \
+  --category parser \
+  --tags validation,edge-cases
 ```
 
-The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
+The command writes `snippets/approved-parser.md` and updates `snippets/INDEX.md`. Optional `--category` and `--tags` metadata are validated (lowercase letters/numbers/hyphens), stored in snippet metadata, and appended to index entries for faster retrieval. It is idempotent for identical content and refuses to overwrite an existing snippet with different content.
 
 ### Generated files and privacy
 
@@ -264,7 +267,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
 ```text
   codex-gtd run --task <task-file> [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--skip-discovery] [--monitor-sdk|--skip-sdk-monitor]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
-  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--snippets-dir <dir>]
+  codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]
   codex-gtd report [--runs-dir <dir>] [--limit <n>]
   codex-gtd repair-plan --run-dir <run-dir>
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
