@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -35,6 +35,10 @@ import {
   compareProgressRunSummary,
   createRunDirectory,
 } from "../dist/driver.js";
+import {
+  parseCcTesterDecision,
+  runCcTeam,
+} from "../dist/cc-team.js";
 import {
   MANAGER_PROMPT_MAX_CHARS,
   OBSERVER_PROMPT_MAX_CHARS,
@@ -154,6 +158,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd run --task <task-file> \[--run-dir <run-dir>\]/);
+  assert.match(output, /codex-gtd cc-run --task <task-file> \[--run-dir <run-dir>\]/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
@@ -168,6 +173,217 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd doctor \[--json\]/);
   assert.match(output, /\[--raw-cli\]/);
   assert.match(output, /codex-5\.3-spark -> gpt-5\.3-codex-spark/);
+});
+
+test("cc tester decision parser requires JSON terminal status", () => {
+  assert.deepEqual(parseCcTesterDecision('{"status":"done","reason":"verified"}'), {
+    status: "done",
+    reason: "verified",
+  });
+
+  assert.throws(
+    () => parseCcTesterDecision("done"),
+    /cc tester returned non-JSON response/,
+  );
+  assert.throws(
+    () => parseCcTesterDecision('{"status":"maybe","reason":"unknown"}'),
+    /cc tester returned invalid status/,
+  );
+});
+
+test("cc team run records role events and terminal summary with injected runner", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nCreate a hello file.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    if (request.role === "developer") {
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "implemented" }],
+        },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "developer-session",
+        result: "implemented",
+      };
+      return;
+    }
+    yield {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: '{"status":"done","reason":"mock verified"}' }],
+      },
+    };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: "tester-session",
+      result: '{"status":"done","reason":"mock verified"}',
+    };
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.reason, "mock verified");
+  assert.deepEqual(requests.map((request) => request.role), ["developer", "tester"]);
+  assert.equal(requests[0].cwd, runDir);
+  assert.deepEqual(requests[0].tools, ["Read", "Write", "Edit", "AskUserQuestion"]);
+  assert.deepEqual(requests[0].allowedTools, ["Read", "Write", "Edit"]);
+  assert.equal(requests[0].maxTurns, 4);
+  assert.deepEqual(requests[1].tools, ["Read", "AskUserQuestion"]);
+  assert.deepEqual(requests[1].allowedTools, ["Read"]);
+  assert.equal(requests[1].maxTurns, 6);
+  assert.equal(requests[1].outputFormat.type, "json_schema");
+  assert.ok(requests[0].prompt.includes("Create a hello file."));
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "done");
+  assert.equal(summary.provider, "claude-code");
+  assert.equal(summary.metrics.roleTurns.developer, 1);
+  assert.equal(summary.metrics.roleTurns.tester, 1);
+
+  const decision = JSON.parse(await readFile(path.join(runDir, "tester-decision.json"), "utf8"));
+  assert.deepEqual(decision, { status: "done", reason: "mock verified" });
+  const progress = await readFile(path.join(runDir, "progress.md"), "utf8");
+  assert.match(progress, /Developer started/);
+  assert.match(progress, /Tester started/);
+  assert.match(progress, /Status: done/);
+  assert.match(progress, /Reason: mock verified/);
+
+  const eventFiles = (await readdir(path.join(runDir, "session-log", "events"))).filter((entry) => entry.endsWith(".json"));
+  assert.equal(eventFiles.length, 2);
+  const inflightFiles = (await readdir(path.join(runDir, "session-log", "inflight"))).filter((entry) => entry.endsWith(".json"));
+  assert.equal(inflightFiles.length, 2);
+});
+
+test("cc team run surfaces SDK AskUserQuestion requests as ask_user", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-ask-user-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nPick a database.\n", "utf8");
+
+  const runner = async function* (request) {
+    request.interactionRequests.push({
+      role: request.role,
+      type: "ask_user",
+      toolName: "AskUserQuestion",
+      input: {
+        questions: [{
+          question: "Which database should I use?",
+          header: "Database",
+          options: [
+            { label: "SQLite", description: "Local file database" },
+            { label: "Postgres", description: "Server database" },
+          ],
+          multiSelect: false,
+        }],
+      },
+      title: "Which database should I use?",
+      toolUseID: "toolu-question",
+      recordedAt: "2026-04-29T00:00:00.000Z",
+    });
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: "User input required.",
+    };
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "ask_user");
+  assert.match(result.reason, /developer requested user input via AskUserQuestion/);
+  const blockers = await readFile(path.join(runDir, "blockers.md"), "utf8");
+  assert.match(blockers, /AskUserQuestion/);
+  const interaction = JSON.parse(await readFile(path.join(runDir, "interaction-request.json"), "utf8"));
+  assert.equal(interaction.type, "ask_user");
+  assert.equal(interaction.toolName, "AskUserQuestion");
+  assert.equal(interaction.input.questions[0].question, "Which database should I use?");
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "ask_user");
+  assert.equal(summary.metrics.roleTurns.developer, 1);
+  assert.equal(summary.metrics.roleTurns.tester, 0);
+});
+
+test("cc team run records blockers and failed summary when a role fails", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-failed-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nCreate a hello file.\n", "utf8");
+
+  const runner = async function* () {
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: "developer-session",
+    };
+    throw new Error("cc sdk exploded");
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /cc sdk exploded/);
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "failed");
+  assert.match(summary.reason, /cc sdk exploded/);
+  assert.equal(summary.metrics.roleTurns.developer, 1);
+  assert.equal(summary.metrics.roleTurns.tester, 0);
+
+  const blockers = await readFile(path.join(runDir, "blockers.md"), "utf8");
+  assert.match(blockers, /cc sdk exploded/);
+  const eventFiles = (await readdir(path.join(runDir, "session-log", "events"))).filter((entry) => entry.endsWith(".json"));
+  assert.equal(eventFiles.length, 1);
+  const inflightFiles = (await readdir(path.join(runDir, "session-log", "inflight"))).filter((entry) => entry.endsWith(".json"));
+  assert.equal(inflightFiles.length, 1);
+});
+
+test("cc-run requires a task path before any SDK call", () => {
+  const result = runCli(["cc-run"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cc-run requires --task <task-file>/);
 });
 
 test("doctor reports local CLI prerequisites without invoking Codex SDK", () => {
@@ -192,6 +408,22 @@ test("package exposes a local CLI smoke script", async () => {
   assert.match(packageJson.scripts["smoke:cli-local"], /--raw-cli/);
 });
 
+test("team modules are split by provider while preserving public entrypoints", async () => {
+  const distDir = path.join(new URL("..", import.meta.url).pathname, "dist");
+
+  await assert.doesNotReject(() => stat(path.join(distDir, "codex-team", "driver.js")));
+  await assert.doesNotReject(() => stat(path.join(distDir, "codex-team", "prompts.js")));
+  await assert.doesNotReject(() => stat(path.join(distDir, "cc-team", "index.js")));
+
+  const legacyDriver = await import("../dist/driver.js");
+  const codexDriver = await import("../dist/codex-team/driver.js");
+  const legacyCcTeam = await import("../dist/cc-team.js");
+  const ccTeam = await import("../dist/cc-team/index.js");
+
+  assert.equal(legacyDriver.runOrchestration, codexDriver.runOrchestration);
+  assert.equal(legacyCcTeam.runCcTeam, ccTeam.runCcTeam);
+});
+
 test("run requires a task path before any SDK call", () => {
   const result = runCli(["run"]);
 
@@ -204,21 +436,61 @@ test("invalid numeric flags fail fast before any SDK call", () => {
   assert.equal(timeoutResult.status, 1);
   assert.match(timeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
 
+  const negativeTimeoutResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--turn-timeout-ms", "-1"]);
+  assert.equal(negativeTimeoutResult.status, 1);
+  assert.match(negativeTimeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
+
   const malformedTimeoutResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--turn-timeout-ms", "1abc"]);
   assert.equal(malformedTimeoutResult.status, 1);
   assert.match(malformedTimeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
+
+  const decimalTimeoutResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--turn-timeout-ms", "1.5"]);
+  assert.equal(decimalTimeoutResult.status, 1);
+  assert.match(decimalTimeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
+
+  const missingTimeoutResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--turn-timeout-ms"]);
+  assert.equal(missingTimeoutResult.status, 1);
+  assert.match(missingTimeoutResult.stderr, /--turn-timeout-ms requires milliseconds/);
 
   const loopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "0"]);
   assert.equal(loopResult.status, 1);
   assert.match(loopResult.stderr, /--max-loops must be a positive integer/);
 
+  const negativeLoopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "-1"]);
+  assert.equal(negativeLoopResult.status, 1);
+  assert.match(negativeLoopResult.stderr, /--max-loops must be a positive integer/);
+
   const malformedLoopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "2abc"]);
   assert.equal(malformedLoopResult.status, 1);
   assert.match(malformedLoopResult.stderr, /--max-loops must be a positive integer/);
 
+  const decimalLoopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "1.5"]);
+  assert.equal(decimalLoopResult.status, 1);
+  assert.match(decimalLoopResult.stderr, /--max-loops must be a positive integer/);
+
+  const missingLoopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops"]);
+  assert.equal(missingLoopResult.status, 1);
+  assert.match(missingLoopResult.stderr, /--max-loops requires a number/);
+
+  const zeroLimitResult = runCli(["report", "--limit", "0"]);
+  assert.equal(zeroLimitResult.status, 1);
+  assert.match(zeroLimitResult.stderr, /--limit must be a positive integer/);
+
+  const negativeLimitResult = runCli(["report", "--limit", "-1"]);
+  assert.equal(negativeLimitResult.status, 1);
+  assert.match(negativeLimitResult.stderr, /--limit must be a positive integer/);
+
   const malformedLimitResult = runCli(["report", "--limit", "1abc"]);
   assert.equal(malformedLimitResult.status, 1);
   assert.match(malformedLimitResult.stderr, /--limit must be a positive integer/);
+
+  const decimalLimitResult = runCli(["report", "--limit", "1.5"]);
+  assert.equal(decimalLimitResult.status, 1);
+  assert.match(decimalLimitResult.stderr, /--limit must be a positive integer/);
+
+  const missingLimitResult = runCli(["report", "--limit"]);
+  assert.equal(missingLimitResult.status, 1);
+  assert.match(missingLimitResult.stderr, /--limit requires a number/);
 });
 
 test("invalid web search mode fails fast before any SDK call", () => {

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createRunDirectory } from "../driver.js";
+import { createRunDirectory } from "../codex-team/driver.js";
 
 const DEFAULT_RUNS_DIR = path.resolve(process.cwd(), "runs");
 const CLI_PATH = path.resolve(process.cwd(), "dist", "cli.js");

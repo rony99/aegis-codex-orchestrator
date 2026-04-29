@@ -74,6 +74,7 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
 - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
 - `codex-gtd sdk-probe [--model <model>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
+- `codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -89,6 +90,7 @@ The manager decides one next action at a time:
 ## Features
 
 - Real Codex SDK integration through `@openai/codex-sdk`.
+- Minimal Claude Code SDK team workflow through `codex-gtd cc-run`, using a developer/tester loop and `@anthropic-ai/claude-agent-sdk`.
 - Pre-development research artifact generation through the researcher role.
 - Per-run `api-probes/` artifacts for API/SDK dependency grounding.
 - Optional Codex SDK web search for open-source framework and current documentation discovery (`--web-search live`).
@@ -325,6 +327,7 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
+  codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
   codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 ```
@@ -342,6 +345,12 @@ Defaults:
 Model alias:
 
 - `codex-5.3-spark` -> `gpt-5.3-codex-spark`
+
+### Claude Code SDK cc-run
+
+`cc-run` is an experimental simplified team workflow for Claude Code SDK-compatible providers. It does not replace the Codex team loop. The first version runs one developer role and one tester role per loop, writes deliverables under `workspace/`, records role events under `session-log/events/`, writes latest role diagnostics under `session-log/inflight/`, and closes with `run-summary.json`.
+
+The command reads normal Anthropic-compatible environment variables such as `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, and `ANTHROPIC_MODEL`. For the MiniMax-compatible endpoint tested during development, use `MiniMax-M2.7` as the model and keep `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
 
 ## Example Output
 

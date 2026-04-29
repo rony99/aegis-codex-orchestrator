@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runDoctor, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type DoctorResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./driver.js";
+import { runCcTeam, type CcTeamRunResult } from "./cc-team/index.js";
+import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runDoctor, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type DoctorResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./codex-team/driver.js";
 
 type ParsedArgs = {
   command: string;
@@ -237,6 +238,7 @@ function printHelp(): void {
 
 Usage:
   codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
+  codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]
   codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
@@ -479,6 +481,14 @@ function printSdkProbe(result: SdkProbeResult): void {
   }
 }
 
+function printCcTeamRun(result: CcTeamRunResult): void {
+  console.log(`CC run directory: ${result.runDir}`);
+  console.log(`Status: ${result.status}`);
+  console.log(`Model: ${result.model}`);
+  console.log(`Duration: ${formatDuration(result.durationMs)}`);
+  if (result.reason) console.log(`Reason: ${result.reason}`);
+}
+
 function printDoctor(result: DoctorResult): void {
   console.log("CLI doctor:");
   console.log(`Status: ${result.status}`);
@@ -603,6 +613,31 @@ async function main(): Promise<void> {
     }
 
     if (result.status !== "done" || result.observer?.status === "failed") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.command === "cc-run") {
+    if (!args.task) {
+      throw new Error("cc-run requires --task <task-file>");
+    }
+
+    const result = await runCcTeam({
+      taskFile: args.task,
+      model: args.model,
+      runDir: args.runDir,
+      runsDir: args.runsDir,
+      turnTimeoutMs: args.turnTimeoutMs,
+      maxLoops: args.maxLoops,
+    });
+
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      printCcTeamRun(result);
+    }
+    if (result.status !== "done") {
       process.exitCode = 1;
     }
     return;
