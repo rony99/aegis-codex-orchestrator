@@ -191,33 +191,21 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--turn-timeout-ms") {
       if (!next) throw new Error("--turn-timeout-ms requires milliseconds");
-      const turnTimeoutMs = Number.parseInt(next, 10);
-      if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs <= 0) {
-        throw new Error("--turn-timeout-ms must be a positive integer");
-      }
-      parsed.turnTimeoutMs = turnTimeoutMs;
+      parsed.turnTimeoutMs = parsePositiveIntegerFlag("--turn-timeout-ms", next);
       i += 1;
       continue;
     }
 
     if (arg === "--max-loops") {
       if (!next) throw new Error("--max-loops requires a number");
-      const maxLoops = Number.parseInt(next, 10);
-      if (!Number.isFinite(maxLoops) || maxLoops < 1) {
-        throw new Error("--max-loops must be a positive integer");
-      }
-      parsed.maxLoops = maxLoops;
+      parsed.maxLoops = parsePositiveIntegerFlag("--max-loops", next);
       i += 1;
       continue;
     }
 
     if (arg === "--limit") {
       if (!next) throw new Error("--limit requires a number");
-      const limit = Number.parseInt(next, 10);
-      if (!Number.isFinite(limit) || limit < 1) {
-        throw new Error("--limit must be a positive integer");
-      }
-      parsed.limit = limit;
+      parsed.limit = parsePositiveIntegerFlag("--limit", next);
       i += 1;
       continue;
     }
@@ -231,6 +219,13 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return parsed;
+}
+
+function parsePositiveIntegerFlag(flag: string, value: string): number {
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error(`${flag} must be a positive integer`);
+  }
+  return Number(value);
 }
 
 function isWebSearchMode(value: string): value is WebSearchMode {

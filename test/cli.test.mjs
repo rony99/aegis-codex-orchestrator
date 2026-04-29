@@ -204,9 +204,21 @@ test("invalid numeric flags fail fast before any SDK call", () => {
   assert.equal(timeoutResult.status, 1);
   assert.match(timeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
 
+  const malformedTimeoutResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--turn-timeout-ms", "1abc"]);
+  assert.equal(malformedTimeoutResult.status, 1);
+  assert.match(malformedTimeoutResult.stderr, /--turn-timeout-ms must be a positive integer/);
+
   const loopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "0"]);
   assert.equal(loopResult.status, 1);
   assert.match(loopResult.stderr, /--max-loops must be a positive integer/);
+
+  const malformedLoopResult = runCli(["run", "--task", "examples/todo-exporter-task.md", "--max-loops", "2abc"]);
+  assert.equal(malformedLoopResult.status, 1);
+  assert.match(malformedLoopResult.stderr, /--max-loops must be a positive integer/);
+
+  const malformedLimitResult = runCli(["report", "--limit", "1abc"]);
+  assert.equal(malformedLimitResult.status, 1);
+  assert.match(malformedLimitResult.stderr, /--limit must be a positive integer/);
 });
 
 test("invalid web search mode fails fast before any SDK call", () => {
