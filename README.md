@@ -75,6 +75,8 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
 - `codex-gtd sdk-probe [--model <model>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
 - `codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]`
+- `codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]`
+- `codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -91,6 +93,8 @@ The manager decides one next action at a time:
 
 - Real Codex SDK integration through `@openai/codex-sdk`.
 - Minimal Claude Code SDK team workflow through `codex-gtd cc-run`, using a developer/tester loop and `@anthropic-ai/claude-agent-sdk`.
+- Pre-development Claude Code SDK spec workflow through `codex-gtd cc-spec`, using intake/product/demo/research/architect/reviewer roles before implementation starts.
+- Local `cc-spec` quality gate before accepting `done`, checking required PM artifacts, sourced research, implementation-agent contract signals, and executable `tasks.md`.
 - Pre-development research artifact generation through the researcher role.
 - Per-run `api-probes/` artifacts for API/SDK dependency grounding.
 - Optional Codex SDK web search for open-source framework and current documentation discovery (`--web-search live`).
@@ -144,7 +148,7 @@ npm run smoke
 
 The smoke command starts a real Codex SDK thread with `gpt-5.4`, which is the most reliable default for this project. You can still pass `--model codex-5.3-spark` for faster experimental runs when that model is supported by your Codex account.
 
-For a CLI-first manual trial of `doctor`, `sdk-probe`, `run`, `status`, `resume`, and workspace export/apply, see [docs/CLI_TRIAL.md](docs/CLI_TRIAL.md).
+For a CLI-first manual trial of `doctor`, `sdk-probe`, `run`, `status`, `resume`, and workspace export/apply, see [docs/CLI_TRIAL.md](docs/CLI_TRIAL.md). For the pre-development Claude Code spec workflow, see [docs/CC_SPEC.md](docs/CC_SPEC.md).
 
 For SDK stream debugging, use the probe command to keep the ordered event transcript:
 
@@ -207,6 +211,7 @@ node dist/cli.js export-workspace \
 Use `cc-run` for the experimental Claude Code SDK team workflow. It runs a smaller developer/tester loop through `@anthropic-ai/claude-agent-sdk`, writes SDK progress into `session-log/events/` and `session-log/inflight/`, and records the terminal result in `run-summary.json`.
 
 Set Anthropic-compatible environment variables before running it. Do not commit real tokens.
+A safe starter template is available in `.env.example`.
 
 ```bash
 export ANTHROPIC_AUTH_TOKEN="..."
@@ -257,6 +262,38 @@ runs/manual-cc-team/
 ```
 
 `cc-run` uses Claude Code SDK `tools` and `allowedTools` separately: developer can write under the run directory, tester reads and returns structured JSON, and user-interaction requests are captured as `ask_user` instead of being guessed or ignored.
+
+### Run a CC spec review
+
+Use `cc-spec` before implementation when the input is still a feature idea or rough requirement. It does not write business code. The staged roles are intake, product, demo, research, architect, and reviewer. The product role writes `product-brief.md` and `decision-log.md` so real-world user, MVP-loop, constraints, assumptions, and open questions stay explicit before research and architecture. The demo role writes `demo.html` and pauses for user validation before research begins. The research role is instructed to prefer official docs, official GitHub repositories, and official package pages. The architect writes `spec.md`, `agent-spec.md`, and `tasks.md`; reviewer `done` is accepted only after a local quality gate confirms the artifacts are ready for a downstream development team.
+
+Detailed artifact semantics, resume rules, and the local quality gate are documented in [docs/CC_SPEC.md](docs/CC_SPEC.md).
+
+```bash
+node dist/cli.js cc-spec \
+  --task /tmp/feature-idea.md \
+  --target . \
+  --run-dir runs/manual-cc-spec \
+  --model "$ANTHROPIC_MODEL" \
+  --json
+```
+
+If the workflow stops at `ask_user`, answer in a file and resume the same run:
+
+```bash
+node dist/cli.js cc-spec \
+  --run-dir runs/manual-cc-spec \
+  --reply /tmp/cc-spec-reply.md \
+  --json
+```
+
+If a later role times out after writing artifacts, rerun the same directory
+without `--reply`; `cc-spec` resumes from the first missing artifact stage and
+runs reviewer when `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`,
+`spec.md`, `agent-spec.md`, and `tasks.md` already exist and pass the basic
+artifact checks.
+
+Primary artifacts are `context.md`, `questions.md`, `user-replies.md`, `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md`, `agent-spec.md`, `tasks.md`, `progress.md`, `blockers.md`, `interaction-request.json`, `run-summary.json`, and the usual `session-log/events/` plus `session-log/inflight/` diagnostics. When `--target <repo-dir>` is provided, the target repo is scanned read-only and summarized into `context.md`.
 
 ### Run local tests
 
@@ -429,6 +466,8 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
   codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]
+  codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
   codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 ```
@@ -449,9 +488,15 @@ Model alias:
 
 ### Claude Code SDK cc-run
 
-`cc-run` is an experimental simplified team workflow for Claude Code SDK-compatible providers. It does not replace the Codex team loop. The first version runs one developer role and one tester role per loop, writes deliverables under `workspace/`, records role events under `session-log/events/`, writes latest role diagnostics under `session-log/inflight/`, and closes with `run-summary.json`.
+`cc-run` is an experimental simplified team workflow for Claude Code SDK-compatible providers. It does not replace the Codex team loop. The first version runs one developer role and one tester role per loop, writes deliverables under `workspace/`, records role events under `session-log/events/`, writes latest role diagnostics under `session-log/inflight/`, and closes with `run-summary.json`. It also accepts `--spec-dir <cc-spec-run-dir>` to build a development task directly from `spec.md`, `agent-spec.md`, and `tasks.md`.
 
 The command reads normal Anthropic-compatible environment variables such as `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, and `ANTHROPIC_MODEL`. For the MiniMax-compatible endpoint tested during development, use `MiniMax-M2.7` as the model and keep `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+
+### Claude Code SDK cc-spec
+
+`cc-spec` is the pre-development companion to `cc-run`. It turns rough input into `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md` for users, and `agent-spec.md` plus `tasks.md` for implementation agents. It supports 0-1 projects by default and switches to existing-repo change review when `--target <repo-dir>` is provided. Target scanning is read-only and records package scripts, README/docs signals, top-level directories, and dependency hints in `context.md`. A local quality gate rejects `done` when core artifacts are pending, `demo.html` is missing, research recommendations lack source evidence, `agent-spec.md` misses mandatory contract sections, `tasks.md` is missing executable checklist items or per-task verification, or `agent-spec.md` leaves unsafe identity boundaries ambiguous.
+
+See [docs/CC_SPEC.md](docs/CC_SPEC.md) for the role pipeline, artifact table, resume behavior, and smoke-test evidence.
 
 ## Example Output
 

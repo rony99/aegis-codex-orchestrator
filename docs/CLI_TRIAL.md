@@ -136,7 +136,57 @@ Expected result:
 - `interaction-request.json` exists only when Claude Code SDK asks for user input
   or an unapproved permission.
 
-## 5. Inspect Codex Team Status
+## 5. Run a Small CC Spec Review
+
+`cc-spec` is the Claude Code SDK pre-development workflow. It does not write
+business implementation code. It runs intake, product, demo, research,
+architect, and reviewer roles to produce `product-brief.md`, `decision-log.md`,
+`demo.html`, `spec.md` for users, plus `agent-spec.md` and `tasks.md` for a
+later development team.
+
+For the full artifact contract, resume rules, quality gate, and known limits,
+see [CC_SPEC.md](CC_SPEC.md).
+
+Create a small requirement:
+
+```bash
+cat > /tmp/codex-gtd-cc-spec.md <<'EOF'
+Design a small CLI feature that exports a run summary as Markdown.
+Keep the first version small but testable.
+EOF
+```
+
+Run the spec team:
+
+```bash
+node dist/cli.js cc-spec \
+  --task /tmp/codex-gtd-cc-spec.md \
+  --target . \
+  --run-dir runs/manual-cc-spec \
+  --model "$ANTHROPIC_MODEL" \
+  --turn-timeout-ms 300000 \
+  --json
+```
+
+Expected result:
+
+- `run-summary.json` has `workflow: "cc-spec"` and terminal `status`.
+- `context.md` includes a read-only target repo summary when `--target` is set.
+- `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md`,
+  `agent-spec.md`, and `tasks.md` are present when the run is `done`.
+- A reviewer `done` response still passes through a local quality gate. The gate
+  rejects pending or missing core artifacts, missing `demo.html`, unsourced
+  research recommendations, missing mandatory agent-spec sections, missing
+  per-task `verify:` commands, and ambiguous identity boundaries such as
+  hardcoded `userId` alternatives.
+- If the run stops at `ask_user`, write the answer to a file and resume with
+  `node dist/cli.js cc-spec --run-dir runs/manual-cc-spec --reply <reply-file> --json`.
+- If a later role times out after writing artifacts, rerun
+  `node dist/cli.js cc-spec --run-dir runs/manual-cc-spec --json`; it resumes
+  from the first missing or invalid artifact stage, or runs reviewer when all
+  core spec artifacts already exist.
+
+## 6. Inspect Codex Team Status
 
 ```bash
 node dist/cli.js status --run-dir runs/manual-cli-smoke --json

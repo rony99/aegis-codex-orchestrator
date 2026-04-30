@@ -1,6 +1,9 @@
 import { query, type Options as ClaudeCodeOptions, type OutputFormat, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { buildCcSpecRolePrompt, buildCcSpecSystemPrompt, CC_SPEC_ROLES, type CcSpecMode, type CcSpecRole } from "./spec-prompts.js";
+
+export type { CcSpecMode, CcSpecRole } from "./spec-prompts.js";
 
 const DEFAULT_CC_MODEL = "MiniMax-M2.7";
 const DEFAULT_RUNS_DIR = "runs";
@@ -10,11 +13,17 @@ const DEVELOPER_MAX_TURNS = 4;
 const TESTER_MAX_TURNS = 6;
 const ASK_USER_TOOL = "AskUserQuestion";
 
-type CcRole = "developer" | "tester";
+type CcTeamWorkerRole = "developer" | "tester";
+type CcRole = CcTeamWorkerRole | CcSpecRole;
 type CcTeamStatus = "done" | "ask_user" | "max_loops_reached" | "failed";
 
 export type CcTesterDecision = {
   status: "done" | "develop" | "ask_user";
+  reason: string;
+};
+
+export type CcSpecReviewerDecision = {
+  status: "done" | "ask_user";
   reason: string;
 };
 
@@ -36,11 +45,24 @@ export type CcRoleRunRequest = {
 export type CcRoleRunner = (request: CcRoleRunRequest) => AsyncIterable<SDKMessage | unknown>;
 
 export type CcTeamRunOptions = {
-  taskFile: string;
+  taskFile?: string;
+  specDir?: string;
   runDir?: string;
   runsDir?: string;
   model?: string;
   maxLoops?: number;
+  turnTimeoutMs?: number;
+  runner?: CcRoleRunner;
+};
+
+export type CcSpecRunOptions = {
+  taskFile?: string;
+  replyFile?: string;
+  runDir?: string;
+  runsDir?: string;
+  model?: string;
+  mode?: CcSpecMode;
+  targetDir?: string;
   turnTimeoutMs?: number;
   runner?: CcRoleRunner;
 };
@@ -51,6 +73,10 @@ export type CcTeamRunResult = {
   reason?: string;
   model: string;
   durationMs: number;
+};
+
+export type CcSpecRunResult = CcTeamRunResult & {
+  mode: CcSpecMode;
 };
 
 type CcRoleTurnResult = {
@@ -92,7 +118,8 @@ type CcTeamRunSummary = {
   status: CcTeamStatus;
   reason?: string;
   model: string;
-  taskFile: string;
+  taskFile?: string;
+  specDir?: string;
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -100,7 +127,28 @@ type CcTeamRunSummary = {
   turnTimeoutMs: number;
   metrics: {
     sessionLogEntries: number;
-    roleTurns: Record<CcRole, number>;
+    roleTurns: Record<CcTeamWorkerRole, number>;
+  };
+};
+
+type CcSpecRunSummary = {
+  schemaVersion: 1;
+  provider: "claude-code";
+  workflow: "cc-spec";
+  runDir: string;
+  status: CcTeamStatus;
+  reason?: string;
+  model: string;
+  mode: CcSpecMode;
+  taskFile?: string;
+  targetDir?: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  turnTimeoutMs: number;
+  metrics: {
+    sessionLogEntries: number;
+    roleTurns: Record<CcSpecRole, number>;
   };
 };
 
@@ -117,19 +165,40 @@ const CC_TESTER_DECISION_OUTPUT_FORMAT: OutputFormat = {
   },
 };
 
+// Matches task IDs in checkbox lists (- [ ] T1), table cells (| T1 |), markdown headers (## T1), or bold labels (**ID:** T1).
+const TASK_ID_PATTERN = /- \[[ x]\]\s*T\d+|\|\s*T\d+\s*\||\|\s*[^|\n]+\s*\|\s*T\d+\s*\||##\s+T\d+\b|\*\*ID:\*\*\s*T\d+/i;
+
+const CC_SPEC_REVIEWER_DECISION_OUTPUT_FORMAT: OutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["done", "ask_user"] },
+      reason: { type: "string" },
+    },
+    required: ["status", "reason"],
+    additionalProperties: false,
+  },
+};
+
 export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunResult> {
-  const taskFile = path.resolve(options.taskFile);
-  const task = await readFile(taskFile, "utf8");
+  if (!options.taskFile && !options.specDir) {
+    throw new Error("cc-run requires taskFile or specDir");
+  }
+  const taskFile = options.taskFile ? path.resolve(options.taskFile) : undefined;
+  const task = taskFile
+    ? await readFile(taskFile, "utf8")
+    : await buildTaskFromSpec(path.resolve(options.specDir!));
   const model = options.model ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_CC_MODEL;
   const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
   const runDir = path.resolve(options.runDir ?? createCcRunDirectoryName(options.runsDir ?? DEFAULT_RUNS_DIR));
   const startedAt = new Date().toISOString();
   const startedAtMs = Date.now();
-  const roleTurns: Record<CcRole, number> = { developer: 0, tester: 0 };
+  const roleTurns: Record<CcTeamWorkerRole, number> = { developer: 0, tester: 0 };
   const runner = options.runner ?? defaultCcRoleRunner;
 
-  await initializeCcRunProtocol({ runDir, task, model, startedAt });
+  await initializeCcRunProtocol({ runDir, task, model, startedAt, specDir: options.specDir ? path.resolve(options.specDir) : undefined });
 
   let finalStatus: CcTeamStatus = "max_loops_reached";
   let finalReason = `cc team did not finish within ${maxLoops} loop(s).`;
@@ -212,6 +281,7 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
     reason: finalReason,
     model,
     taskFile,
+    specDir: options.specDir ? path.resolve(options.specDir) : undefined,
     startedAt,
     endedAt,
     durationMs,
@@ -227,35 +297,201 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
   return { runDir, status: finalStatus, reason: finalReason, model, durationMs };
 }
 
+export async function runCcSpec(options: CcSpecRunOptions): Promise<CcSpecRunResult> {
+  if (!options.taskFile && !options.runDir) {
+    throw new Error("cc-spec requires taskFile unless runDir is provided");
+  }
+  if (options.replyFile && !options.runDir) {
+    throw new Error("cc-spec reply mode requires runDir");
+  }
+
+  const model = options.model ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_CC_MODEL;
+  const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const runDir = path.resolve(options.runDir ?? createCcRunDirectoryName(options.runsDir ?? DEFAULT_RUNS_DIR, "cc-spec"));
+  const taskFile = options.taskFile ? path.resolve(options.taskFile) : undefined;
+  const task = taskFile ? await readFile(taskFile, "utf8") : await readFile(path.join(runDir, "task.md"), "utf8");
+  const targetDir = options.targetDir ? path.resolve(options.targetDir) : undefined;
+  const existingContext = taskFile ? "" : await readTextIfExists(path.join(runDir, "context.md"));
+  const mode = targetDir ? "change" : options.mode ?? readCcSpecModeFromContext(existingContext) ?? "new";
+  const targetSummary = targetDir ? await summarizeTargetRepository(targetDir) : existingContext;
+  const startedAt = new Date().toISOString();
+  const startedAtMs = Date.now();
+  const roleTurns = createEmptySpecRoleTurns();
+  const runner = options.runner ?? defaultCcRoleRunner;
+
+  if (taskFile) {
+    await initializeCcSpecRunProtocol({ runDir, task, model, mode, targetSummary, startedAt });
+  } else {
+    await ensureCcSpecRunProtocol({ runDir, model, mode, targetSummary, startedAt });
+  }
+
+  if (options.replyFile) {
+    const reply = await readFile(path.resolve(options.replyFile), "utf8");
+    await appendUserReply(runDir, reply);
+    await appendReplyToContext(runDir, reply);
+    await writeFile(path.join(runDir, "questions.md"), "", "utf8");
+    await appendCcProgress(runDir, "\nReply appended. Resuming spec workflow.\n");
+  }
+
+  const userReplies = await readTextIfExists(path.join(runDir, "user-replies.md"));
+  const rolesToRun = taskFile
+    ? [...CC_SPEC_ROLES]
+    : options.replyFile
+      ? await rolesAfterLastInteraction(runDir)
+      : await rolesForCcSpecContinuation(runDir);
+  let [productBrief, decisionLog] = await Promise.all([
+    readTextIfExists(path.join(runDir, "product-brief.md")),
+    readTextIfExists(path.join(runDir, "decision-log.md")),
+  ]);
+  let finalStatus: CcTeamStatus = "failed";
+  let finalReason = "cc-spec did not complete.";
+  let sessionLogEntries = 0;
+
+  try {
+    for (const role of rolesToRun) {
+      await appendCcProgress(runDir, `\n${role} started.\n`);
+      roleTurns[role] += 1;
+      const turn = await runCcRole({
+        role,
+        model,
+        runDir,
+        prompt: buildCcSpecRolePrompt({ role, task, mode, targetSummary, userReplies, productBrief, decisionLog, runDir }),
+        runner,
+        turnTimeoutMs,
+      });
+      sessionLogEntries += 1;
+
+      const interaction = firstAskUserInteraction(turn.interactionRequests);
+      if (interaction) {
+        finalStatus = "ask_user";
+        finalReason = summarizeCcInteraction(interaction);
+        await appendCcBlocker(runDir, finalReason);
+        await writeCcInteractionRequest(runDir, interaction);
+        await writeCcQuestions(runDir, interaction);
+        break;
+      }
+
+      if (role === "demo") {
+        const demoReady = await isDemoArtifactReady(runDir);
+        if (!demoReady) {
+          finalStatus = "ask_user";
+          finalReason = "demo role did not produce demo.html — check the run directory and reply to continue";
+          await appendCcBlocker(runDir, finalReason);
+          const syntheticInteraction: CcInteractionRequest = {
+            role: "demo",
+            type: "ask_user",
+            toolName: ASK_USER_TOOL,
+            input: { questions: [{ question: "The demo role did not write demo.html. Please check the run directory and reply when ready to continue." }] },
+            recordedAt: new Date().toISOString(),
+          };
+          await writeCcInteractionRequest(runDir, syntheticInteraction);
+          await writeCcQuestions(runDir, syntheticInteraction);
+          break;
+        }
+        // demo.html exists; AskUserQuestion was intercepted above if the agent called it.
+        // If neither happened, the agent wrote demo.html without asking — proceed silently.
+        continue;
+      }
+
+      await persistCcSpecRoleArtifacts(runDir, role, turn.finalResponse);
+      if (role === "product") {
+        [productBrief, decisionLog] = await Promise.all([
+          readTextIfExists(path.join(runDir, "product-brief.md")),
+          readTextIfExists(path.join(runDir, "decision-log.md")),
+        ]);
+      }
+
+      if (role === "reviewer") {
+        const decision = parseCcSpecReviewerDecision(turn.finalResponse);
+        await writeFile(path.join(runDir, "reviewer-decision.json"), `${JSON.stringify(decision, null, 2)}\n`, "utf8");
+        finalStatus = decision.status;
+        finalReason = decision.reason;
+        if (decision.status === "ask_user") {
+          await appendCcBlocker(runDir, decision.reason);
+        } else {
+          const qualityIssues = await validateCcSpecQualityGate(runDir);
+          if (qualityIssues.length > 0) {
+            finalStatus = "failed";
+            finalReason = `cc-spec quality gate failed: ${qualityIssues.join("; ")}`;
+            await appendCcBlocker(runDir, finalReason);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    finalStatus = "failed";
+    finalReason = summarizeError(error);
+    await appendCcBlocker(runDir, finalReason);
+  }
+
+  await appendCcProgress(runDir, `\n## Finished\n\nStatus: ${finalStatus}\nReason: ${finalReason}\n`);
+  const endedAt = new Date().toISOString();
+  const durationMs = Date.now() - startedAtMs;
+  const summary: CcSpecRunSummary = {
+    schemaVersion: 1,
+    provider: "claude-code",
+    workflow: "cc-spec",
+    runDir,
+    status: finalStatus,
+    reason: finalReason,
+    model,
+    mode,
+    taskFile,
+    targetDir,
+    startedAt,
+    endedAt,
+    durationMs,
+    turnTimeoutMs,
+    metrics: {
+      sessionLogEntries,
+      roleTurns,
+    },
+  };
+  await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+
+  return { runDir, status: finalStatus, reason: finalReason, model, durationMs, mode };
+}
+
 export function parseCcTesterDecision(finalResponse: string): CcTesterDecision {
+  return parseDecisionJson<CcTesterDecision>(finalResponse, "cc tester", ["done", "develop", "ask_user"]);
+}
+
+export function parseCcSpecReviewerDecision(finalResponse: string): CcSpecReviewerDecision {
+  return parseDecisionJson<CcSpecReviewerDecision>(finalResponse, "cc-spec reviewer", ["done", "ask_user"]);
+}
+
+function parseDecisionJson<T extends { status: string; reason: string }>(
+  finalResponse: string,
+  agentLabel: string,
+  validStatuses: readonly string[],
+): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(finalResponse);
   } catch {
-    throw new Error(`cc tester returned non-JSON response: ${finalResponse}`);
+    throw new Error(`${agentLabel} returned non-JSON response: ${finalResponse}`);
   }
-
   if (!parsed || typeof parsed !== "object") {
-    throw new Error(`cc tester returned non-JSON response: ${finalResponse}`);
+    throw new Error(`${agentLabel} returned non-JSON response: ${finalResponse}`);
   }
-
-  const candidate = parsed as Partial<CcTesterDecision>;
-  if (candidate.status !== "done" && candidate.status !== "develop" && candidate.status !== "ask_user") {
-    throw new Error(`cc tester returned invalid status: ${finalResponse}`);
+  const candidate = parsed as Record<string, unknown>;
+  if (!validStatuses.includes(candidate.status as string)) {
+    throw new Error(`${agentLabel} returned invalid status: ${finalResponse}`);
   }
   if (typeof candidate.reason !== "string" || candidate.reason.trim().length === 0) {
-    throw new Error(`cc tester returned invalid reason: ${finalResponse}`);
+    throw new Error(`${agentLabel} returned invalid reason: ${finalResponse}`);
   }
-
-  return {
-    status: candidate.status,
-    reason: candidate.reason,
-  };
+  return { status: candidate.status, reason: candidate.reason } as T;
 }
 
-function createCcRunDirectoryName(runsDir: string): string {
+function createCcRunDirectoryName(runsDir: string, prefix: "cc" | "cc-spec" = "cc"): string {
   const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-  return path.join(runsDir, `cc-${stamp}`);
+  return path.join(runsDir, `${prefix}-${stamp}`);
+}
+
+async function ensureSessionLogDirs(runDir: string): Promise<void> {
+  await mkdir(path.join(runDir, "session-log", "events"), { recursive: true });
+  await mkdir(path.join(runDir, "session-log", "inflight"), { recursive: true });
 }
 
 async function initializeCcRunProtocol(input: {
@@ -263,17 +499,77 @@ async function initializeCcRunProtocol(input: {
   task: string;
   model: string;
   startedAt: string;
+  specDir?: string;
 }): Promise<void> {
   await mkdir(path.join(input.runDir, "workspace"), { recursive: true });
-  await mkdir(path.join(input.runDir, "session-log", "events"), { recursive: true });
-  await mkdir(path.join(input.runDir, "session-log", "inflight"), { recursive: true });
-  await writeFile(path.join(input.runDir, "task.md"), input.task, "utf8");
-  await writeFile(path.join(input.runDir, "blockers.md"), "", "utf8");
-  await writeFile(
-    path.join(input.runDir, "progress.md"),
-    `# CC Team Progress\n\nModel: ${input.model}\nStarted: ${input.startedAt}\n`,
-    "utf8",
-  );
+  await ensureSessionLogDirs(input.runDir);
+  const progressHeader = input.specDir
+    ? `# CC Team Progress\n\nModel: ${input.model}\nSpec: ${input.specDir}\nStarted: ${input.startedAt}\n`
+    : `# CC Team Progress\n\nModel: ${input.model}\nStarted: ${input.startedAt}\n`;
+  await Promise.all([
+    writeFile(path.join(input.runDir, "task.md"), input.task, "utf8"),
+    writeFile(path.join(input.runDir, "blockers.md"), "", "utf8"),
+    writeFile(path.join(input.runDir, "progress.md"), progressHeader, "utf8"),
+  ]);
+}
+
+async function initializeCcSpecRunProtocol(input: {
+  runDir: string;
+  task: string;
+  model: string;
+  mode: CcSpecMode;
+  targetSummary: string;
+  startedAt: string;
+}): Promise<void> {
+  await ensureSessionLogDirs(input.runDir);
+  await Promise.all([
+    writeFile(path.join(input.runDir, "task.md"), input.task, "utf8"),
+    writeFile(path.join(input.runDir, "blockers.md"), "", "utf8"),
+    writeFile(path.join(input.runDir, "questions.md"), "", "utf8"),
+    writeFile(path.join(input.runDir, "user-replies.md"), "", "utf8"),
+    writeFile(path.join(input.runDir, "product-brief.md"), "# Product Brief\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "decision-log.md"), "# Decision Log\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "research.md"), "# Research\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "spec.md"), "# Spec\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "agent-spec.md"), "# Agent Spec\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "tasks.md"), "# Tasks\n\nPending.\n", "utf8"),
+    writeFile(path.join(input.runDir, "context.md"), buildCcSpecContext(input.mode, input.targetSummary), "utf8"),
+    writeFile(path.join(input.runDir, "progress.md"), `# CC Spec Progress\n\nModel: ${input.model}\nStarted: ${input.startedAt}\n`, "utf8"),
+  ]);
+}
+
+async function ensureCcSpecRunProtocol(input: {
+  runDir: string;
+  model: string;
+  mode: CcSpecMode;
+  targetSummary: string;
+  startedAt: string;
+}): Promise<void> {
+  await ensureSessionLogDirs(input.runDir);
+  const files = [
+    "context.md", "progress.md", "blockers.md", "questions.md", "user-replies.md",
+    "product-brief.md", "decision-log.md", "research.md", "spec.md", "agent-spec.md", "tasks.md",
+  ] as const;
+  const contents = await Promise.all(files.map((f) => readTextIfExists(path.join(input.runDir, f))));
+  const [ctx, prog, blk, q, rep, pb, dl, res, sp, as, tk] = contents;
+  const placeholders: Record<string, string> = {
+    "context.md": buildCcSpecContext(input.mode, input.targetSummary),
+    "progress.md": `# CC Spec Progress\n\nModel: ${input.model}\nStarted: ${input.startedAt}\n`,
+    "blockers.md": "",
+    "questions.md": "",
+    "user-replies.md": "",
+    "product-brief.md": "# Product Brief\n\nPending.\n",
+    "decision-log.md": "# Decision Log\n\nPending.\n",
+    "research.md": "# Research\n\nPending.\n",
+    "spec.md": "# Spec\n\nPending.\n",
+    "agent-spec.md": "# Agent Spec\n\nPending.\n",
+    "tasks.md": "# Tasks\n\nPending.\n",
+  };
+  const existing = [ctx, prog, blk, q, rep, pb, dl, res, sp, as, tk];
+  const writes = files
+    .map((f, i) => (!existing[i] ? writeFile(path.join(input.runDir, f), placeholders[f], "utf8") : null))
+    .filter((p): p is Promise<void> => p !== null);
+  await Promise.all(writes);
 }
 
 async function runCcRole(input: {
@@ -319,11 +615,11 @@ async function runCcRole(input: {
       cwd: input.runDir,
       prompt: input.prompt,
       systemPrompt: buildCcSystemPrompt(input.role),
-      maxTurns: input.role === "developer" ? DEVELOPER_MAX_TURNS : TESTER_MAX_TURNS,
-      tools: input.role === "developer" ? ["Read", "Write", "Edit", ASK_USER_TOOL] : ["Read", ASK_USER_TOOL],
-      allowedTools: input.role === "developer" ? ["Read", "Write", "Edit"] : ["Read"],
-      outputFormat: input.role === "tester" ? CC_TESTER_DECISION_OUTPUT_FORMAT : undefined,
-      permissionMode: input.role === "developer" ? "acceptEdits" : "dontAsk",
+      maxTurns: maxTurnsForRole(input.role),
+      tools: toolsForRole(input.role),
+      allowedTools: allowedToolsForRole(input.role),
+      outputFormat: outputFormatForRole(input.role),
+      permissionMode: permissionModeForRole(input.role),
       abortController,
       interactionRequests,
     })) {
@@ -421,10 +717,51 @@ function defaultCcRoleRunner(request: CcRoleRunRequest): AsyncIterable<SDKMessag
 }
 
 function buildCcSystemPrompt(role: CcRole): string {
+  if (isCcSpecRole(role)) {
+    return buildCcSpecSystemPrompt(role);
+  }
   if (role === "developer") {
     return "You are the cc developer. Implement only inside the current run directory, preferably under ./workspace. Keep changes minimal.";
   }
   return "You are the cc tester. Verify the workspace result and return JSON only.";
+}
+
+function maxTurnsForRole(role: CcRole): number {
+  if (role === "developer") return DEVELOPER_MAX_TURNS;
+  if (role === "tester") return TESTER_MAX_TURNS;
+  if (role === "demo") return 12;
+  if (role === "research") return 16;
+  if (role === "architect") return 12;
+  return 8;
+}
+
+function toolsForRole(role: CcRole): string[] {
+  if (role === "tester" || role === "reviewer") return ["Read", ASK_USER_TOOL];
+  if (role === "product") return [ASK_USER_TOOL];
+  if (role === "demo") return ["Write", "Read", ASK_USER_TOOL];
+  if (role === "research") return ["WebSearch", ASK_USER_TOOL];
+  if (role === "architect") return ["Read", ASK_USER_TOOL];
+  return ["Read", "Write", "Edit", ASK_USER_TOOL];
+}
+
+function allowedToolsForRole(role: CcRole): string[] {
+  if (role === "tester" || role === "reviewer") return ["Read"];
+  if (role === "product") return [];
+  if (role === "demo") return ["Write", "Read"];
+  if (role === "research") return ["WebSearch"];
+  if (role === "architect") return ["Read"];
+  return ["Read", "Write", "Edit"];
+}
+
+function outputFormatForRole(role: CcRole): OutputFormat | undefined {
+  if (role === "tester") return CC_TESTER_DECISION_OUTPUT_FORMAT;
+  if (role === "reviewer") return CC_SPEC_REVIEWER_DECISION_OUTPUT_FORMAT;
+  return undefined;
+}
+
+function permissionModeForRole(role: CcRole): "acceptEdits" | "dontAsk" {
+  if (role === "tester" || role === "reviewer") return "dontAsk";
+  return "acceptEdits";
 }
 
 function buildCcDeveloperPrompt(task: string, loop: number): string {
@@ -470,18 +807,466 @@ function ccEventTracePath(runDir: string, startedAt: string, role: CcRole): stri
 
 async function appendCcProgress(runDir: string, message: string): Promise<void> {
   const progressPath = path.join(runDir, "progress.md");
-  const existing = await readFile(progressPath, "utf8");
+  const existing = await readTextIfExists(progressPath);
   await writeFile(progressPath, `${existing}${message}`, "utf8");
 }
 
 async function appendCcBlocker(runDir: string, reason: string): Promise<void> {
   const blockerPath = path.join(runDir, "blockers.md");
-  const existing = await readFile(blockerPath, "utf8");
+  const existing = await readTextIfExists(blockerPath);
   await writeFile(blockerPath, `${existing}${existing ? "\n" : ""}- ${reason}\n`, "utf8");
 }
 
 async function writeCcInteractionRequest(runDir: string, request: CcInteractionRequest): Promise<void> {
   await writeFile(path.join(runDir, "interaction-request.json"), `${JSON.stringify(request, null, 2)}\n`, "utf8");
+}
+
+async function writeCcQuestions(runDir: string, request: CcInteractionRequest): Promise<void> {
+  const questions = Array.isArray(request.input.questions) ? request.input.questions : [];
+  const lines = ["# Questions", ""];
+  for (const [index, question] of questions.entries()) {
+    if (question && typeof question === "object") {
+      const value = question as Record<string, unknown>;
+      const text = typeof value.question === "string" ? value.question : JSON.stringify(value);
+      lines.push(`${index + 1}. ${text}`);
+    } else {
+      lines.push(`${index + 1}. ${String(question)}`);
+    }
+  }
+  if (questions.length === 0) {
+    lines.push(JSON.stringify(request.input, null, 2));
+  }
+  await writeFile(path.join(runDir, "questions.md"), `${lines.join("\n")}\n`, "utf8");
+}
+
+async function appendUserReply(runDir: string, reply: string): Promise<void> {
+  const replyPath = path.join(runDir, "user-replies.md");
+  const existing = await readTextIfExists(replyPath);
+  const stamp = new Date().toISOString();
+  await writeFile(replyPath, `${existing}${existing ? "\n" : ""}## ${stamp}\n\n${reply.trim()}\n`, "utf8");
+}
+
+async function appendReplyToContext(runDir: string, reply: string): Promise<void> {
+  const contextPath = path.join(runDir, "context.md");
+  const existing = await readTextIfExists(contextPath);
+  const stamp = new Date().toISOString();
+  await writeFile(contextPath, `${existing}${existing.endsWith("\n") ? "" : "\n"}\n## User Reply ${stamp}\n\n${reply.trim()}\n`, "utf8");
+}
+
+async function persistCcSpecRoleArtifacts(runDir: string, role: CcSpecRole, finalResponse: string): Promise<void> {
+  const trimmed = finalResponse.trim();
+  if (!trimmed) return;
+
+  if (role === "product") {
+    const productBrief = extractTaggedArtifact(trimmed, "product-brief.md");
+    const decisionLog = extractTaggedArtifact(trimmed, "decision-log.md");
+    if (productBrief && decisionLog) {
+      await Promise.all([
+        writeFile(path.join(runDir, "product-brief.md"), `${productBrief.trim()}\n`, "utf8"),
+        writeFile(path.join(runDir, "decision-log.md"), `${decisionLog.trim()}\n`, "utf8"),
+      ]);
+      return;
+    }
+    // Tags not found — tolerate if files were already written by a prior tool call.
+    const [existingProductBrief, existingDecisionLog] = await Promise.all([
+      readTextIfExists(path.join(runDir, "product-brief.md")),
+      readTextIfExists(path.join(runDir, "decision-log.md")),
+    ]);
+    if (!isCcSpecArtifactReady(existingProductBrief, "Product Brief") || !isCcSpecArtifactReady(existingDecisionLog, "Decision Log")) {
+      throw new Error("cc-spec product response did not include product-brief.md and decision-log.md tagged artifacts");
+    }
+    return;
+  }
+
+  if (role === "research") {
+    const researchPath = path.join(runDir, "research.md");
+    const existing = await readTextIfExists(researchPath);
+    if (/^#\s+Research\b/im.test(trimmed) || !isCcSpecArtifactReady(existing, "Research")) {
+      await writeFile(researchPath, `${trimmed}\n`, "utf8");
+    }
+    return;
+  }
+
+  if (role !== "architect") return;
+
+  const spec = extractTaggedArtifact(trimmed, "spec.md");
+  const agentSpec = extractTaggedArtifact(trimmed, "agent-spec.md");
+  const tasks = extractTaggedArtifact(trimmed, "tasks.md");
+  if (spec && agentSpec && tasks) {
+    await Promise.all([
+      writeFile(path.join(runDir, "spec.md"), `${spec.trim()}\n`, "utf8"),
+      writeFile(path.join(runDir, "agent-spec.md"), `${agentSpec.trim()}\n`, "utf8"),
+      writeFile(path.join(runDir, "tasks.md"), `${tasks.trim()}\n`, "utf8"),
+    ]);
+    return;
+  }
+  // Tags not found — tolerate if files were already written by a prior tool call.
+  const [existingSpec, existingAgentSpec, existingTasks] = await Promise.all([
+    readTextIfExists(path.join(runDir, "spec.md")),
+    readTextIfExists(path.join(runDir, "agent-spec.md")),
+    readTextIfExists(path.join(runDir, "tasks.md")),
+  ]);
+  if (!isCcSpecArtifactReady(existingSpec, "Spec") || !isCcSpecArtifactReady(existingAgentSpec, "Agent Spec") || !isCcSpecArtifactReady(existingTasks, "Tasks")) {
+    throw new Error("cc-spec architect response did not include spec.md, agent-spec.md, and tasks.md tagged artifacts");
+  }
+}
+
+function extractTaggedArtifact(text: string, tag: "product-brief.md" | "decision-log.md" | "spec.md" | "agent-spec.md" | "tasks.md"): string | undefined {
+  const start = `<${tag}>`;
+  const end = `</${tag}>`;
+  const startIndex = text.indexOf(start);
+  const endIndex = text.indexOf(end);
+  if (startIndex < 0) return undefined;
+  if (endIndex > startIndex) {
+    return text.slice(startIndex + start.length, endIndex);
+  }
+
+  // Closing tag is missing (model used the wrong close tag, e.g. </spec.md> for <agent-spec.md>).
+  // Use the next artifact open tag as a proxy end boundary, then strip any stray trailing close tag.
+  const contentStart = startIndex + start.length;
+  const artifactStarts = ["<product-brief.md>", "<decision-log.md>", "<spec.md>", "<agent-spec.md>", "<tasks.md>"]
+    .map((candidate) => text.indexOf(candidate, contentStart))
+    .filter((candidate) => candidate >= 0)
+    .sort((a, b) => a - b);
+  const fallbackEnd = artifactStarts[0] ?? text.length;
+  const recovered = text
+    .slice(contentStart, fallbackEnd)
+    .replace(/\n?<\/(?:product-brief|decision-log|spec|agent-spec|tasks)\.md>\s*$/i, "");
+  return recovered.trim() ? recovered : undefined;
+}
+
+async function rolesAfterLastInteraction(runDir: string): Promise<CcSpecRole[]> {
+  const interaction = await readJsonIfExists(path.join(runDir, "interaction-request.json")) as Partial<CcInteractionRequest> | undefined;
+  if (!interaction || !interaction.role || !isCcSpecRole(interaction.role)) {
+    return rolesForCcSpecContinuation(runDir);
+  }
+  if (interaction.role === "demo") {
+    const userReplies = await readTextIfExists(path.join(runDir, "user-replies.md"));
+    const lastReply = userReplies.split(/^##\s+\d{4}/m).at(-1) ?? "";
+    return classifyDemoReply(lastReply) === "approved"
+      ? ["research", "architect", "reviewer"]
+      : ["demo", "research", "architect", "reviewer"];
+  }
+  const index = CC_SPEC_ROLES.indexOf(interaction.role);
+  if (index < 0) return rolesForCcSpecContinuation(runDir);
+  return CC_SPEC_ROLES.slice(index);
+}
+
+async function rolesForCcSpecContinuation(runDir: string): Promise<CcSpecRole[]> {
+  const [productBrief, decisionLog, research, spec, agentSpec, tasks] = await Promise.all([
+    readTextIfExists(path.join(runDir, "product-brief.md")),
+    readTextIfExists(path.join(runDir, "decision-log.md")),
+    readTextIfExists(path.join(runDir, "research.md")),
+    readTextIfExists(path.join(runDir, "spec.md")),
+    readTextIfExists(path.join(runDir, "agent-spec.md")),
+    readTextIfExists(path.join(runDir, "tasks.md")),
+  ]);
+
+  if (!isCcSpecArtifactReady(productBrief, "Product Brief") || !isCcSpecArtifactReady(decisionLog, "Decision Log")) {
+    return ["product", "demo", "research", "architect", "reviewer"];
+  }
+  const demoReady = await isDemoArtifactReady(runDir);
+  if (!demoReady) {
+    return ["demo", "research", "architect", "reviewer"];
+  }
+  if (!isResearchArtifactReady(research)) {
+    return ["research", "architect", "reviewer"];
+  }
+  if (!isCcSpecArtifactReady(spec, "Spec") || !isCcSpecArtifactReady(agentSpec, "Agent Spec") || !isCcSpecArtifactReady(tasks, "Tasks")) {
+    return ["architect", "reviewer"];
+  }
+  return ["reviewer"];
+}
+
+function isCcSpecArtifactReady(text: string, title: string): boolean {
+  const normalized = text.trim().replace(/\r\n/g, "\n");
+  if (!normalized) return false;
+  if (normalized === `# ${title}\n\nPending.`) return false;
+  return normalized.length >= 32;
+}
+
+async function isDemoArtifactReady(runDir: string): Promise<boolean> {
+  const content = await readTextIfExists(path.join(runDir, "demo.html"));
+  return content.length >= 512 && content.includes("<html");
+}
+
+function isResearchArtifactReady(text: string): boolean {
+  return isCcSpecArtifactReady(text, "Research") && validateResearchArtifact(text).length === 0;
+}
+
+function classifyDemoReply(reply: string): "approved" | "changes_requested" {
+  const text = reply.trim();
+  if (!text) return "changes_requested";
+  const hasChangeSignal = /\b(but|except|change|changes|adjust|revise|update|add|addition|different|instead)\b|但是|但|不过|修改|调整|改成|改为|增加|补充|不要|希望|需要/i.test(text);
+  if (hasChangeSignal) return "changes_requested";
+  const hasApprovalSignal = /\b(approved|approve|looks good|lgtm|ship it|proceed|continue|yes|yep|ok|okay)\b|通过|继续|可以|就这样|没问题|符合/i.test(text);
+  return hasApprovalSignal ? "approved" : "changes_requested";
+}
+
+async function validateCcSpecQualityGate(runDir: string): Promise<string[]> {
+  const [productBrief, decisionLog, research, spec, agentSpec, tasks, demoHtml] = await Promise.all([
+    readTextIfExists(path.join(runDir, "product-brief.md")),
+    readTextIfExists(path.join(runDir, "decision-log.md")),
+    readTextIfExists(path.join(runDir, "research.md")),
+    readTextIfExists(path.join(runDir, "spec.md")),
+    readTextIfExists(path.join(runDir, "agent-spec.md")),
+    readTextIfExists(path.join(runDir, "tasks.md")),
+    readTextIfExists(path.join(runDir, "demo.html")),
+  ]);
+  const artifacts = { productBrief, decisionLog, research, spec, agentSpec, tasks };
+  const issues: string[] = [];
+
+  if (!demoHtml || demoHtml.length < 512) {
+    issues.push("demo.html is missing or empty — demo role must produce a working UI mockup");
+  }
+
+  const requiredArtifacts: Array<[keyof typeof artifacts, string, string, RegExp[]]> = [
+    ["productBrief", "product-brief.md", "Product Brief", [/primary user|target user|用户/i, /job-to-be-done|JTBD|核心需求/i, /MVP|loop|闭环/i, /acceptance|验收/i, /risk|风险/i]],
+    ["decisionLog", "decision-log.md", "Decision Log", [/confirmed|已确认/i, /assumptions?|假设/i, /ask[_ -]?user|询问用户|open question|user.*(?:input|reply|decision)|explicit user/i]],
+    ["spec", "spec.md", "Spec", [/功能|functionality|feature|command|operation|workflows?|核心流程|用户流程|MVP Scope/i, /技术|stack|architecture|架构/i, /验收|acceptance|verification|验证/i]],
+    ["agentSpec", "agent-spec.md", "Agent Spec", [/functional|功能|api|contract|endpoint|target|integration/i, /constraint|约束/i, /test|测试/i, /boundar|边界/i]],
+    ["tasks", "tasks.md", "Tasks", [TASK_ID_PATTERN, /verify|验证|test|测试/i]],
+  ];
+
+  for (const [key, fileName, title, patterns] of requiredArtifacts) {
+    if (!isCcSpecArtifactReady(artifacts[key], title)) {
+      issues.push(`${fileName} is missing or still pending`);
+      continue;
+    }
+    for (const pattern of patterns) {
+      if (!pattern.test(artifacts[key])) {
+        issues.push(`${fileName} is missing required signal ${pattern.source}`);
+        break;
+      }
+    }
+  }
+
+  issues.push(...validateResearchArtifact(artifacts.research).map((issue) => `research.md ${issue}`));
+  issues.push(...validateAgentSpecArtifact(artifacts.agentSpec).map((issue) => `agent-spec.md ${issue}`));
+  issues.push(...validateAgentSpecCompleteness(artifacts.agentSpec));
+  issues.push(...validateTasksVerification(artifacts.tasks));
+  return issues;
+}
+
+function validateResearchArtifact(research: string): string[] {
+  const text = research.trim();
+  const issues: string[] = [];
+  if (!isCcSpecArtifactReady(text, "Research")) {
+    issues.push("is missing or still pending");
+    return issues;
+  }
+  if (/based on my knowledge/i.test(text)) {
+    issues.push("must not rely on model memory; use sourced research or state no external sources");
+  }
+  const declaresNoExternalSources = /\b(no|none)\b.{0,40}\b(external|dependency|dependencies|source|sources|integration|integrations|research)\b/i.test(text);
+  const hasSourceUrl = /https?:\/\//i.test(text);
+  if (!hasSourceUrl && !declaresNoExternalSources) {
+    issues.push("must include source URLs or explicitly state no external sources are needed");
+  }
+  if (hasSourceUrl && !/\b(official|registry|source repository|unofficial)\b/i.test(text)) {
+    issues.push("must classify sources as official, registry, source repository, or unofficial");
+  }
+  if (!declaresNoExternalSources && requiresResearchVersionCoverage(text) && !/\b(version|stable version|latest version|v\d+\.\d+|\d+\.\d+\.\d+)\b/i.test(text)) {
+    issues.push("must record stable versions for recommended packages or APIs");
+  }
+  if (!declaresNoExternalSources && requiresResearchLicenseCoverage(text) && !/\blicense\b/i.test(text)) {
+    issues.push("must record licenses for recommended direct dependencies");
+  }
+  return issues;
+}
+
+function requiresResearchVersionCoverage(text: string): boolean {
+  return /\b(npmjs\.com|package|packages|sdk|api|registry|github\.com|integration|integrate)\b/i.test(text);
+}
+
+function requiresResearchLicenseCoverage(text: string): boolean {
+  return /\b(npmjs\.com|package|packages|sdk|dependency|dependencies|github\.com|direct dependenc)\b/i.test(text);
+}
+
+function validateAgentSpecArtifact(agentSpec: string): string[] {
+  const issues: string[] = [];
+  if (/userId\s*(硬编码|hardcoded|hard-coded|hard code)|硬编码\s*userId/i.test(agentSpec)) {
+    issues.push("must forbid hardcoded userId and require session-derived user identity");
+  }
+  if (/userId[^。\n]*硬编码[^。\n]*(?:或|or)[^。\n]*session/i.test(agentSpec)) {
+    issues.push("must not present hardcoded userId as an acceptable alternative to session checks");
+  }
+  return issues;
+}
+
+function validateAgentSpecCompleteness(agentSpec: string): string[] {
+  const signals: Array<[RegExp, string]> = [
+    [/##\s*(api contracts?|endpoints?|routes?)/i, "agent-spec.md must include an ## API Contracts section"],
+    [/##\s*(data model|entities?|schema)/i, "agent-spec.md must include a ## Data Model section"],
+    [/error|exception|fail|4\d\d|5\d\d/i, "agent-spec.md must include error handling coverage"],
+    [/given|when.*then|test (case|scenario)/i, "agent-spec.md must include structured test scenarios"],
+    [/##\s*(ui state inventory|ui states?|screen states?|state inventory)/i, "agent-spec.md must include a ## UI State Inventory section"],
+  ];
+  return signals.filter(([re]) => !re.test(agentSpec)).map(([, msg]) => msg);
+}
+
+function validateTasksVerification(tasks: string): string[] {
+  const taskCount = (tasks.match(/\bT\d+\b/gi) ?? []).length;
+  const verifyCount = (tasks.match(/verify\s*:/gi) ?? []).length;
+  if (taskCount > 1 && verifyCount < 2) {
+    return ["tasks.md: each task should have an inline verification command (verify:)"];
+  }
+  return [];
+}
+
+async function buildTaskFromSpec(specDir: string): Promise<string> {
+  const [agentSpec, tasks, specMd] = await Promise.all([
+    readTextIfExists(path.join(specDir, "agent-spec.md")),
+    readTextIfExists(path.join(specDir, "tasks.md")),
+    readTextIfExists(path.join(specDir, "spec.md")),
+  ]);
+  if (!agentSpec || agentSpec.includes("Pending.")) {
+    throw new Error(`cc-run --spec-dir: agent-spec.md not found or still pending in ${specDir}`);
+  }
+  if (!tasks || tasks.includes("Pending.")) {
+    throw new Error(`cc-run --spec-dir: tasks.md not found or still pending in ${specDir}`);
+  }
+  const parts = [
+    "# Development Task",
+    "",
+    "Implement the following spec. Work inside ./workspace unless agent-spec.md specifies existing-repo integration boundaries.",
+    "",
+  ];
+  if (specMd && !specMd.includes("Pending.")) {
+    parts.push("## User-Facing Spec", "", specMd.trim(), "", "---", "");
+  }
+  parts.push("## Agent Spec (Implementation Contract)", "", agentSpec.trim(), "", "---", "", "## Tasks", "", tasks.trim());
+  return parts.join("\n");
+}
+
+function buildCcSpecContext(mode: CcSpecMode, targetSummary: string): string {
+  return `# Context
+
+Mode: ${mode}
+
+## Target Repository
+
+${targetSummary || "No target repository was provided."}
+`;
+}
+
+function readCcSpecModeFromContext(context: string): CcSpecMode | undefined {
+  const match = context.match(/^Mode:\s*(new|change)\s*$/m);
+  return match?.[1] === "new" || match?.[1] === "change" ? match[1] : undefined;
+}
+
+function createEmptySpecRoleTurns(): Record<CcSpecRole, number> {
+  return {
+    intake: 0,
+    product: 0,
+    demo: 0,
+    research: 0,
+    architect: 0,
+    reviewer: 0,
+  };
+}
+
+function isCcSpecRole(role: CcRole): role is CcSpecRole {
+  return (CC_SPEC_ROLES as readonly string[]).includes(role);
+}
+
+async function readTextIfExists(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+async function readJsonIfExists(filePath: string): Promise<unknown | undefined> {
+  const text = await readTextIfExists(filePath);
+  if (!text) return undefined;
+  return JSON.parse(text) as unknown;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+async function summarizeTargetRepository(targetDir: string): Promise<string> {
+  const entries = await readdir(targetDir, { withFileTypes: true });
+  const names = entries
+    .map((entry) => entry.name)
+    .filter((name) => ![".git", "node_modules", "dist", "build", "runs"].includes(name))
+    .sort();
+  const directories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => ![".git", "node_modules", "dist", "build", "runs"].includes(name))
+    .sort();
+  const lines = [`Path: ${targetDir}`];
+  if (directories.length > 0) {
+    lines.push(`Directories: ${directories.map((name) => `${name}/`).join(", ")}`);
+  }
+  if (names.length > 0) {
+    lines.push(`Top-level entries: ${names.join(", ")}`);
+  }
+
+  const [packageJson, readme, docSignals] = await Promise.all([
+    readTextIfExists(path.join(targetDir, "package.json")),
+    firstExistingReadme(targetDir),
+    summarizeDocs(targetDir),
+  ]);
+  if (packageJson) appendPackageSummary(lines, packageJson);
+  if (readme) lines.push(`README: ${firstNonEmptyLine(readme)}`);
+  if (docSignals) lines.push(docSignals);
+
+  return lines.join("\n");
+}
+
+function appendPackageSummary(lines: string[], packageJson: string): void {
+  try {
+    const parsed = JSON.parse(packageJson) as {
+      scripts?: Record<string, unknown>;
+      dependencies?: Record<string, unknown>;
+      devDependencies?: Record<string, unknown>;
+    };
+    if (parsed.scripts) {
+      for (const key of ["build", "test", "typecheck", "lint"]) {
+        const value = parsed.scripts[key];
+        if (typeof value === "string") {
+          lines.push(`${key}: ${value}`);
+        }
+      }
+    }
+    const dependencies = Object.keys(parsed.dependencies ?? {}).slice(0, 12);
+    const devDependencies = Object.keys(parsed.devDependencies ?? {}).slice(0, 12);
+    if (dependencies.length > 0) lines.push(`Dependencies: ${dependencies.join(", ")}`);
+    if (devDependencies.length > 0) lines.push(`Dev dependencies: ${devDependencies.join(", ")}`);
+  } catch {
+    lines.push("package.json: present but could not be parsed");
+  }
+}
+
+async function firstExistingReadme(targetDir: string): Promise<string> {
+  for (const name of ["README.md", "readme.md", "README"]) {
+    const content = await readTextIfExists(path.join(targetDir, name));
+    if (content) return content;
+  }
+  return "";
+}
+
+function firstNonEmptyLine(text: string): string {
+  return text.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+}
+
+async function summarizeDocs(targetDir: string): Promise<string> {
+  const docsDir = path.join(targetDir, "docs");
+  try {
+    const docsStat = await stat(docsDir);
+    if (!docsStat.isDirectory()) return "";
+    const docs = (await readdir(docsDir)).filter((entry) => entry.endsWith(".md")).sort().slice(0, 8);
+    return docs.length > 0 ? `Docs: ${docs.join(", ")}` : "Docs: present";
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 function firstAskUserInteraction(requests: CcInteractionRequest[]): CcInteractionRequest | undefined {

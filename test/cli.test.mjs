@@ -37,6 +37,7 @@ import {
 } from "../dist/driver.js";
 import {
   parseCcTesterDecision,
+  runCcSpec,
   runCcTeam,
 } from "../dist/cc-team.js";
 import {
@@ -50,6 +51,79 @@ import {
 } from "../dist/prompts.js";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+const MINIMAL_DEMO_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Demo</title><style>body{font-family:sans-serif;max-width:800px;margin:0 auto;padding:20px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ccc;padding:8px}button{padding:6px 12px;cursor:pointer}.active{color:green}.pending{color:orange}</style></head><body><h1>MVP Demo</h1><div id="app"></div><script>const items=[{id:1,name:"Item A",status:"active"},{id:2,name:"Item B",status:"pending"}];function render(){document.getElementById("app").innerHTML="<table><tr><th>ID</th><th>Name</th><th>Status</th></tr>"+items.map(i=>"<tr><td>"+i.id+"</td><td>"+i.name+"</td><td>"+i.status+"</td></tr>").join("")+"</table>";}render();</script></body></html>`;
+
+const COMPLETE_AGENT_SPEC = [
+  "# Agent Spec",
+  "",
+  "Functional contract with constraints, boundaries, and session userId isolation.",
+  "",
+  "## API Contracts",
+  "",
+  "| Method | Path | Request | Response | Status |",
+  "|--------|------|---------|----------|--------|",
+  "| POST | /items | {name} | {id,name} | 201 |",
+  "| GET | /items | - | [{id,name}] | 200 |",
+  "",
+  "## Data Model",
+  "",
+  "| Field | Type | Nullable |",
+  "|-------|------|---------|",
+  "| id | uuid | no |",
+  "| name | string | no |",
+  "",
+  "## Error Handling",
+  "",
+  "| Case | Code | Message |",
+  "|------|------|---------|",
+  "| Not found | 404 | Resource not found |",
+  "",
+  "## Test Scenarios",
+  "",
+  "Given a user creates an item, when the form is submitted, then the item appears in the list.",
+  "",
+  "## UI State Inventory",
+  "",
+  "- Empty state: no items yet",
+  "- List state: items displayed in table",
+].join("\n");
+
+const COMPLETE_RESEARCH = [
+  "# Research",
+  "",
+  "| Name | Source URL | Source Type | Stable Version | License | Recommendation | Risk |",
+  "|------|------------|-------------|----------------|---------|----------------|------|",
+  "| Official Docs | https://example.com/docs | official | 1.2.3 | MIT | integrate | low |",
+].join("\n");
+
+const INCOMPLETE_AGENT_SPEC_NO_UI_STATE = [
+  "# Agent Spec",
+  "",
+  "Functional contract with constraints, boundaries, and session userId isolation.",
+  "",
+  "## API Contracts",
+  "",
+  "| Method | Path | Request | Response | Status |",
+  "|--------|------|---------|----------|--------|",
+  "| POST | /items | {name} | {id,name} | 201 |",
+  "",
+  "## Data Model",
+  "",
+  "| Field | Type | Nullable |",
+  "|-------|------|---------|",
+  "| id | uuid | no |",
+  "",
+  "## Error Handling",
+  "",
+  "| Case | Code | Message |",
+  "|------|------|---------|",
+  "| Not found | 404 | Resource not found |",
+  "",
+  "## Test Scenarios",
+  "",
+  "Given a user creates an item, when the form is submitted, then the item appears in the list.",
+].join("\n");
+
 const VALID_API_PROBES_README = `# API Probes
 
 ## Probe Decision
@@ -159,6 +233,8 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd run --task <task-file> \[--run-dir <run-dir>\]/);
   assert.match(output, /codex-gtd cc-run --task <task-file> \[--run-dir <run-dir>\]/);
+  assert.match(output, /codex-gtd cc-spec --task <task-file> \[--mode new\|change\]/);
+  assert.match(output, /codex-gtd cc-spec --run-dir <dir> \[--reply <reply-file>\] \[--json\]/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
   assert.match(output, /codex-gtd repair-plan --run-dir <run-dir> \[--json\]/);
   assert.match(output, /codex-gtd export-workspace --run-dir <run-dir> \[--out <patch-file>\]/);
@@ -383,7 +459,964 @@ test("cc-run requires a task path before any SDK call", () => {
   const result = runCli(["cc-run"]);
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /cc-run requires --task <task-file>/);
+  assert.match(result.stderr, /cc-run requires --task <task-file> or --spec-dir/);
+});
+
+test("cc-run --spec-dir builds task from cc-spec artifacts and runs developer/tester", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-run-spec-dir-"));
+  const specRunDir = path.join(rootDir, "spec-run");
+  const ccRunDir = path.join(rootDir, "run");
+  await mkdir(specRunDir, { recursive: true });
+
+  await writeFile(path.join(specRunDir, "spec.md"), "# Spec\n\nA simple CLI that greets the user by name.\n", "utf8");
+  await writeFile(path.join(specRunDir, "agent-spec.md"), `${COMPLETE_AGENT_SPEC}\n`, "utf8");
+  await writeFile(path.join(specRunDir, "tasks.md"), "# Tasks\n\n- [ ] T1 Write greet.js\n  - verify: node greet.js Alice\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "tester"
+        ? '{"status":"done","reason":"greeting verified"}'
+        : "implemented greet.js",
+    };
+  };
+
+  const result = await runCcTeam({ specDir: specRunDir, runDir: ccRunDir, model: "MiniMax-M2.7", maxLoops: 1, turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.reason, "greeting verified");
+  assert.deepEqual(requests.map((r) => r.role), ["developer", "tester"]);
+
+  const task = await readFile(path.join(ccRunDir, "task.md"), "utf8");
+  assert.ok(task.includes("Development Task"));
+  assert.ok(task.includes("API Contracts"));
+  assert.ok(task.includes("T1 Write greet.js"));
+  assert.ok(task.includes("A simple CLI"));
+
+  const summary = JSON.parse(await readFile(path.join(ccRunDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.specDir, specRunDir);
+  assert.equal(summary.status, "done");
+  assert.equal(summary.metrics.roleTurns.developer, 1);
+});
+
+test("cc-run --spec-dir throws when agent-spec is missing or pending", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-run-spec-missing-"));
+  const specRunDir = path.join(rootDir, "spec-run");
+  await mkdir(specRunDir, { recursive: true });
+  await writeFile(path.join(specRunDir, "agent-spec.md"), "# Agent Spec\n\nPending.\n", "utf8");
+  await writeFile(path.join(specRunDir, "tasks.md"), "# Tasks\n\n- [ ] T1 Build\n  - verify: npm test\n", "utf8");
+
+  await assert.rejects(
+    () => runCcTeam({ specDir: specRunDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000 }),
+    /agent-spec\.md not found or still pending/,
+  );
+});
+
+test("cc-spec requires a task path unless resuming an existing run directory", () => {
+  const result = runCli(["cc-spec"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cc-spec requires --task <task-file> unless --run-dir is provided/);
+});
+
+test("cc spec run records staged review roles and spec artifacts with injected runner", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a habit tracker MVP.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    let result = `${request.role} complete`;
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "research") {
+      result = `Search note.\n\n${COMPLETE_RESEARCH}\n`;
+    } else if (request.role === "product") {
+      result = [
+        "<product-brief.md>",
+        "# Product Brief",
+        "",
+        "Primary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, success metrics, real-world constraints, and risks.",
+        "</product-brief.md>",
+        "<decision-log.md>",
+        "# Decision Log",
+        "",
+        "| Type | Item | Status |",
+        "|------|------|--------|",
+        "| Decision | MVP must include a complete testable loop | Confirmed |",
+        "| Assumption | Habit status changes are manual | Assumption |",
+        "| AskUser | Ask when the MVP loop changes | Trigger |",
+        "</decision-log.md>",
+      ].join("\n");
+    } else if (request.role === "architect") {
+      result = [
+        "<spec.md>",
+        "# Spec",
+        "",
+        "Functionality, technical stack, architecture, and acceptance criteria for the user-facing spec.",
+        "</spec.md>",
+        "<agent-spec.md>",
+        "# Agent Spec",
+        "",
+        "## API Contracts",
+        "",
+        "| Method | Path | Request | Response | Status |",
+        "|--------|------|---------|----------|--------|",
+        "| POST | /habits | {name} | {id,name} | 201 |",
+        "",
+        "## Data Model",
+        "",
+        "| Field | Type | Nullable |",
+        "|-------|------|---------|",
+        "| id | uuid | no |",
+        "| name | string | no |",
+        "",
+        "Functional contract with constraints, boundaries, and session userId isolation.",
+        "",
+        "## Error Handling",
+        "",
+        "| Case | Code | Message |",
+        "|------|------|---------|",
+        "| Not found | 404 | Resource not found |",
+        "",
+        "## Test Scenarios",
+        "",
+        "Given a user creates a habit, when the form is submitted, then the habit appears in the list.",
+        "",
+        "## UI State Inventory",
+        "",
+        "- Empty state: no habits yet",
+        "- List state: habits displayed",
+        "</agent-spec.md>",
+        "<tasks.md>",
+        "# Tasks",
+        "",
+        "- [ ] T1 Implement the MVP loop",
+        "  - Files: app/, lib/",
+        "  - verify: npm test",
+        "- [ ] T2 Wire up API endpoints",
+        "  - Files: api/",
+        "  - verify: npm run integration",
+        "</tasks.md>",
+      ].join("\n");
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"spec is ready"}';
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result,
+    };
+  };
+
+  const result = await runCcSpec({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    mode: "new",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.reason, "spec is ready");
+  assert.deepEqual(requests.map((request) => request.role), ["intake", "product", "demo", "research", "architect", "reviewer"]);
+  assert.equal(requests[0].cwd, runDir);
+  assert.deepEqual(requests[0].tools, ["Read", "Write", "Edit", "AskUserQuestion"]);
+  assert.deepEqual(requests[1].tools, ["AskUserQuestion"]);
+  assert.deepEqual(requests[2].tools, ["Write", "Read", "AskUserQuestion"]);
+  assert.deepEqual(requests[3].tools, ["WebSearch", "AskUserQuestion"]);
+  assert.deepEqual(requests[4].tools, ["Read", "AskUserQuestion"]);
+  assert.equal(requests[0].maxTurns, 8);
+  assert.equal(requests[2].maxTurns, 12);
+  assert.equal(requests[3].maxTurns, 16);
+  assert.ok(requests[0].prompt.includes("use Write for whole-file replacement"));
+  assert.ok(requests[1].prompt.includes("product-brief.md"));
+  assert.ok(requests[1].prompt.includes("decision-log.md"));
+  assert.ok(requests[1].prompt.includes("real-world"));
+  assert.ok(requests[1].prompt.includes("choose a conservative default"));
+  assert.ok(requests[1].prompt.includes("do not ask another product clarification question"));
+  assert.ok(requests[2].prompt.includes("demo.html"));
+  assert.ok(requests[2].prompt.includes("run directory"));
+  assert.ok(requests[3].prompt.includes("at most 4 WebSearch calls"));
+  assert.ok(requests[3].prompt.includes("Do not Read task.md or context.md"));
+  assert.ok(requests[3].prompt.includes("official"));
+  assert.ok(requests[3].prompt.includes("include a source URL"));
+  assert.ok(requests[3].prompt.includes("under 160 lines"));
+  assert.ok(requests[3].prompt.includes("Do not write files"));
+  assert.ok(requests[3].prompt.includes("unverified inspiration only"));
+  assert.ok(requests[3].prompt.includes("MVP loop"));
+  assert.ok(requests[4].prompt.includes("agent-spec.md"));
+  assert.ok(requests[4].prompt.includes("tasks.md"));
+  assert.ok(requests[4].prompt.includes("under 300 lines"));
+  assert.ok(requests[4].prompt.includes("<spec.md>"));
+  assert.ok(requests[4].prompt.includes("Do not introduce SDKs"));
+  assert.ok(requests[4].prompt.includes("Do not include full Prisma schema"));
+  assert.ok(requests[4].prompt.includes("## API Contracts"));
+  assert.ok(requests[5].outputFormat.type, "json_schema");
+
+  assert.match(await readFile(path.join(runDir, "task.md"), "utf8"), /habit tracker/);
+  assert.match(await readFile(path.join(runDir, "product-brief.md"), "utf8"), /MVP loop/);
+  assert.match(await readFile(path.join(runDir, "decision-log.md"), "utf8"), /Confirmed/);
+  assert.match(await readFile(path.join(runDir, "research.md"), "utf8"), /Official Docs/);
+  assert.match(await readFile(path.join(runDir, "spec.md"), "utf8"), /Functionality/);
+  assert.match(await readFile(path.join(runDir, "agent-spec.md"), "utf8"), /Functional contract/);
+  assert.match(await readFile(path.join(runDir, "tasks.md"), "utf8"), /Implement the MVP loop/);
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.workflow, "cc-spec");
+  assert.equal(summary.status, "done");
+  assert.equal(summary.metrics.roleTurns.research, 1);
+  assert.equal(summary.metrics.roleTurns.reviewer, 1);
+});
+
+test("cc spec quality gate rejects done when architect omits tasks", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-missing-tasks-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a focused MVP.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = "<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n# Agent Spec\n\nFunctional contract with constraints, tests, boundaries, and session userId isolation.\n</agent-spec.md>";
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"model thinks it is ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /tasks\.md/);
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "failed");
+});
+
+test("cc spec quality gate rejects research without source evidence", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-research-gate-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a billing tracker.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = "# Research\n\nBased on my knowledge, use Auth.js and Prisma.\n";
+    } else if (request.role === "architect") {
+      result = "<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n# Agent Spec\n\nFunctional contract with constraints, tests, boundaries, and session userId isolation.\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build the loop\n  - Verify: npm test\n</tasks.md>";
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"model thinks it is ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /research\.md/);
+  assert.match(result.reason, /source/i);
+});
+
+test("cc spec quality gate rejects ambiguous user identity boundaries", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-agent-gate-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a dashboard MVP.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = "<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n# Agent Spec\n\nFunctional contract with constraints, tests, boundaries. 单用户: userId 硬编码或 session 检查。\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build the loop\n  - Verify: npm test\n</tasks.md>";
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"model thinks it is ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /hardcoded userId/i);
+});
+
+test("cc spec quality gate rejects agent spec without UI State Inventory", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-ui-state-gate-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a dashboard MVP.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${INCOMPLETE_AGENT_SPEC_NO_UI_STATE}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build the loop\n  - verify: npm test\n</tasks.md>`;
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"model thinks it is ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /UI State Inventory/i);
+});
+
+test("cc spec quality gate rejects research without stable version and license coverage", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-research-metadata-gate-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a billing tracker.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = "# Research\n\n| Name | Source URL | Source Type | Recommendation | Risk |\n|------|------------|-------------|----------------|------|\n| Auth.js | https://www.npmjs.com/package/next-auth | registry | integrate | medium |\n";
+    } else if (request.role === "architect") {
+      result = `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build the loop\n  - verify: npm test\n</tasks.md>`;
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"model thinks it is ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason, /stable versions/i);
+});
+
+test("cc spec architect parser recovers common misclosed artifact tags", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-misclosed-tags-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a static lead tracker.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = "# Research\n\nNo external dependencies or integrations are needed.\n";
+    } else if (request.role === "architect") {
+      result = [
+        "<spec.md>",
+        "# Spec",
+        "",
+        "Functionality, technical stack, architecture, and verification criteria.",
+        "</spec.md>",
+        `<agent-spec.md>\n${COMPLETE_AGENT_SPEC}`,
+        "</spec.md>",
+        "<tasks.md>",
+        "# Tasks",
+        "",
+        "| Task | ID | Verify |",
+        "|------|----|--------|",
+        "| Implement static tracker | T1 | open index.html |",
+        "</spec.md>",
+      ].join("\n");
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"misclosed tags recovered"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "done");
+  assert.match(await readFile(path.join(runDir, "agent-spec.md"), "utf8"), /Functional contract/);
+  assert.match(await readFile(path.join(runDir, "tasks.md"), "utf8"), /Implement static tracker/);
+});
+
+test("cc spec quality gate accepts workflow-led user spec", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-workflow-signal-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a novel writing system.\n", "utf8");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = [
+        "<spec.md>",
+        "# Spec",
+        "",
+        "## Core Workflows",
+        "",
+        "Project create, outline build, chapter write, and export.",
+        "",
+        "## Technical Stack",
+        "",
+        "React, IndexedDB, and architecture boundaries.",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "Verification covers the full writing loop.",
+        "</spec.md>",
+        `<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>`,
+        "<tasks.md>",
+        "# Tasks",
+        "",
+        "| ID | Task | Verification |",
+        "|----|------|--------------|",
+        "| T1 | Build writing loop | npm test |",
+        "</tasks.md>",
+      ].join("\n");
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"workflow-led spec is complete"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "done");
+});
+
+test("cc spec run surfaces AskUserQuestion as questions and interaction request", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-ask-user-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nBuild an unclear tool.\n", "utf8");
+
+  const runner = async function* (request) {
+    if (request.role === "product") {
+      request.interactionRequests.push({
+        role: request.role,
+        type: "ask_user",
+        toolName: "AskUserQuestion",
+        input: {
+          questions: [{ question: "Who is the primary user?" }],
+        },
+        title: "Primary user",
+        toolUseID: "toolu-spec-question",
+        recordedAt: "2026-04-30T00:00:00.000Z",
+      });
+    }
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: "done",
+    };
+  };
+
+  const result = await runCcSpec({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "ask_user");
+  assert.match(result.reason, /product requested user input via AskUserQuestion/);
+  assert.match(await readFile(path.join(runDir, "questions.md"), "utf8"), /Who is the primary user/);
+  const interaction = JSON.parse(await readFile(path.join(runDir, "interaction-request.json"), "utf8"));
+  assert.equal(interaction.role, "product");
+  assert.equal(interaction.type, "ask_user");
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "ask_user");
+  assert.equal(summary.metrics.roleTurns.product, 1);
+  assert.equal(summary.metrics.roleTurns.research, 0);
+});
+
+test("cc spec reply mode appends replies and resumes the same run directory", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-reply-"));
+  const runDir = path.join(rootDir, "run");
+  const replyFile = path.join(rootDir, "reply.md");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign search.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: change\n\n## Target Repository\n\nPath: /tmp/example\n", "utf8");
+  await writeFile(path.join(runDir, "interaction-request.json"), JSON.stringify({
+    role: "intake",
+    type: "ask_user",
+    toolName: "AskUserQuestion",
+    input: { questions: [{ question: "Who is the user?" }] },
+    recordedAt: "2026-04-30T00:00:00.000Z",
+  }, null, 2), "utf8");
+  await writeFile(replyFile, "Primary user is a solo developer.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"reply resolved"}'
+        : request.role === "product"
+          ? "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>"
+        : request.role === "research"
+          ? COMPLETE_RESEARCH
+        : request.role === "architect"
+          ? `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Implement search loop\n  - verify: npm test\n</tasks.md>`
+          : "ok",
+    };
+  };
+
+  const result = await runCcSpec({
+    runDir,
+    replyFile,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.runDir, runDir);
+  assert.equal(result.mode, "change");
+  assert.deepEqual(requests.map((request) => request.role), ["intake", "product", "demo", "research", "architect", "reviewer"]);
+  assert.match(await readFile(path.join(runDir, "user-replies.md"), "utf8"), /solo developer/);
+  assert.match(await readFile(path.join(runDir, "context.md"), "utf8"), /solo developer/);
+  assert.match(await readFile(path.join(runDir, "progress.md"), "utf8"), /Reply appended/);
+});
+
+test("cc spec run-dir resume skips straight to reviewer when spec artifacts already exist", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-review-resume-"));
+  const runDir = path.join(rootDir, "run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a writer app.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Product\n\nKnown decisions.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n", "utf8");
+  await writeFile(path.join(runDir, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+  await writeFile(path.join(runDir, "research.md"), `${COMPLETE_RESEARCH}\n`, "utf8");
+  await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n", "utf8");
+  await writeFile(path.join(runDir, "agent-spec.md"), `${COMPLETE_AGENT_SPEC}\n`, "utf8");
+  await writeFile(path.join(runDir, "tasks.md"), "# Tasks\n\n- [ ] T1 Implement MVP loop\n  - verify: npm test\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: '{"status":"done","reason":"existing artifacts are ready"}',
+    };
+  };
+
+  const result = await runCcSpec({
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(requests.map((request) => request.role), ["reviewer"]);
+});
+
+test("cc spec run-dir resume restarts architect when research exists but spec artifacts are pending", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-architect-resume-"));
+  const runDir = path.join(rootDir, "run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a writer app.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Product\n\nKnown decisions.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n", "utf8");
+  await writeFile(path.join(runDir, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+  await writeFile(path.join(runDir, "research.md"), `${COMPLETE_RESEARCH}\n`, "utf8");
+  await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nPending.\n", "utf8");
+  await writeFile(path.join(runDir, "agent-spec.md"), "# Agent Spec\n\nPending.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    if (request.role === "architect") {
+      await writeFile(path.join(request.cwd, "spec.md"), "# Spec\n\nPending.\n", "utf8");
+      await writeFile(path.join(request.cwd, "agent-spec.md"), "# Agent Spec\n\nPending.\n", "utf8");
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"resume completed"}'
+        : request.role === "architect"
+          ? `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Recover implementation plan\n  - verify: npm test\n</tasks.md>`
+          : "ok",
+    };
+  };
+
+  const result = await runCcSpec({
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(requests.map((request) => request.role), ["architect", "reviewer"]);
+});
+
+test("cc spec run-dir resume restarts product when pm artifacts are missing", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-product-resume-"));
+  const runDir = path.join(rootDir, "run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a writing app.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Intake\n\nKnown idea.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPending.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nPending.\n", "utf8");
+  await writeFile(path.join(runDir, "research.md"), "# Research\n\n- Source: https://example.com/docs, official, integrate.\n", "utf8");
+  await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n", "utf8");
+  await writeFile(path.join(runDir, "agent-spec.md"), "# Agent Spec\n\nFunctional contract with constraints, tests, boundaries, and session userId isolation.\n", "utf8");
+  await writeFile(path.join(runDir, "tasks.md"), "# Tasks\n\n- [ ] T1 Implement MVP loop\n  - Verify: npm test\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Implement MVP loop\n  - verify: npm test\n</tasks.md>`;
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"pm artifacts recovered"}';
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result,
+    };
+  };
+
+  const result = await runCcSpec({
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(requests.map((request) => request.role), ["product", "demo", "research", "architect", "reviewer"]);
+  assert.match(await readFile(path.join(runDir, "product-brief.md"), "utf8"), /Primary user/);
+});
+
+test("cc spec target scan is read-only and records repo context", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-target-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  const targetDir = path.join(rootDir, "target");
+  await mkdir(path.join(targetDir, "src"), { recursive: true });
+  await writeFile(taskFile, "# Task\n\nAdd exports.\n", "utf8");
+  await writeFile(path.join(targetDir, "package.json"), JSON.stringify({
+    scripts: { build: "tsc", test: "node --test" },
+    dependencies: { express: "^5.0.0" },
+  }, null, 2), "utf8");
+  await writeFile(path.join(targetDir, "README.md"), "# Target Repo\n\nExisting app.\n", "utf8");
+  await writeFile(path.join(targetDir, "src", "index.ts"), "export {};\n", "utf8");
+
+  const before = await readFile(path.join(targetDir, "package.json"), "utf8");
+  const runner = async function* (request) {
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"target bounded"}'
+        : request.role === "product"
+          ? "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>"
+        : request.role === "research"
+          ? COMPLETE_RESEARCH
+        : request.role === "architect"
+          ? `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\nDo not touch unrelated files.\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Implement bounded target change\n  - verify: npm test\n</tasks.md>`
+          : "ok",
+    };
+  };
+
+  await runCcSpec({
+    taskFile,
+    runDir,
+    targetDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(await readFile(path.join(targetDir, "package.json"), "utf8"), before);
+  const context = await readFile(path.join(runDir, "context.md"), "utf8");
+  assert.match(context, /Mode: change/);
+  assert.match(context, /build: tsc/);
+  assert.match(context, /test: node --test/);
+  assert.match(context, /src\//);
+});
+
+test("cc spec demo role writes demo.html and pauses for user input when AskUserQuestion is called", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-demo-halt-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a habit tracker MVP.\n", "utf8");
+
+  const runner = async function* (request) {
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+      request.interactionRequests.push({
+        role: request.role,
+        type: "ask_user",
+        toolName: "AskUserQuestion",
+        input: {
+          questions: [{ question: "I've written demo.html. Does this match your vision?" }],
+        },
+        title: "Demo review",
+        toolUseID: "toolu-demo-review",
+        recordedAt: "2026-04-30T00:00:00.000Z",
+      });
+    } else if (request.role === "product") {
+      request.interactionRequests.push({
+        role: request.role,
+        type: "ask_user",
+        toolName: "AskUserQuestion",
+        input: { questions: [{ question: "placeholder" }] },
+        recordedAt: "2026-04-30T00:00:00.000Z",
+      });
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result: "ok" };
+  };
+
+  // First run: intake + product ask_user, but we simulate it reaching demo by using a runner
+  // that only halts at demo. We'll use a variant runner.
+  const requests = [];
+  const demoRunner = async function* (request) {
+    requests.push(request);
+    if (request.role === "product") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `${request.role}-session`,
+        result: "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>",
+      };
+      return;
+    }
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+      request.interactionRequests.push({
+        role: request.role,
+        type: "ask_user",
+        toolName: "AskUserQuestion",
+        input: { questions: [{ question: "I've written demo.html to the run directory. Does this match your vision?" }] },
+        title: "Demo review",
+        toolUseID: "toolu-demo-halt",
+        recordedAt: "2026-04-30T00:00:00.000Z",
+      });
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result: "ok" };
+  };
+
+  const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner: demoRunner });
+
+  assert.equal(result.status, "ask_user");
+  assert.match(result.reason, /demo requested user input via AskUserQuestion/);
+  const demoHtml = await readFile(path.join(runDir, "demo.html"), "utf8");
+  assert.ok(demoHtml.includes("<html"));
+  assert.ok(demoHtml.length >= 512);
+  const interaction = JSON.parse(await readFile(path.join(runDir, "interaction-request.json"), "utf8"));
+  assert.equal(interaction.role, "demo");
+  assert.equal(interaction.type, "ask_user");
+  assert.match(await readFile(path.join(runDir, "questions.md"), "utf8"), /demo.html/);
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.status, "ask_user");
+  assert.equal(summary.metrics.roleTurns.demo, 1);
+  assert.equal(summary.metrics.roleTurns.research, 0);
+});
+
+test("cc spec resume after demo approval skips demo and continues to research", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-demo-approve-"));
+  const runDir = path.join(rootDir, "run");
+  const replyFile = path.join(rootDir, "reply.md");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a habit tracker MVP.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Intake\n\nKnown idea.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n", "utf8");
+  await writeFile(path.join(runDir, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+  await writeFile(path.join(runDir, "interaction-request.json"), JSON.stringify({
+    role: "demo",
+    type: "ask_user",
+    toolName: "AskUserQuestion",
+    input: { questions: [{ question: "Does the demo match your vision?" }] },
+    recordedAt: "2026-04-30T00:00:00.000Z",
+  }), "utf8");
+  await writeFile(replyFile, "looks good, proceed with the spec\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"approved demo, spec complete"}'
+        : request.role === "research"
+          ? COMPLETE_RESEARCH
+        : request.role === "architect"
+          ? `<spec.md>\n# Spec\n\nFunctionality, stack, architecture, acceptance.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build MVP\n  - verify: npm test\n</tasks.md>`
+          : "ok",
+    };
+  };
+
+  const result = await runCcSpec({ runDir, replyFile, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(requests.map((r) => r.role), ["research", "architect", "reviewer"]);
+  assert.match(await readFile(path.join(runDir, "user-replies.md"), "utf8"), /looks good/);
+});
+
+test("cc spec resume after demo change request re-runs demo before research", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-demo-change-"));
+  const runDir = path.join(rootDir, "run");
+  const replyFile = path.join(rootDir, "reply.md");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a habit tracker MVP.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Intake\n\nKnown idea.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n", "utf8");
+  await writeFile(path.join(runDir, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+  await writeFile(path.join(runDir, "interaction-request.json"), JSON.stringify({
+    role: "demo",
+    type: "ask_user",
+    toolName: "AskUserQuestion",
+    input: { questions: [{ question: "Does the demo match your vision?" }] },
+    recordedAt: "2026-04-30T00:00:00.000Z",
+  }), "utf8");
+  await writeFile(replyFile, "please change the layout — the list should show status as a colored badge\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"revised demo accepted"}'
+        : request.role === "research"
+          ? COMPLETE_RESEARCH
+        : request.role === "architect"
+          ? `<spec.md>\n# Spec\n\nFunctionality, stack, architecture, acceptance.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build MVP\n  - verify: npm test\n</tasks.md>`
+          : "ok",
+    };
+  };
+
+  const result = await runCcSpec({ runDir, replyFile, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  // demo re-runs, but no ask_user intercepted this time → demo.html exists → pipeline continues
+  assert.deepEqual(requests.map((r) => r.role), ["demo", "research", "architect", "reviewer"]);
+  assert.match(await readFile(path.join(runDir, "user-replies.md"), "utf8"), /colored badge/);
+});
+
+test("cc spec demo reply with approval plus requested changes still re-runs demo", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-demo-mixed-reply-"));
+  const runDir = path.join(rootDir, "run");
+  const replyFile = path.join(rootDir, "reply.md");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a habit tracker MVP.\n", "utf8");
+  await writeFile(path.join(runDir, "context.md"), "# Context\n\nMode: new\n\n## Intake\n\nKnown idea.\n", "utf8");
+  await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n", "utf8");
+  await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n", "utf8");
+  await writeFile(path.join(runDir, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+  await writeFile(path.join(runDir, "interaction-request.json"), JSON.stringify({
+    role: "demo",
+    type: "ask_user",
+    toolName: "AskUserQuestion",
+    input: { questions: [{ question: "Does the demo match your vision?" }] },
+    recordedAt: "2026-04-30T00:00:00.000Z",
+  }), "utf8");
+  await writeFile(replyFile, "looks good, but please change the layout and add status badges\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "reviewer"
+        ? '{"status":"done","reason":"revised demo accepted"}'
+        : request.role === "research"
+          ? COMPLETE_RESEARCH
+          : request.role === "architect"
+            ? `<spec.md>\n# Spec\n\nFunctionality, stack, architecture, acceptance.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n# Tasks\n\n- [ ] T1 Build MVP\n  - verify: npm test\n</tasks.md>`
+            : "ok",
+    };
+  };
+
+  const result = await runCcSpec({ runDir, replyFile, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+  assert.equal(result.status, "done");
+  assert.deepEqual(requests.map((r) => r.role), ["demo", "research", "architect", "reviewer"]);
 });
 
 test("doctor reports local CLI prerequisites without invoking Codex SDK", () => {

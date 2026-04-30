@@ -28,6 +28,7 @@
     "snippets/*.md",
     "test/",
     "README.md",
+    ".env.example",
     "LICENSE",
     "package.json",
     "tsconfig.json"
