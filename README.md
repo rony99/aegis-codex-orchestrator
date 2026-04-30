@@ -157,6 +157,107 @@ node dist/cli.js sdk-probe --model gpt-5.4 --turn-timeout-ms 600000 --trace-file
 
 Normal role turns also write ordered event traces under `session-log/events/<timestamp>-<role>.json`. When a role fails, the matching `session-log/*-error.json` includes `eventTraceFile`, so you can jump from the failure summary to the complete streamed transcript.
 
+### Run the Codex team
+
+Use `run` for the main Codex-powered team workflow. It drives the discovery/manager/developer/tester loop, writes protocol files into one run directory, and leaves generated output under `workspace/`.
+
+```bash
+cat > /tmp/codex-gtd-task.md <<'EOF'
+Create workspace/HELLO.md with exactly this line:
+hello from codex team
+EOF
+
+node dist/cli.js run \
+  --task /tmp/codex-gtd-task.md \
+  --run-dir runs/manual-codex-team \
+  --model gpt-5.4 \
+  --turn-timeout-ms 600000 \
+  --max-loops 3 \
+  --skip-discovery
+```
+
+Inspect the result:
+
+```bash
+node dist/cli.js status --run-dir runs/manual-codex-team --json
+node dist/cli.js report --runs-dir runs --limit 5
+```
+
+If `status` recommends a resume, use:
+
+```bash
+node dist/cli.js resume \
+  --run-dir runs/manual-codex-team \
+  --execute \
+  --model gpt-5.4 \
+  --turn-timeout-ms 600000 \
+  --max-loops 3
+```
+
+For a successful run, review or export the generated workspace before applying it elsewhere:
+
+```bash
+node dist/cli.js export-workspace \
+  --run-dir runs/manual-codex-team \
+  --out /tmp/codex-gtd-codex-team.patch
+```
+
+### Run the CC team
+
+Use `cc-run` for the experimental Claude Code SDK team workflow. It runs a smaller developer/tester loop through `@anthropic-ai/claude-agent-sdk`, writes SDK progress into `session-log/events/` and `session-log/inflight/`, and records the terminal result in `run-summary.json`.
+
+Set Anthropic-compatible environment variables before running it. Do not commit real tokens.
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="..."
+export ANTHROPIC_BASE_URL="https://api.anthropic.com"
+export ANTHROPIC_MODEL="claude-sonnet-4-5"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+```
+
+For a Claude-compatible provider, set that provider's base URL and model instead:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="..."
+export ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic"
+export ANTHROPIC_MODEL="MiniMax-M2.7"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+```
+
+Run a small task:
+
+```bash
+cat > /tmp/codex-gtd-cc-task.md <<'EOF'
+Build a tiny static Focus Timer app under workspace/.
+Create index.html, styles.css, and app.js.
+The page must show "Focus Timer", a 25:00 timer, and Start/Pause/Reset buttons.
+EOF
+
+node dist/cli.js cc-run \
+  --task /tmp/codex-gtd-cc-task.md \
+  --run-dir runs/manual-cc-team \
+  --model "$ANTHROPIC_MODEL" \
+  --turn-timeout-ms 300000 \
+  --max-loops 2 \
+  --json
+```
+
+Check these files first:
+
+```text
+runs/manual-cc-team/
+  progress.md
+  blockers.md
+  run-summary.json
+  tester-decision.json
+  interaction-request.json        # only when SDK/user input is required
+  session-log/events/
+  session-log/inflight/
+  workspace/
+```
+
+`cc-run` uses Claude Code SDK `tools` and `allowedTools` separately: developer can write under the run directory, tester reads and returns structured JSON, and user-interaction requests are captured as `ask_user` instead of being guessed or ignored.
+
 ### Run local tests
 
 ```bash
