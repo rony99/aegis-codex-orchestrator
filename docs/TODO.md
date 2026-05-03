@@ -39,6 +39,14 @@
 
 ## Dogfood findings
 
+- [x] Skill-guided `cc-run --spec-dir` dogfood on `/Users/rony/me/pub_repos/words_game`:
+  - command: `node dist/cli.js cc-run --spec-dir /Users/rony/me/pub_repos/words_game --target /Users/rony/me/pub_repos/words_game --run-dir /tmp/codex-gtd-words-game-cc-run-skill-guided --model "$ANTHROPIC_MODEL" --turn-timeout-ms 600000 --max-loops 1 --json`
+  - run: `/tmp/codex-gtd-words-game-cc-run-skill-guided`
+  - status: `max_loops_reached`; manager + 3 developer streams + tester completed; no SDK crash or permission wait
+  - output: updated `/Users/rony/me/pub_repos/words_game/index.html`, added `tests/v2_contract.test.js` and `tests/v2_story_content.test.js`
+  - verification after run: `node tests/v2_contract.test.js` and `node tests/v2_story_content.test.js` both pass
+  - finding fixed here: `status/report` now treat `cc-run` as a Claude Code workflow protocol instead of requiring Codex main-run files like `discovery.md` and `api-probes/`
+  - finding fixed here: manager prompt now requires terminating non-interactive verification commands, not long-running `python -m http.server` / `open` manual browser commands
 - [x] Raw CLI probe passed once and exposed stderr warnings hidden by the SDK wrapper:
   - plugin manifest warnings
   - MCP process group termination warnings

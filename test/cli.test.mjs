@@ -88,6 +88,18 @@ const COMPLETE_AGENT_SPEC = [
   "",
   "- Empty state: no items yet",
   "- List state: items displayed in table",
+  "",
+  "## TDD Plan",
+  "",
+  "- Start with one behavior test through the public interface, then implement the smallest passing slice.",
+  "",
+  "## Diagnosis Plan",
+  "",
+  "- If verification fails, capture the repro command, failure symptom, and smallest suspected module.",
+  "",
+  "## Verification Surface",
+  "",
+  "- Public API and user-visible UI are the only acceptance surfaces.",
 ].join("\n");
 
 const COMPLETE_RESEARCH = [
@@ -311,6 +323,10 @@ const MOCK_CC_MANAGER_PLAN_JSON = JSON.stringify({
       title: "Deliver the task",
       focus: "Implement the user request for this loop.",
       out_of_scope: "Nothing else in this single-stream mock.",
+      behavior: "User can complete the requested flow end-to-end.",
+      public_interface: "CLI command or browser UI exposed by the task.",
+      test_target: "Behavior test through the public interface.",
+      verification_command: "npm run test:local",
     },
   ],
 });
@@ -318,20 +334,29 @@ const MOCK_CC_MANAGER_PLAN_JSON = JSON.stringify({
 test("parseCcManagerPlan orders streams foundation then feature then integration", () => {
   const plan = parseCcManagerPlan(JSON.stringify({
     streams: [
-      { id: "integration", title: "I", focus: "i", out_of_scope: "a" },
-      { id: "foundation", title: "N", focus: "n", out_of_scope: "b" },
-      { id: "feature", title: "F", focus: "f", out_of_scope: "c" },
+      { id: "integration", title: "I", focus: "i", out_of_scope: "a", behavior: "b", public_interface: "p", test_target: "t", verification_command: "npm test" },
+      { id: "foundation", title: "N", focus: "n", out_of_scope: "b", behavior: "b", public_interface: "p", test_target: "t", verification_command: "npm test" },
+      { id: "feature", title: "F", focus: "f", out_of_scope: "c", behavior: "b", public_interface: "p", test_target: "t", verification_command: "npm test" },
     ],
   }));
   assert.deepEqual(plan.streams.map((s) => s.id), ["foundation", "feature", "integration"]);
+  assert.equal(plan.streams[0].verification_command, "npm test");
+  assert.throws(
+    () => parseCcManagerPlan(JSON.stringify({
+      streams: [
+        { id: "feature", title: "A", focus: "a", out_of_scope: "x", behavior: "b", public_interface: "p", test_target: "t", verification_command: "npm test" },
+        { id: "feature", title: "B", focus: "b", out_of_scope: "y", behavior: "b", public_interface: "p", test_target: "t", verification_command: "npm test" },
+      ],
+    })),
+    /duplicate stream id/,
+  );
   assert.throws(
     () => parseCcManagerPlan(JSON.stringify({
       streams: [
         { id: "feature", title: "A", focus: "a", out_of_scope: "x" },
-        { id: "feature", title: "B", focus: "b", out_of_scope: "y" },
       ],
     })),
-    /duplicate stream id/,
+    /behavior, public_interface, test_target, or verification_command/,
   );
 });
 
@@ -405,6 +430,7 @@ test("cc team run records role events and terminal summary with injected runner"
   assert.deepEqual(requests[0].allowedTools, ["LS", "Glob", "Grep", "Read"]);
   assert.equal(requests[0].maxTurns, 14);
   assert.equal(requests[0].outputFormat.type, "json_schema");
+  assert.ok(requests[0].prompt.includes("machine verification command that terminates by itself"));
   assert.deepEqual(requests[1].tools, ["LS", "Glob", "Grep", "Read", "Write", "Edit", "AskUserQuestion"]);
   assert.deepEqual(requests[1].allowedTools, ["LS", "Glob", "Grep", "Read", "Write", "Edit"]);
   assert.equal(requests[1].maxTurns, 80);
@@ -553,6 +579,8 @@ test("cc team run refuses done when tester machine verification fails", async ()
   const decision = JSON.parse(await readFile(path.join(runDir, "tester-decision.json"), "utf8"));
   assert.equal(decision.status, "develop");
   assert.match(decision.reason, /tester verification failed/);
+  assert.match(decision.reason, /repro command/i);
+  assert.match(decision.reason, /failure symptom/i);
   assert.match(decision.reason, /error TS1234/);
 });
 
@@ -917,15 +945,33 @@ test("cc spec run records staged review roles and spec artifacts with injected r
         "",
         "- Empty state: no habits yet",
         "- List state: habits displayed",
+        "",
+        "## TDD Plan",
+        "",
+        "- Start with a behavior test for creating a habit through the public form/API loop.",
+        "- Add a second behavior test for toggling completion state.",
+        "",
+        "## Diagnosis Plan",
+        "",
+        "- Reproduce failures with npm test or npm run integration before proposing fixes.",
+        "- Capture the failing command, symptom, and smallest likely fix area.",
+        "",
+        "## Verification Surface",
+        "",
+        "- Public verification runs through POST /habits, PATCH /habits/:id, and dashboard UI states.",
         "</agent-spec.md>",
         "<tasks.md>",
         "# Tasks",
         "",
-        "- [ ] T1 Implement the MVP loop",
-        "  - Files: app/, lib/",
+        "- [ ] T1 [AFK] User can create and see a habit end-to-end",
+        "  - Behavior: a user submits the habit form and sees the new habit in the list.",
+        "  - Public interface: POST /habits and the dashboard list state.",
+        "  - Files: app/, lib/, api/",
         "  - verify: npm test",
-        "- [ ] T2 Wire up API endpoints",
-        "  - Files: api/",
+        "- [ ] T2 [AFK] User can update habit completion end-to-end",
+        "  - Behavior: a user toggles a habit and sees the completed state persist through the public API.",
+        "  - Public interface: PATCH /habits/:id and the dashboard completed state.",
+        "  - Files: app/, lib/, api/",
         "  - verify: npm run integration",
         "</tasks.md>",
       ].join("\n");
@@ -962,6 +1008,7 @@ test("cc spec run records staged review roles and spec artifacts with injected r
   assert.equal(requests[2].maxTurns, 12);
   assert.equal(requests[3].maxTurns, 16);
   assert.ok(requests[0].prompt.includes("use Write for whole-file replacement"));
+  assert.ok(requests[0].prompt.includes("ask only questions that would change MVP behavior"));
   assert.ok(requests[1].prompt.includes("product-brief.md"));
   assert.ok(requests[1].prompt.includes("decision-log.md"));
   assert.ok(requests[1].prompt.includes("real-world"));
@@ -984,6 +1031,9 @@ test("cc spec run records staged review roles and spec artifacts with injected r
   assert.ok(requests[4].prompt.includes("Do not introduce SDKs"));
   assert.ok(requests[4].prompt.includes("Do not include full Prisma schema"));
   assert.ok(requests[4].prompt.includes("## API Contracts"));
+  assert.ok(requests[4].prompt.includes("## TDD Plan"));
+  assert.ok(requests[4].prompt.includes("tracer-bullet vertical slices"));
+  assert.ok(requests[4].prompt.includes("AFK or HITL"));
   assert.ok(requests[5].outputFormat.type, "json_schema");
 
   assert.match(await readFile(path.join(runDir, "task.md"), "utf8"), /habit tracker/);
@@ -992,10 +1042,11 @@ test("cc spec run records staged review roles and spec artifacts with injected r
   assert.match(await readFile(path.join(runDir, "research.md"), "utf8"), /Official Docs/);
   assert.match(await readFile(path.join(runDir, "spec.md"), "utf8"), /Functionality/);
   assert.match(await readFile(path.join(runDir, "agent-spec.md"), "utf8"), /Functional contract/);
-  assert.match(await readFile(path.join(runDir, "tasks.md"), "utf8"), /Implement the MVP loop/);
+  assert.match(await readFile(path.join(runDir, "tasks.md"), "utf8"), /User can create and see a habit end-to-end/);
 
   const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
   assert.equal(summary.workflow, "cc-spec");
+  assert.equal(summary.workflowGuidance, "skill-guided-v1");
   assert.equal(summary.status, "done");
   assert.equal(summary.metrics.roleTurns.research, 1);
   assert.equal(summary.metrics.roleTurns.reviewer, 1);
@@ -1239,6 +1290,48 @@ test("cc spec quality gate accepts workflow-led user spec", async () => {
   assert.equal(result.status, "done");
 });
 
+test("cc spec quality gate rejects horizontal layer task breakdowns", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-horizontal-tasks-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a browser app.\n", "utf8");
+
+  const horizontalTasks = [
+    "# Tasks",
+    "",
+    "| ID | Type | Task | Dependencies | Acceptance Criteria | verify |",
+    "|----|------|------|--------------|---------------------|--------|",
+    "| T1.1 | AFK | Build frontend layer | None | Components render | npm test |",
+    "| T1.2 | AFK | Build backend layer | T1.1 | API exists | npm test |",
+    "| T1.3 | AFK | Add tests layer | T1.2 | Tests exist | npm test |",
+  ].join("\n");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, and acceptance criteria.\n</spec.md>\n<agent-spec.md>\n${COMPLETE_AGENT_SPEC}\n</agent-spec.md>\n<tasks.md>\n${horizontalTasks}\n</tasks.md>`;
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"horizontal layers are ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  try {
+    const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+    assert.equal(result.status, "failed");
+    assert.match(result.reason, /vertical slice|horizontal/i);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("cc spec quality gate accepts numbered agent headings and verify tables", async () => {
   const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-numbered-gate-"));
   const taskFile = path.join(rootDir, "task.md");
@@ -1277,14 +1370,26 @@ test("cc spec quality gate accepts numbered agent headings and verify tables", a
     "| State | Trigger |",
     "|-------|---------|",
     "| title | first load |",
+    "",
+    "## 6. TDD Plan",
+    "",
+    "Start with one behavior test through the public game API, then implement the smallest passing slice.",
+    "",
+    "## 7. Diagnosis Plan",
+    "",
+    "On failure, capture the repro command, failure symptom, and suspect module before changing code.",
+    "",
+    "## 8. Verification Surface",
+    "",
+    "The public browser UI and localStorage state are the verification surface.",
   ].join("\n");
   const verifyTableTasks = [
     "# Tasks",
     "",
-    "| ID | Task | Dependencies | Target File | Acceptance Criteria | verify |",
-    "|----|------|--------------|-------------|---------------------|--------|",
-    "| T1.1 | Create shell | None | index.html | Renders title | `node -e \"require('fs').readFileSync('index.html','utf8')\"` |",
-    "| T1.2 | Add state | T1.1 | index.html | Saves state | `node -e \"console.log('verify localStorage manually')\"` |",
+    "| ID | Type | Slice | Dependencies | Target File | Acceptance Criteria | verify |",
+    "|----|------|-------|--------------|-------------|---------------------|--------|",
+    "| T1.1 | AFK | Learner can start the story shell end-to-end | None | index.html | Renders title and begin action | `node -e \"require('fs').readFileSync('index.html','utf8')\"` |",
+    "| T1.2 | AFK | Learner can answer one vocabulary prompt end-to-end | T1.1 | index.html | Saves prompt result | `node -e \"console.log('verify localStorage manually')\"` |",
   ].join("\n");
 
   const runner = async function* (request) {
@@ -2384,6 +2489,54 @@ test("status and report treat completed cc-spec runs as spec workflow artifacts"
     assert.equal(report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount, 0);
     assert.equal(report.protocolHealth.progressRunSummaryDriftCount, 0);
     assert.equal(report.recentRuns[0].failureCategory, "none");
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status and report treat cc-run runs as claude-code workflow artifacts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-cc-run-"));
+
+  try {
+    const runDir = path.join(runsDir, "cc-run");
+    await mkdir(path.join(runDir, "session-log"), { recursive: true });
+    await writeFile(path.join(runDir, "task.md"), "# Task\n\nImplement a vocabulary game.\n", "utf8");
+    await writeFile(path.join(runDir, "progress.md"), "# CC Team Progress\n\nStatus: max_loops_reached\n", "utf8");
+    await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n", "utf8");
+    await writeFile(path.join(runDir, "manager-plan.json"), "{}\n", "utf8");
+    await writeFile(path.join(runDir, "tester-decision.json"), '{"status":"develop","reason":"node tests/v2_contract.test.js failed"}\n', "utf8");
+    await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      provider: "claude-code",
+      workflow: "cc-run",
+      runDir,
+      status: "max_loops_reached",
+      reason: "cc team did not finish within 1 loop(s).",
+      model: "MiniMax-M2.7",
+      specDir: "/tmp/spec",
+      targetDir: "/tmp/target",
+      startedAt: "2026-05-03T00:00:00.000Z",
+      endedAt: "2026-05-03T00:00:10.000Z",
+      durationMs: 10000,
+      maxLoops: 1,
+      turnTimeoutMs: 300000,
+      metrics: {
+        sessionLogEntries: 5,
+        roleTurns: { manager: 1, developer: 3, tester: 1 },
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
+    assert.equal(statusResult.status, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.protocolHealth, "clean");
+    assert.equal(status.recommendedAction, "inspect");
+    assert.match(status.summary, /cc-run is not complete/);
+
+    const report = await runReport({ runsDir });
+    assert.equal(report.protocolHealth.missingRequiredProtocolEntriesCount, 0);
+    assert.equal(report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount, 0);
+    assert.equal(report.protocolHealth.progressRunSummaryDriftCount, 0);
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }

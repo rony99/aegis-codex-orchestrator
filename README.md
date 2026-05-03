@@ -271,6 +271,8 @@ For existing-repo development, pass `--target <repo-dir>`. In that mode the Clau
 
 Use `cc-spec` before implementation when the input is still a feature idea or rough requirement. It does not write business code. The staged roles are intake, product, demo, research, architect, and reviewer. The product role writes `product-brief.md` and `decision-log.md` so real-world user, MVP-loop, constraints, assumptions, and open questions stay explicit before research and architecture. The demo role writes `demo.html` and pauses for user validation before research begins. The research role is instructed to prefer official docs, official GitHub repositories, and official package pages. The architect writes `spec.md`, `agent-spec.md`, and `tasks.md`; reviewer `done` is accepted only after a local quality gate confirms the artifacts are ready for a downstream development team.
 
+`cc-spec` now records `workflowGuidance: "skill-guided-v1"` in `run-summary.json`. That guidance borrows engineering workflow principles from local skills without copying their prompt text: clarify only high-impact unknowns, split work into tracer-bullet vertical slices, classify tasks as AFK or HITL, and require TDD, diagnosis, and verification-surface signals before `cc-run` starts. `cc-run` manager plans also require each stream to name behavior, public interface, test target, and a terminating machine verification command.
+
 Detailed artifact semantics, resume rules, and the local quality gate are documented in [docs/CC_SPEC.md](docs/CC_SPEC.md).
 
 ```bash
@@ -297,7 +299,7 @@ runs reviewer when `product-brief.md`, `decision-log.md`, `demo.html`, `research
 `spec.md`, `agent-spec.md`, and `tasks.md` already exist and pass the basic
 artifact checks.
 
-Primary artifacts are `context.md`, `questions.md`, `user-replies.md`, `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md`, `agent-spec.md`, `tasks.md`, `progress.md`, `blockers.md`, `interaction-request.json`, `run-summary.json`, and the usual `session-log/events/` plus `session-log/inflight/` diagnostics. When `--target <repo-dir>` is provided, the target repo is scanned read-only and summarized into `context.md`.
+Primary artifacts are `context.md`, `questions.md`, `user-replies.md`, `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md`, `agent-spec.md`, `tasks.md`, `progress.md`, `blockers.md`, `interaction-request.json`, `run-summary.json`, and the usual `session-log/events/` plus `session-log/inflight/` diagnostics. When `--target <repo-dir>` is provided, the target repo is scanned read-only and summarized into `context.md`. `agent-spec.md` must include TDD Plan, Diagnosis Plan, and Verification Surface sections; `tasks.md` should read like local issue slices that each prove one end-to-end behavior with its own verify command.
 
 ### Run local tests
 
@@ -500,7 +502,7 @@ The command reads normal Anthropic-compatible environment variables such as `ANT
 
 ### Claude Code SDK cc-spec
 
-`cc-spec` is the pre-development companion to `cc-run`. It turns rough input into `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md` for users, and `agent-spec.md` plus `tasks.md` for implementation agents. It supports 0-1 projects by default and switches to existing-repo change review when `--target <repo-dir>` is provided. Target scanning is read-only and records package scripts, README/docs signals, top-level directories, and dependency hints in `context.md`. A local quality gate rejects `done` when core artifacts are pending, `demo.html` is missing, research recommendations lack source evidence, `agent-spec.md` misses mandatory contract sections, `tasks.md` is missing executable checklist items or per-task verification, or `agent-spec.md` leaves unsafe identity boundaries ambiguous.
+`cc-spec` is the pre-development companion to `cc-run`. It turns rough input into `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md` for users, and `agent-spec.md` plus `tasks.md` for implementation agents. It supports 0-1 projects by default and switches to existing-repo change review when `--target <repo-dir>` is provided. Target scanning is read-only and records package scripts, README/docs signals, top-level directories, and dependency hints in `context.md`. A local quality gate rejects `done` when core artifacts are pending, `demo.html` is missing, research recommendations lack source evidence, `agent-spec.md` misses mandatory contract sections, `tasks.md` is missing executable checklist items or per-task verification, `tasks.md` is split horizontally by frontend/backend/tests instead of user-visible vertical slices, or `agent-spec.md` leaves unsafe identity boundaries ambiguous.
 
 See [docs/CC_SPEC.md](docs/CC_SPEC.md) for the role pipeline, artifact table, resume behavior, and smoke-test evidence.
 

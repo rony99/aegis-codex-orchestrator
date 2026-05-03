@@ -8,6 +8,7 @@ export function buildCcSpecSystemPrompt(role: CcSpecRole): string {
     "You are part of the cc-spec pre-development review workflow.",
     "This workflow produces requirements and technical specs only. Do not write business implementation code.",
     "Use public spec-driven workflow ideas as structure only; do not copy long prompt text from external projects.",
+    "Follow skill-guided-v1 engineering discipline: clarify only high-impact unknowns, prefer vertical slices, and make verification explicit.",
     "If a high-impact decision is missing, call AskUserQuestion instead of guessing.",
   ].join(" ");
 
@@ -64,6 +65,8 @@ ${input.decisionLog || "No decision-log.md has been produced yet."}`;
 Stage: intake
 
 Extract the user, scenario, goal, constraints, obvious gaps, and whether this is a 0-1 new project or a 1-n change to an existing repo.
+Use the target repository context first: answer what can be inferred from code/docs locally, and ask only questions that would change MVP behavior, data model, integration boundaries, or acceptance criteria.
+Capture domain terms and ambiguous vocabulary in context.md so later roles use consistent language.
 Update context.md with a concise intake section. If the missing information blocks a meaningful review, ask the user.`;
   }
 
@@ -134,9 +137,18 @@ agent-spec.md mandatory sections (development cannot start without all of them):
 - ## Error Handling — table of each error case with HTTP/exit code and user-facing message.
 - ## Test Scenarios — Given/When/Then list covering the happy path plus at least two edge or failure cases.
 - ## UI State Inventory — list of distinct screen states and the triggers that cause each transition.
+- ## TDD Plan — which behavior should get the first failing test or public-interface check before implementation.
+- ## Diagnosis Plan — exact repro commands, failure symptoms to capture, and likely boundary to inspect when verification fails.
+- ## Verification Surface — public interfaces and user-visible states that define acceptance.
 
 Keep spec.md under 180 lines, agent-spec.md under 300 lines, and tasks.md under 180 lines. Prefer dense checklists and tables over long prose.
-Each task in tasks.md must include its own inline verification command on a "verify:" line.
+tasks.md must be tracer-bullet vertical slices, not horizontal frontend/backend/database/test layer work. Each task must:
+- have a task id;
+- be marked AFK or HITL;
+- describe one end-to-end user-visible behavior;
+- name the public interface or files/directories likely touched;
+- include its own inline verification command on a "verify:" line, or a filled per-task verify table column.
+Separate HITL decisions from AFK executable tasks. Do not hide user decisions inside AFK tasks.
 For 1-n changes, agent-spec.md must name existing-code integration boundaries and areas that should not be touched.
 Do not introduce SDKs, APIs, or package dependencies that research.md did not verify. For AI providers, use an explicit provider boundary and the confirmed OpenAI-compatible SDK path unless research.md verifies another SDK.
 Do not include full Prisma schema or TypeScript implementation code blocks. Describe data models, enums, and API contracts in tables so corrupted code tokens cannot become the development contract.
@@ -164,5 +176,5 @@ Also verify product-brief.md and decision-log.md: the plan must identify a real 
 Return JSON only:
 {"status":"done"|"ask_user","reason":"short reason"}
 
-Use "ask_user" if required product, architecture, integration, research-source, or testing decisions are missing. Verify that named competitors/products have source URLs or explicit no-authoritative-source notes. Verify agent-spec.md includes API Contracts, Data Model, Error Handling, Test Scenarios, and UI State Inventory sections. Verify tasks.md has per-task verify: commands. Otherwise use "done".`;
+Use "ask_user" if required product, architecture, integration, research-source, or testing decisions are missing. Verify that named competitors/products have source URLs or explicit no-authoritative-source notes. Verify agent-spec.md includes API Contracts, Data Model, Error Handling, Test Scenarios, UI State Inventory, TDD Plan, Diagnosis Plan, and Verification Surface sections. Verify tasks.md is split into AFK/HITL vertical slices with per-task verify commands instead of horizontal layer tasks. Otherwise use "done".`;
 }

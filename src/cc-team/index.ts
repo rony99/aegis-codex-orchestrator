@@ -13,6 +13,7 @@ const MANAGER_MAX_TURNS = 14;
 const DEVELOPER_MAX_TURNS = 80;
 const TESTER_MAX_TURNS = 20;
 const ASK_USER_TOOL = "AskUserQuestion";
+const SKILL_GUIDANCE_VERSION = "skill-guided-v1";
 
 /** Up to three developer passes: foundation → feature work → integration & verification prep. */
 export type CcWorkStreamId = "foundation" | "feature" | "integration";
@@ -22,6 +23,10 @@ export type CcWorkStream = {
   title: string;
   focus: string;
   out_of_scope: string;
+  behavior: string;
+  public_interface: string;
+  test_target: string;
+  verification_command: string;
 };
 
 export type CcManagerPlan = {
@@ -132,6 +137,7 @@ type CcRoleDiagnostic = {
 type CcTeamRunSummary = {
   schemaVersion: 1;
   provider: "claude-code";
+  workflow: "cc-run";
   runDir: string;
   status: CcTeamStatus;
   reason?: string;
@@ -155,6 +161,7 @@ type CcSpecRunSummary = {
   schemaVersion: 1;
   provider: "claude-code";
   workflow: "cc-spec";
+  workflowGuidance: typeof SKILL_GUIDANCE_VERSION;
   runDir: string;
   status: CcTeamStatus;
   reason?: string;
@@ -201,8 +208,12 @@ const CC_MANAGER_PLAN_OUTPUT_FORMAT: OutputFormat = {
             title: { type: "string" },
             focus: { type: "string" },
             out_of_scope: { type: "string" },
+            behavior: { type: "string" },
+            public_interface: { type: "string" },
+            test_target: { type: "string" },
+            verification_command: { type: "string" },
           },
-          required: ["id", "title", "focus", "out_of_scope"],
+          required: ["id", "title", "focus", "out_of_scope", "behavior", "public_interface", "test_target", "verification_command"],
           additionalProperties: false,
         },
       },
@@ -368,6 +379,7 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
   const summary: CcTeamRunSummary = {
     schemaVersion: 1,
     provider: "claude-code",
+    workflow: "cc-run",
     runDir,
     status: finalStatus,
     reason: finalReason,
@@ -525,6 +537,7 @@ export async function runCcSpec(options: CcSpecRunOptions): Promise<CcSpecRunRes
     schemaVersion: 1,
     provider: "claude-code",
     workflow: "cc-spec",
+    workflowGuidance: SKILL_GUIDANCE_VERSION,
     runDir,
     status: finalStatus,
     reason: finalReason,
@@ -585,10 +598,17 @@ export function parseCcManagerPlan(finalResponse: string): CcManagerPlan {
     const title = typeof row.title === "string" ? row.title.trim() : "";
     const focus = typeof row.focus === "string" ? row.focus.trim() : "";
     const out_of_scope = typeof row.out_of_scope === "string" ? row.out_of_scope.trim() : "";
+    const behavior = typeof row.behavior === "string" ? row.behavior.trim() : "";
+    const public_interface = typeof row.public_interface === "string" ? row.public_interface.trim() : "";
+    const test_target = typeof row.test_target === "string" ? row.test_target.trim() : "";
+    const verification_command = typeof row.verification_command === "string" ? row.verification_command.trim() : "";
     if (!title || !focus || !out_of_scope) {
       throw new Error(`cc manager stream missing title, focus, or out_of_scope: ${finalResponse}`);
     }
-    streams.push({ id, title, focus, out_of_scope });
+    if (!behavior || !public_interface || !test_target || !verification_command) {
+      throw new Error(`cc manager stream missing behavior, public_interface, test_target, or verification_command: ${finalResponse}`);
+    }
+    streams.push({ id, title, focus, out_of_scope, behavior, public_interface, test_target, verification_command });
   }
 
   streams.sort((a, b) => CC_STREAM_ORDER.indexOf(a.id) - CC_STREAM_ORDER.indexOf(b.id));
@@ -605,6 +625,10 @@ function fallbackCcManagerPlan(): CcManagerPlan {
         title: "Full delivery",
         focus: "Implement the complete task in one pass. If the task already lists phases, follow that order within this pass.",
         out_of_scope: "None — single-stream fallback after an invalid manager plan.",
+        behavior: "Deliver one complete user-visible behavior through the public interface.",
+        public_interface: "The CLI, API, or UI surface described by the task.",
+        test_target: "A behavior-level test or verification command through the public interface.",
+        verification_command: "npm test",
       },
     ],
     notes: "fallback single stream",
@@ -617,7 +641,7 @@ function applyCcTesterVerificationGate(decision: CcTesterDecision, events: unkno
   const verification = collectCcTesterVerification(events);
   if (verification.failed.length > 0) {
     decision.status = "develop";
-    decision.reason = `tester verification failed: ${verification.failed.join("; ")}`;
+    decision.reason = `tester verification failed. Repro command and failure symptom: ${verification.failed.join("; ")}`;
     return;
   }
 
@@ -1051,6 +1075,11 @@ ${task}
 
 Return JSON only matching the schema. streams must have 1-3 items with distinct id values chosen from: foundation, feature, integration.
 Each stream needs a short title, a concrete focus (what this developer implements in one pass), and out_of_scope (what they must not change in that pass to avoid thrash).
+Each stream also needs:
+- behavior: the end-to-end user-visible behavior this vertical slice proves.
+- public_interface: the CLI/API/UI surface the behavior is verified through.
+- test_target: the behavior-level test or check the developer should create or preserve.
+- verification_command: the exact non-destructive command the tester should run. It must be a machine verification command that terminates by itself; do not use long-running servers, browser-opening commands, watch mode, or manual-only instructions.
 
 Optional notes field: coordination hints for developers (dependencies, sequencing).`;
 }
@@ -1083,6 +1112,18 @@ Loop: ${input.loop}
 Your focus for this pass:
 ${input.stream.focus}
 
+User-visible behavior to prove:
+${input.stream.behavior}
+
+Public interface for this slice:
+${input.stream.public_interface}
+
+TDD target:
+${input.stream.test_target}
+
+Expected tester command:
+${input.stream.verification_command}
+
 Out of scope for this pass (do not do these here):
 ${input.stream.out_of_scope}
 
@@ -1094,6 +1135,9 @@ ${input.task}
 Rules:
 ${workRule}
 - Implement only what belongs to this stream; do not expand into other streams' work.
+- Work test-first when the repo has a suitable test seam: add or update one behavior test through the public interface, watch that path fail, then implement the smallest passing slice.
+- If no suitable automated seam exists, keep the implementation minimal and leave the tester a direct verification command/evidence path.
+- Do not add speculative abstractions or broad configurability beyond this stream.
 - Keep the change set small and coherent for this pass.
 - Use LS, Glob, or Grep to find relevant files before reading many files.
 - Do not run verification commands; the tester role handles verification.
@@ -1106,7 +1150,7 @@ function buildCcTesterPrompt(task: string, loop: number, targetDir?: string, man
     : "Verify the files under ./workspace against the task.";
   let planContext = "";
   if (managerPlan?.streams?.length) {
-    const streamLines = managerPlan.streams.map((s) => `- ${s.id}: ${s.title}`).join("\n");
+    const streamLines = managerPlan.streams.map((s) => `- ${s.id}: ${s.title}; behavior=${s.behavior}; verify=${s.verification_command}`).join("\n");
     planContext = `Manager split this loop into developer streams:\n${streamLines}\n`;
     if (managerPlan.notes) {
       planContext += `Manager notes: ${managerPlan.notes}\n`;
@@ -1125,6 +1169,7 @@ Use Bash only for non-destructive verification commands such as typecheck, build
 **Verification commands must be run directly — do not pipe to 'head', 'tail', 'grep', 'sed -n', 'awk', 'cut', 'less', 'more', or similar output limiters.** Piped commands can truncate output and mask failures.
 Do not install dependencies, mutate files, or run destructive shell commands.
 Run the smallest relevant verification set. Once the decisive verification passes or fails, stop immediately and return the JSON decision.
+When verification fails, diagnose before returning: include the exact repro command, the observed failure symptom, and the smallest likely fix area in reason.
 Return JSON only with this shape:
 {"status":"done"|"develop"|"ask_user","reason":"short reason"}
 
@@ -1384,6 +1429,7 @@ async function validateCcSpecQualityGate(runDir: string): Promise<string[]> {
   issues.push(...validateAgentSpecArtifact(artifacts.agentSpec).map((issue) => `agent-spec.md ${issue}`));
   issues.push(...validateAgentSpecCompleteness(artifacts.agentSpec));
   issues.push(...validateTasksVerification(artifacts.tasks));
+  issues.push(...validateTasksVerticalSlices(artifacts.tasks));
   return issues;
 }
 
@@ -1440,6 +1486,9 @@ function validateAgentSpecCompleteness(agentSpec: string): string[] {
     [/error|exception|fail|4\d\d|5\d\d/i, "agent-spec.md must include error handling coverage"],
     [/given|when.*then|test (case|scenario)/i, "agent-spec.md must include structured test scenarios"],
     [/##\s*(?:\d+[\).]?\s*)?(ui state inventory|ui states?|screen states?|state inventory)/i, "agent-spec.md must include a ## UI State Inventory section"],
+    [/##\s*(?:\d+[\).]?\s*)?(tdd plan|test-driven plan|test first plan)/i, "agent-spec.md must include a ## TDD Plan section"],
+    [/##\s*(?:\d+[\).]?\s*)?(diagnosis plan|diagnostic plan|debugging plan)/i, "agent-spec.md must include a ## Diagnosis Plan section"],
+    [/##\s*(?:\d+[\).]?\s*)?(verification surface|acceptance surface|public verification surface)/i, "agent-spec.md must include a ## Verification Surface section"],
   ];
   return signals.filter(([re]) => !re.test(agentSpec)).map(([, msg]) => msg);
 }
@@ -1462,6 +1511,29 @@ function validateTasksVerification(tasks: string): string[] {
     }
   }
   return [];
+}
+
+function validateTasksVerticalSlices(tasks: string): string[] {
+  const taskIds = tasks.match(/\bT\d+(?:\.\d+)?\b/gi) ?? [];
+  if (taskIds.length <= 1) return [];
+
+  const issues: string[] = [];
+  const taskLines = tasks.split("\n").filter((line) => /\bT\d+(?:\.\d+)?\b/i.test(line));
+  const unclassifiedTask = taskLines.some((line) => !/\b(?:AFK|HITL)\b/i.test(line));
+  if (taskLines.length > 0 && unclassifiedTask) {
+    issues.push("tasks.md must classify each vertical slice as HITL or AFK");
+  }
+
+  const horizontalLayerPattern = /\b(?:frontend|backend|api|database|db|schema|components?|tests?)\s+(?:layer|only)\b|\b(?:build|implement|add)\s+(?:the\s+)?(?:frontend|backend|api|database|db|schema|components?|tests?)\b/i;
+  if (horizontalLayerPattern.test(tasks) && !/\b(?:end-to-end|vertical slice|user can|user-visible|through the public interface|complete flow)\b/i.test(tasks)) {
+    issues.push("tasks.md must use vertical slices, not horizontal layer tasks");
+  }
+
+  if (!/\b(?:behavior|user can|user-visible|end-to-end|complete flow|slice)\b/i.test(tasks)) {
+    issues.push("tasks.md must describe the behavior each vertical slice proves");
+  }
+
+  return issues;
 }
 
 async function buildTaskFromSpec(specDir: string): Promise<string> {

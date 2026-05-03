@@ -76,6 +76,14 @@ const CC_SPEC_DONE_PROTOCOL_ENTRIES = [
   "tasks.md",
 ] as const;
 
+const CC_RUN_PROTOCOL_ENTRIES = [
+  "task.md",
+  "progress.md",
+  "blockers.md",
+  "session-log/",
+  "run-summary.json",
+] as const;
+
 export const API_PROBE_README_SECTIONS = [
   "Probe Decision",
   "External Dependencies",
@@ -1658,9 +1666,10 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
     }
 
     const isCcSpec = isCcSpecWorkflowSummary(summary);
+    const isCcRun = isCcRunWorkflowSummary(summary);
     const runProtocol = await validateRunProtocol(summary.runDir, requiredProtocolEntriesForSummary(summary));
-    const apiProbesReadme = isCcSpec ? cleanApiProbeReadmeValidation() : await validateApiProbesReadme(summary.runDir);
-    const progressDrift = isCcSpec ? cleanProgressDriftReport() : await compareProgressRunSummary(summary.runDir);
+    const apiProbesReadme = isCcSpec || isCcRun ? cleanApiProbeReadmeValidation() : await validateApiProbesReadme(summary.runDir);
+    const progressDrift = isCcSpec || isCcRun ? cleanProgressDriftReport() : await compareProgressRunSummary(summary.runDir);
     const runProtocolHealth = {
       missingRequiredEntries: !runProtocol.ok,
       invalidApiProbesReadmeSections: !apiProbesReadme.ok,
@@ -1910,10 +1919,11 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   const runDir = path.resolve(options.runDir);
   const summary = await readRunSummary(runDir);
   const isCcSpec = isCcSpecWorkflowSummary(summary);
+  const isCcRun = isCcRunWorkflowSummary(summary);
   const [runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
     validateRunProtocol(runDir, requiredProtocolEntriesForSummary(summary)),
-    isCcSpec ? cleanApiProbeReadmeValidation() : validateApiProbesReadme(runDir),
-    isCcSpec ? cleanProgressDriftReport() : compareProgressRunSummary(runDir),
+    isCcSpec || isCcRun ? cleanApiProbeReadmeValidation() : validateApiProbesReadme(runDir),
+    isCcSpec || isCcRun ? cleanProgressDriftReport() : compareProgressRunSummary(runDir),
     readLatestInflightDiagnostic(runDir),
   ]);
 
@@ -2016,6 +2026,24 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
       summary: summary.status === "done"
         ? "cc-spec run is done. Inspect spec.md, agent-spec.md, tasks.md, and demo.html for the generated planning package."
         : "cc-spec run is not a workspace export run. Inspect the spec artifacts and interaction request files.",
+      commands: [],
+    };
+  }
+
+  if (isCcRun) {
+    return {
+      runDir,
+      terminalStatus: summary.status,
+      failureCategory: normalizeSummaryFailureCategory(summary),
+      reason: summary.reason,
+      terminalRole: summary.terminalRole,
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "inspect",
+      summary: summary.status === "done"
+        ? "cc-run completed. Inspect target changes, tester-decision.json, and session-log events."
+        : "cc-run is not complete. Inspect tester-decision.json, manager-plan.json, and session-log events before rerunning cc-run.",
       commands: [],
     };
   }
@@ -2806,7 +2834,9 @@ export async function validateRunProtocol(
 }
 
 function requiredProtocolEntriesForSummary(summary: RunSummary | undefined): readonly string[] {
-  if (!summary || !isCcSpecWorkflowSummary(summary)) return RUN_PROTOCOL_ENTRIES;
+  if (!summary) return RUN_PROTOCOL_ENTRIES;
+  if (isCcRunWorkflowSummary(summary)) return CC_RUN_PROTOCOL_ENTRIES;
+  if (!isCcSpecWorkflowSummary(summary)) return RUN_PROTOCOL_ENTRIES;
   if (summary.status === "done") return CC_SPEC_DONE_PROTOCOL_ENTRIES;
   if (summary.status === "ask_user") return CC_SPEC_ASK_USER_PROTOCOL_ENTRIES;
   return CC_SPEC_BASE_PROTOCOL_ENTRIES;
@@ -2815,6 +2845,15 @@ function requiredProtocolEntriesForSummary(summary: RunSummary | undefined): rea
 function isCcSpecWorkflowSummary(summary: RunSummary | undefined): boolean {
   if (!summary || typeof summary !== "object") return false;
   return (summary as RunSummary & { workflow?: unknown }).workflow === "cc-spec";
+}
+
+function isCcRunWorkflowSummary(summary: RunSummary | undefined): boolean {
+  if (!summary || typeof summary !== "object") return false;
+  const workflow = (summary as RunSummary & { workflow?: unknown }).workflow;
+  if (workflow === "cc-run") return true;
+  if (workflow === "cc-spec") return false;
+  const provider = (summary as RunSummary & { provider?: unknown }).provider;
+  return provider === "claude-code";
 }
 
 function cleanApiProbeReadmeValidation(): ApiProbeReadmeValidation {

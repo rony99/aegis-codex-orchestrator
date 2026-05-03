@@ -5,6 +5,12 @@ feature idea or requirement document into a product and engineering contract
 that a later development agent team can implement. It does not write business
 implementation code.
 
+Current runs use `workflowGuidance: "skill-guided-v1"` in `run-summary.json`.
+This means the built-in workflow follows local engineering skill principles
+without copying external skill prompt text: ask only high-impact clarification
+questions, preserve domain terms, split implementation work into tracer-bullet
+vertical slices, and make TDD, diagnosis, and verification surfaces explicit.
+
 Use it when the input is still ambiguous, when a product/technical decision
 could materially change implementation, or when an existing repository needs a
 bounded change plan before coding starts.
@@ -71,18 +77,21 @@ cc-spec run directory and combines them into a single development task. Without
 `--target`, the developer implements under the run directory `./workspace`. With
 `--target <repo-dir>`, developer and tester roles run in that target repository while
 the cc-run directory remains the diagnostics/protocol location. A final `done`
-requires successful machine verification evidence from the tester.
+requires successful machine verification evidence from the tester. Manager
+streams must name the behavior, public interface, test target, and a terminating
+non-interactive verification command; long-running servers, watch mode, browser
+opening, and manual-only commands do not satisfy the machine gate.
 
 ## Role Pipeline
 
 | Role | Responsibility | Main Output |
 |------|----------------|-------------|
-| `intake` | Classify 0-1 new project vs. 1-n repo change, extract scenario, goals, constraints, and obvious gaps. | `context.md` |
+| `intake` | Classify 0-1 new project vs. 1-n repo change, extract scenario, goals, constraints, and obvious gaps. Use target repo context first and ask only questions that would change MVP behavior, data model, integration boundaries, or acceptance criteria. | `context.md` |
 | `product` | Clarify the product contract: real user, job-to-be-done, MVP loop, non-goals, completion bar, acceptance criteria, success signals, risks, and assumptions. | `product-brief.md`, `decision-log.md` |
 | `demo` | Write a self-contained HTML mockup (<400 lines, no external deps) covering the happy-path user loop with realistic hardcoded data. Pauses for user validation before research begins. | `demo.html` |
 | `research` | Look up official docs, official GitHub repos, package registry pages, APIs, SDKs, comparable products, and open-source options. Named competitors must have source URLs or explicit no-authoritative-source notes. Record stable versions and licenses for recommended packages, SDKs, APIs, and direct dependencies. | `research.md` |
-| `architect` | Convert product and research context into user-facing and development-agent specs, plus executable tasks. `agent-spec.md` must include API Contracts, Data Model, Error Handling, Test Scenarios, and UI State Inventory sections. Each task in `tasks.md` must have a `verify:` command. | `spec.md`, `agent-spec.md`, `tasks.md` |
-| `reviewer` | Decide whether development can start directly from `agent-spec.md` and `tasks.md`, or whether more user input is required. | `reviewer-decision.json` |
+| `architect` | Convert product and research context into user-facing and development-agent specs, plus executable tasks. `agent-spec.md` must include API Contracts, Data Model, Error Handling, Test Scenarios, UI State Inventory, TDD Plan, Diagnosis Plan, and Verification Surface sections. `tasks.md` must be AFK/HITL vertical slices, not layer tasks. | `spec.md`, `agent-spec.md`, `tasks.md` |
+| `reviewer` | Decide whether development can start directly from `agent-spec.md` and `tasks.md`, or whether more user input is required. It must reject horizontal task plans and missing verification surfaces. | `reviewer-decision.json` |
 
 High-impact missing decisions should stop at `ask_user`. Low-impact details
 should be resolved with conservative defaults and recorded as assumptions.
@@ -100,8 +109,8 @@ should be resolved with conservative defaults and recorded as assumptions.
 | `demo.html` | Self-contained UI mockup (<400 lines, no external deps) covering the happy-path user loop. Produced by the demo role; user validation required before research begins. |
 | `research.md` | Sourced technical and product research, with URL, source classification, stable version, and license. |
 | `spec.md` | Concise user-facing spec: functionality, stack, architecture, milestones, and verification criteria. |
-| `agent-spec.md` | Detailed development-agent contract with mandatory sections: API Contracts, Data Model, Error Handling, Test Scenarios, and UI State Inventory. |
-| `tasks.md` | Executable development task list with IDs, dependencies, target files/directories, per-task `verify:` commands or a `verify` table column, and parallelization notes. |
+| `agent-spec.md` | Detailed development-agent contract with mandatory sections: API Contracts, Data Model, Error Handling, Test Scenarios, UI State Inventory, TDD Plan, Diagnosis Plan, and Verification Surface. |
+| `tasks.md` | Executable development task list with IDs, AFK/HITL classification, one end-to-end behavior per task, dependencies, target files/directories, per-task `verify:` commands or a `verify` table column, and parallelization notes. |
 | `progress.md` | Human-readable progress log for the cc-spec role pipeline. |
 | `blockers.md` | Blocking questions, quality-gate failures, SDK errors, or other issues that need attention. |
 | `interaction-request.json` | Structured Claude Code SDK user-interaction request when present. |
@@ -122,6 +131,8 @@ For existing repositories, `agent-spec.md` must name:
 - files or areas likely to change;
 - areas that should not be touched;
 - expected verification commands;
+- TDD entry points and public verification surface;
+- diagnosis commands and symptoms to capture when a task fails;
 - assumptions that need confirmation before implementation.
 
 `cc-spec` must not modify the target repository.
@@ -140,10 +151,12 @@ The gate rejects `done` when:
 - `research.md` relies on model memory, lacks source URLs, or fails to classify sources as official, registry, source repository, or unofficial;
 - `spec.md` lacks functionality or workflow, technical/architecture, or acceptance/verification signals;
 - `agent-spec.md` lacks functional contract, constraints, tests, or boundaries;
-- `agent-spec.md` is missing a required section: API Contracts, Data Model, Error Handling, Test Scenarios, or UI State Inventory;
+- `agent-spec.md` is missing a required section: API Contracts, Data Model, Error Handling, Test Scenarios, UI State Inventory, TDD Plan, Diagnosis Plan, or Verification Surface;
 - `agent-spec.md` presents hardcoded `userId` as an acceptable identity boundary;
 - `tasks.md` lacks task IDs or verification/test signals;
-- `tasks.md` has multiple tasks but fewer than two inline `verify:` commands or per-task checks in a `verify` table column.
+- `tasks.md` has multiple tasks but fewer than two inline `verify:` commands or per-task checks in a `verify` table column;
+- `tasks.md` has multiple tasks but does not classify slices as AFK or HITL;
+- `tasks.md` is split as horizontal frontend/backend/database/test layers instead of end-to-end user-visible vertical slices.
 - `research.md` recommends packages, SDKs, or APIs without recording stable version and license coverage.
 
 The research gate allows a run to state that no external sources or integrations
