@@ -36,10 +36,12 @@ import {
   createRunDirectory,
 } from "../dist/driver.js";
 import {
+  parseCcManagerPlan,
   parseCcTesterDecision,
   runCcSpec,
   runCcTeam,
 } from "../dist/cc-team.js";
+import { runSpecAgent } from "../dist/spec-agent.js";
 import {
   MANAGER_PROMPT_MAX_CHARS,
   OBSERVER_PROMPT_MAX_CHARS,
@@ -232,7 +234,7 @@ test("help documents run options without invoking Codex SDK", () => {
   assert.match(output, /codex-gtd v0\.5/);
   assert.match(output, /--skip-discovery/);
   assert.match(output, /codex-gtd run --task <task-file> \[--run-dir <run-dir>\]/);
-  assert.match(output, /codex-gtd cc-run --task <task-file> \[--run-dir <run-dir>\]/);
+  assert.match(output, /codex-gtd cc-run --task <task-file> \[--target <repo-dir>\] \[--run-dir <run-dir>\]/);
   assert.match(output, /codex-gtd cc-spec --task <task-file> \[--mode new\|change\]/);
   assert.match(output, /codex-gtd cc-spec --run-dir <dir> \[--reply <reply-file>\] \[--json\]/);
   assert.match(output, /codex-gtd report \[--runs-dir <dir>\] \[--limit <n>\]/);
@@ -267,6 +269,72 @@ test("cc tester decision parser requires JSON terminal status", () => {
   );
 });
 
+function passingCcBashVerificationEvents(command = "npm run typecheck") {
+  return [
+    {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu-bash-pass", name: "Bash", input: { command } }],
+      },
+    },
+    {
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu-bash-pass", content: "pass", is_error: false }],
+      },
+    },
+  ];
+}
+
+function failingCcBashVerificationEvents(command = "npm run build") {
+  return [
+    {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu-bash-fail", name: "Bash", input: { command } }],
+      },
+    },
+    {
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu-bash-fail", content: "error TS1234: compile failed", is_error: true }],
+      },
+    },
+  ];
+}
+
+/** Valid single-stream manager plan for cc-run tests with an injected runner. */
+const MOCK_CC_MANAGER_PLAN_JSON = JSON.stringify({
+  streams: [
+    {
+      id: "feature",
+      title: "Deliver the task",
+      focus: "Implement the user request for this loop.",
+      out_of_scope: "Nothing else in this single-stream mock.",
+    },
+  ],
+});
+
+test("parseCcManagerPlan orders streams foundation then feature then integration", () => {
+  const plan = parseCcManagerPlan(JSON.stringify({
+    streams: [
+      { id: "integration", title: "I", focus: "i", out_of_scope: "a" },
+      { id: "foundation", title: "N", focus: "n", out_of_scope: "b" },
+      { id: "feature", title: "F", focus: "f", out_of_scope: "c" },
+    ],
+  }));
+  assert.deepEqual(plan.streams.map((s) => s.id), ["foundation", "feature", "integration"]);
+  assert.throws(
+    () => parseCcManagerPlan(JSON.stringify({
+      streams: [
+        { id: "feature", title: "A", focus: "a", out_of_scope: "x" },
+        { id: "feature", title: "B", focus: "b", out_of_scope: "y" },
+      ],
+    })),
+    /duplicate stream id/,
+  );
+});
+
 test("cc team run records role events and terminal summary with injected runner", async () => {
   const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-"));
   const taskFile = path.join(rootDir, "task.md");
@@ -281,6 +349,15 @@ test("cc team run records role events and terminal summary with injected runner"
       subtype: "init",
       session_id: `${request.role}-session`,
     };
+    if (request.role === "manager") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
     if (request.role === "developer") {
       yield {
         type: "assistant",
@@ -296,6 +373,7 @@ test("cc team run records role events and terminal summary with injected runner"
       };
       return;
     }
+    for (const event of passingCcBashVerificationEvents()) yield event;
     yield {
       type: "assistant",
       message: {
@@ -321,35 +399,246 @@ test("cc team run records role events and terminal summary with injected runner"
 
   assert.equal(result.status, "done");
   assert.equal(result.reason, "mock verified");
-  assert.deepEqual(requests.map((request) => request.role), ["developer", "tester"]);
+  assert.deepEqual(requests.map((request) => request.role), ["manager", "developer", "tester"]);
   assert.equal(requests[0].cwd, runDir);
-  assert.deepEqual(requests[0].tools, ["Read", "Write", "Edit", "AskUserQuestion"]);
-  assert.deepEqual(requests[0].allowedTools, ["Read", "Write", "Edit"]);
-  assert.equal(requests[0].maxTurns, 4);
-  assert.deepEqual(requests[1].tools, ["Read", "AskUserQuestion"]);
-  assert.deepEqual(requests[1].allowedTools, ["Read"]);
-  assert.equal(requests[1].maxTurns, 6);
-  assert.equal(requests[1].outputFormat.type, "json_schema");
-  assert.ok(requests[0].prompt.includes("Create a hello file."));
+  assert.deepEqual(requests[0].tools, ["LS", "Glob", "Grep", "Read", "AskUserQuestion"]);
+  assert.deepEqual(requests[0].allowedTools, ["LS", "Glob", "Grep", "Read"]);
+  assert.equal(requests[0].maxTurns, 14);
+  assert.equal(requests[0].outputFormat.type, "json_schema");
+  assert.deepEqual(requests[1].tools, ["LS", "Glob", "Grep", "Read", "Write", "Edit", "AskUserQuestion"]);
+  assert.deepEqual(requests[1].allowedTools, ["LS", "Glob", "Grep", "Read", "Write", "Edit"]);
+  assert.equal(requests[1].maxTurns, 80);
+  assert.deepEqual(requests[2].tools, ["LS", "Glob", "Grep", "Read", "Bash", "AskUserQuestion"]);
+  assert.deepEqual(requests[2].allowedTools, ["LS", "Glob", "Grep", "Read", "Bash"]);
+  assert.equal(requests[2].maxTurns, 20);
+  assert.equal(requests[2].outputFormat.type, "json_schema");
+  assert.match(requests[2].prompt, /stop immediately and return the JSON decision/);
+  assert.ok(requests[1].prompt.includes("Create a hello file."));
 
   const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
   assert.equal(summary.status, "done");
   assert.equal(summary.provider, "claude-code");
+  assert.equal(summary.metrics.roleTurns.manager, 1);
   assert.equal(summary.metrics.roleTurns.developer, 1);
   assert.equal(summary.metrics.roleTurns.tester, 1);
+  assert.equal(summary.lastManagerPlan.streams[0].id, "feature");
 
   const decision = JSON.parse(await readFile(path.join(runDir, "tester-decision.json"), "utf8"));
   assert.deepEqual(decision, { status: "done", reason: "mock verified" });
   const progress = await readFile(path.join(runDir, "progress.md"), "utf8");
-  assert.match(progress, /Developer started/);
+  assert.match(progress, /Manager started/);
+  assert.match(progress, /Developer started \(feature/);
   assert.match(progress, /Tester started/);
   assert.match(progress, /Status: done/);
   assert.match(progress, /Reason: mock verified/);
 
   const eventFiles = (await readdir(path.join(runDir, "session-log", "events"))).filter((entry) => entry.endsWith(".json"));
-  assert.equal(eventFiles.length, 2);
+  assert.equal(eventFiles.length, 3);
   const inflightFiles = (await readdir(path.join(runDir, "session-log", "inflight"))).filter((entry) => entry.endsWith(".json"));
-  assert.equal(inflightFiles.length, 2);
+  assert.equal(inflightFiles.length, 3);
+});
+
+test("cc team run uses target directory as SDK cwd while keeping protocol in run directory", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-target-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  const targetDir = path.join(rootDir, "target");
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(taskFile, "# Task\n\nUpdate the target repo.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    if (request.role === "manager") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
+    if (request.role === "tester") {
+      for (const event of passingCcBashVerificationEvents()) yield event;
+    }
+    const result = request.role === "tester"
+      ? '{"status":"done","reason":"target verified"}'
+      : "target updated";
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result,
+    };
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    targetDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.targetDir, targetDir);
+  assert.deepEqual(requests.map((r) => r.cwd), [targetDir, targetDir, targetDir]);
+  assert.match(requests[1].prompt, /current directory is the target repository/);
+  assert.match(requests[2].prompt, /Verify the target repository/);
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.targetDir, targetDir);
+  const progress = await readFile(path.join(runDir, "progress.md"), "utf8");
+  assert.match(progress, new RegExp(`Target: ${targetDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  await stat(path.join(runDir, "session-log", "events"));
+});
+
+test("cc team run refuses done when tester machine verification fails", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-verification-fail-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nMake a TypeScript change.\n", "utf8");
+
+  const runner = async function* (request) {
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    if (request.role === "manager") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
+    if (request.role === "tester") {
+      for (const event of failingCcBashVerificationEvents()) yield event;
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "tester-session",
+        result: '{"status":"done","reason":"looks good"}',
+      };
+      return;
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: "developer-session",
+      result: "implemented",
+    };
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "max_loops_reached");
+  assert.match(result.reason, /did not finish/);
+  const decision = JSON.parse(await readFile(path.join(runDir, "tester-decision.json"), "utf8"));
+  assert.equal(decision.status, "develop");
+  assert.match(decision.reason, /tester verification failed/);
+  assert.match(decision.reason, /error TS1234/);
+});
+
+test("cc team run rejects done when tester verification command is piped through head", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-truncated-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nMake a TypeScript change.\n", "utf8");
+
+  const runner = async function* (request) {
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: `${request.role}-session`,
+    };
+    if (request.role === "manager") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
+    if (request.role === "developer") {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "implemented" }] },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "developer-session",
+        result: "implemented",
+      };
+      return;
+    }
+    // Tester runs a verification command piped through head — this truncates output
+    // and can mask failures, so it must be treated as invalid verification.
+    yield {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu-bash-truncated",
+            name: "Bash",
+            input: { command: "npm run test:core 2>&1 | head -100" },
+          },
+        ],
+      },
+    };
+    yield {
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu-bash-truncated", content: "PASS", is_error: false }],
+      },
+    };
+    yield {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: '{"status":"done","reason":"looks good"}' }],
+      },
+    };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: "tester-session",
+      result: '{"status":"done","reason":"looks good"}',
+    };
+  };
+
+  const result = await runCcTeam({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    maxLoops: 1,
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "max_loops_reached");
+  assert.match(result.reason, /did not finish/);
+  const decision = JSON.parse(await readFile(path.join(runDir, "tester-decision.json"), "utf8"));
+  assert.equal(decision.status, "develop");
+  assert.match(decision.reason, /truncated|piped|head/);
 });
 
 test("cc team run surfaces SDK AskUserQuestion requests as ask_user", async () => {
@@ -359,6 +648,20 @@ test("cc team run surfaces SDK AskUserQuestion requests as ask_user", async () =
   await writeFile(taskFile, "# Task\n\nPick a database.\n", "utf8");
 
   const runner = async function* (request) {
+    if (request.role === "manager") {
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: `${request.role}-session`,
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
     request.interactionRequests.push({
       role: request.role,
       type: "ask_user",
@@ -410,6 +713,7 @@ test("cc team run surfaces SDK AskUserQuestion requests as ask_user", async () =
   assert.equal(interaction.input.questions[0].question, "Which database should I use?");
   const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
   assert.equal(summary.status, "ask_user");
+  assert.equal(summary.metrics.roleTurns.manager, 1);
   assert.equal(summary.metrics.roleTurns.developer, 1);
   assert.equal(summary.metrics.roleTurns.tester, 0);
 });
@@ -420,11 +724,11 @@ test("cc team run records blockers and failed summary when a role fails", async 
   const runDir = path.join(rootDir, "run");
   await writeFile(taskFile, "# Task\n\nCreate a hello file.\n", "utf8");
 
-  const runner = async function* () {
+  const runner = async function* (request) {
     yield {
       type: "system",
       subtype: "init",
-      session_id: "developer-session",
+      session_id: `${request.role}-session`,
     };
     throw new Error("cc sdk exploded");
   };
@@ -444,7 +748,8 @@ test("cc team run records blockers and failed summary when a role fails", async 
   const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
   assert.equal(summary.status, "failed");
   assert.match(summary.reason, /cc sdk exploded/);
-  assert.equal(summary.metrics.roleTurns.developer, 1);
+  assert.equal(summary.metrics.roleTurns.manager, 1);
+  assert.equal(summary.metrics.roleTurns.developer, 0);
   assert.equal(summary.metrics.roleTurns.tester, 0);
 
   const blockers = await readFile(path.join(runDir, "blockers.md"), "utf8");
@@ -475,6 +780,18 @@ test("cc-run --spec-dir builds task from cc-spec artifacts and runs developer/te
   const requests = [];
   const runner = async function* (request) {
     requests.push(request);
+    if (request.role === "manager") {
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: "manager-session",
+        result: MOCK_CC_MANAGER_PLAN_JSON,
+      };
+      return;
+    }
+    if (request.role === "tester") {
+      for (const event of passingCcBashVerificationEvents("node --test test/cli.test.mjs")) yield event;
+    }
     yield {
       type: "result",
       subtype: "success",
@@ -489,7 +806,7 @@ test("cc-run --spec-dir builds task from cc-spec artifacts and runs developer/te
 
   assert.equal(result.status, "done");
   assert.equal(result.reason, "greeting verified");
-  assert.deepEqual(requests.map((r) => r.role), ["developer", "tester"]);
+  assert.deepEqual(requests.map((r) => r.role), ["manager", "developer", "tester"]);
 
   const task = await readFile(path.join(ccRunDir, "task.md"), "utf8");
   assert.ok(task.includes("Development Task"));
@@ -500,7 +817,9 @@ test("cc-run --spec-dir builds task from cc-spec artifacts and runs developer/te
   const summary = JSON.parse(await readFile(path.join(ccRunDir, "run-summary.json"), "utf8"));
   assert.equal(summary.specDir, specRunDir);
   assert.equal(summary.status, "done");
+  assert.equal(summary.metrics.roleTurns.manager, 1);
   assert.equal(summary.metrics.roleTurns.developer, 1);
+  assert.equal(summary.metrics.roleTurns.tester, 1);
 });
 
 test("cc-run --spec-dir throws when agent-spec is missing or pending", async () => {
@@ -918,6 +1237,79 @@ test("cc spec quality gate accepts workflow-led user spec", async () => {
   const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
 
   assert.equal(result.status, "done");
+});
+
+test("cc spec quality gate accepts numbered agent headings and verify tables", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-spec-numbered-gate-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDesign a browser vocabulary game.\n", "utf8");
+
+  const numberedAgentSpec = [
+    "# Agent Spec",
+    "",
+    "Functional contract with constraints, tests, boundaries, and local-only identity isolation.",
+    "",
+    "## 1. API Contracts",
+    "",
+    "| Function | Input | Output | Error |",
+    "|----------|-------|--------|-------|",
+    "| loadState | none | GameState | corrupt JSON fallback |",
+    "",
+    "## 2. Data Model",
+    "",
+    "| Entity | Field | Type | Nullable |",
+    "|--------|-------|------|----------|",
+    "| GameState | currentScene | number | no |",
+    "",
+    "## 3. Error Handling",
+    "",
+    "| Case | Code | User message |",
+    "|------|------|--------------|",
+    "| Corrupt save | E001 | Save could not be loaded |",
+    "",
+    "## 4. Test Scenarios",
+    "",
+    "Given a learner starts the game, when they answer a word prompt, then feedback appears and state is saved.",
+    "",
+    "## 5. UI State Inventory",
+    "",
+    "| State | Trigger |",
+    "|-------|---------|",
+    "| title | first load |",
+  ].join("\n");
+  const verifyTableTasks = [
+    "# Tasks",
+    "",
+    "| ID | Task | Dependencies | Target File | Acceptance Criteria | verify |",
+    "|----|------|--------------|-------------|---------------------|--------|",
+    "| T1.1 | Create shell | None | index.html | Renders title | `node -e \"require('fs').readFileSync('index.html','utf8')\"` |",
+    "| T1.2 | Add state | T1.1 | index.html | Saves state | `node -e \"console.log('verify localStorage manually')\"` |",
+  ].join("\n");
+
+  const runner = async function* (request) {
+    let result = "ok";
+    if (request.role === "demo") {
+      await writeFile(path.join(request.cwd, "demo.html"), MINIMAL_DEMO_HTML, "utf8");
+    } else if (request.role === "product") {
+      result = "<product-brief.md>\n# Product Brief\n\nPrimary user, job-to-be-done, MVP loop, non-goals, acceptance criteria, metrics, constraints, and risks.\n</product-brief.md>\n<decision-log.md>\n# Decision Log\n\nConfirmed decisions, assumptions, and ask_user triggers.\n</decision-log.md>";
+    } else if (request.role === "research") {
+      result = COMPLETE_RESEARCH;
+    } else if (request.role === "architect") {
+      result = `<spec.md>\n# Spec\n\nFunctionality, technical stack, architecture, milestones, acceptance criteria, and verification approach.\n</spec.md>\n<agent-spec.md>\n${numberedAgentSpec}\n</agent-spec.md>\n<tasks.md>\n${verifyTableTasks}\n</tasks.md>`;
+    } else if (request.role === "reviewer") {
+      result = '{"status":"done","reason":"numbered headings and table verify rows are ready"}';
+    }
+    yield { type: "result", subtype: "success", session_id: `${request.role}-session`, result };
+  };
+
+  try {
+    const result = await runCcSpec({ taskFile, runDir, model: "MiniMax-M2.7", turnTimeoutMs: 1000, runner });
+
+    assert.equal(result.status, "done", result.reason);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("cc spec run surfaces AskUserQuestion as questions and interaction request", async () => {
@@ -1940,6 +2332,58 @@ test("status can emit machine-readable json", async () => {
     assert.equal(parsed.protocolHealth, "clean");
     assert.equal(parsed.recommendedAction, "export_workspace");
     assert.ok(parsed.commands.some((command) => command.includes("codex-gtd export-workspace")));
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status and report treat completed cc-spec runs as spec workflow artifacts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-cc-spec-"));
+
+  try {
+    const runDir = path.join(runsDir, "spec-run");
+    await mkdir(path.join(runDir, "session-log"), { recursive: true });
+    await writeFile(path.join(runDir, "task.md"), "# Task\n\nDesign a vocabulary game.\n", "utf8");
+    await writeFile(path.join(runDir, "progress.md"), "# CC Spec Progress\n\n## Finished\n\nStatus: done\nReason: ready\n", "utf8");
+    await writeFile(path.join(runDir, "blockers.md"), "# Blockers\n\nNone.\n", "utf8");
+    await writeFile(path.join(runDir, "product-brief.md"), "# Product Brief\n\nReady.\n", "utf8");
+    await writeFile(path.join(runDir, "decision-log.md"), "# Decision Log\n\nReady.\n", "utf8");
+    await writeFile(path.join(runDir, "demo.html"), "<!doctype html><title>Demo</title>\n", "utf8");
+    await writeFile(path.join(runDir, "research.md"), "# Research\n\nNo-authoritative-source.\n", "utf8");
+    await writeFile(path.join(runDir, "spec.md"), "# Spec\n\nReady.\n", "utf8");
+    await writeFile(path.join(runDir, "agent-spec.md"), "# Agent Spec\n\nReady.\n", "utf8");
+    await writeFile(path.join(runDir, "tasks.md"), "# Tasks\n\nReady.\n", "utf8");
+    await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      provider: "claude-code",
+      workflow: "cc-spec",
+      runDir,
+      status: "done",
+      reason: "ready",
+      model: "MiniMax-M2.7",
+      mode: "new",
+      startedAt: "2026-05-03T00:00:00.000Z",
+      endedAt: "2026-05-03T00:00:01.000Z",
+      durationMs: 1000,
+      turnTimeoutMs: 300000,
+      metrics: {
+        sessionLogEntries: 1,
+        roleTurns: { reviewer: 1 },
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
+    assert.equal(statusResult.status, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.protocolHealth, "clean");
+    assert.equal(status.failureCategory, "none");
+    assert.equal(status.recommendedAction, "inspect");
+
+    const report = await runReport({ runsDir });
+    assert.equal(report.protocolHealth.missingRequiredProtocolEntriesCount, 0);
+    assert.equal(report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount, 0);
+    assert.equal(report.protocolHealth.progressRunSummaryDriftCount, 0);
+    assert.equal(report.recentRuns[0].failureCategory, "none");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -4575,6 +5019,375 @@ test("promoteSnippetCandidate rejects same slug when metadata changes", async ()
         tags: ["edge-cases"],
       }),
       /Refusing to overwrite existing snippet/,
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent without --task exits 1 and prints missing task error", () => {
+  const result = runCli(["spec-agent"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /spec-agent requires --task <task-file>/);
+});
+
+test("spec-agent writes all required artifacts and returns JSON summary when --json is used", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  try {
+    await writeFile(taskFile, "# Task\n\nBuild a CLI tool that exports todo items from a JSON file to CSV format.\nThe tool must handle nested JSON, support field mapping via config, and include a test suite.\n", "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir, "--json"]);
+    assert.equal(result.status, 0);
+
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.status, "done");
+    assert.equal(parsed.runDir, runDir);
+    assert.deepEqual(parsed.artifacts, [
+      "task.md", "questions.md", "product-brief.md", "research.md",
+      "spec.md", "agent-spec.md", "tasks.md", "run-summary.json",
+    ]);
+
+    for (const artifact of parsed.artifacts) {
+      const content = await readFile(path.join(runDir, artifact), "utf8");
+      assert.ok(content.length > 0, `${artifact} should be non-empty`);
+    }
+
+    const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+    assert.equal(summary.schemaVersion, 1);
+    assert.equal(summary.workflow, "spec-agent");
+    assert.equal(summary.runDir, runDir);
+    assert.ok(summary.startedAt);
+    assert.ok(summary.endedAt);
+    assert.ok(summary.durationMs >= 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent ambiguous task writes concrete questions instead of only a complete spec", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-ambig-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  try {
+    await writeFile(taskFile, "implement foo", "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const questions = await readFile(path.join(runDir, "questions.md"), "utf8");
+    assert.ok(questions.includes("Questions"), "questions.md must contain Questions section");
+    assert.ok(
+      /scope|MVP|acceptance|criteria|verify|test/i.test(questions),
+      "questions.md must ask concrete clarifying questions",
+    );
+
+    const spec = await readFile(path.join(runDir, "spec.md"), "utf8");
+    assert.match(spec, /Pending/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent task mentioning competitor or API writes sourcing gaps into research.md", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-research-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  try {
+    await writeFile(taskFile, "# Task\n\nIntegrate with the Stripe API to process payments. Use the official Stripe SDK similar to how GitHub Actions uses their SDK.\n", "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const research = await readFile(path.join(runDir, "research.md"), "utf8");
+    assert.ok(research.includes("Research"), "research.md must contain Research section");
+    assert.ok(
+      /pending|verification|human|future agent/i.test(research),
+      "research.md must record sourcing gaps",
+    );
+    assert.ok(
+      /Stripe|GitHub/i.test(research),
+      "research.md must mention the referenced competitor/API",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent --target scans target repo read-only and includes repo summary in output artifacts", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-target-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  const targetDir = path.join(rootDir, "target-repo");
+
+  try {
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(path.join(targetDir, "package.json"), JSON.stringify({
+      name: "test-target",
+      version: "1.0.0",
+      scripts: { build: "tsc", test: "node --test" },
+      dependencies: { express: "^5.0.0" },
+    }, null, 2), "utf8");
+    await writeFile(path.join(targetDir, "README.md"), "# Test Target\n\nA target repository.\n", "utf8");
+    await writeFile(taskFile, "# Task\n\nAdd a new feature to this project.\n", "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--target", targetDir, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const productBrief = await readFile(path.join(runDir, "product-brief.md"), "utf8");
+    assert.ok(
+      /test-target|target-repo/i.test(productBrief),
+      "product-brief.md must include target repo context",
+    );
+
+    const research = await readFile(path.join(runDir, "research.md"), "utf8");
+    assert.ok(
+      /test-target|target-repo/i.test(research),
+      "research.md must include target repo summary",
+    );
+
+    const agentSpec = await readFile(path.join(runDir, "agent-spec.md"), "utf8");
+    assert.ok(
+      /test-target|target-repo/i.test(agentSpec),
+      "agent-spec.md must include target repo context",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent agent-spec.md includes development boundaries, acceptance criteria, interfaces/data flow, test requirements, and non-goals", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-agent-spec-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  try {
+    await writeFile(taskFile, "# Task\n\nBuild a CLI tool that parses JSON and outputs CSV.\n", "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const agentSpec = await readFile(path.join(runDir, "agent-spec.md"), "utf8");
+    assert.ok(
+      /development boundaries?|boundary|scope/i.test(agentSpec),
+      "agent-spec.md must include Development Boundaries section",
+    );
+    assert.ok(
+      /acceptance criteria?|验收|acceptance/i.test(agentSpec),
+      "agent-spec.md must include Acceptance Criteria section",
+    );
+    assert.ok(
+      /interfaces? and data flow|interface|data flow|API/i.test(agentSpec),
+      "agent-spec.md must include Interfaces and Data Flow section",
+    );
+    assert.ok(
+      /test requirements?|test|测试/i.test(agentSpec),
+      "agent-spec.md must include Test Requirements section",
+    );
+    assert.ok(
+      /non-goals?|non-goal/i.test(agentSpec),
+      "agent-spec.md must include Non-goals section",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent detailed game task produces no TBD and includes concrete game concepts", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-game-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  const detailedGameTask = `# Product Idea
+Design an MVP product spec for a male-oriented English-learning romance game.
+
+Target audience: male users.
+Main cast: female romance/companionship characters.
+Primary learning goal: English listening comprehension.
+Product balance: 50% game, 50% learning.
+Format: 2D Japanese-style romance visual novel with lightweight interaction.
+
+The player can enter a custom opening scenario at the start of the game.
+The system should analyze the input and generate:
+- world / setting
+- player identity
+- female character roster
+- personality and emotional arc for each character
+
+MVP should focus on:
+- listen and choose the meaning
+- listen and infer emotion / intent
+
+Failure is allowed. Replaying listening audio should carry a light relationship / reward cost.
+`;
+
+  try {
+    await writeFile(taskFile, detailedGameTask, "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    // product-brief.md: no TBD
+    const productBrief = await readFile(path.join(runDir, "product-brief.md"), "utf8");
+    assert.ok(
+      !/\bTBD\b/.test(productBrief),
+      "product-brief.md must not contain TBD placeholders",
+    );
+    assert.ok(
+      /primary user|audience|target/i.test(productBrief),
+      "product-brief.md must specify primary users",
+    );
+    assert.ok(
+      /mvp scope|scope|MVP/i.test(productBrief),
+      "product-brief.md must include MVP scope",
+    );
+    assert.ok(
+      /listening|comprehension|learning/i.test(productBrief),
+      "product-brief.md must capture the listening learning goal",
+    );
+    assert.ok(
+      /affection|trust|feedback|warm/i.test(productBrief),
+      "product-brief.md must capture affection/reward system",
+    );
+
+    // spec.md: no TBD
+    const spec = await readFile(path.join(runDir, "spec.md"), "utf8");
+    assert.ok(
+      !/\bTBD\b/.test(spec),
+      "spec.md must not contain TBD placeholders",
+    );
+    assert.ok(
+      /game experience|core loop|character direction|MVP scope|milestone/i.test(spec),
+      "spec.md must include game experience, core loop, character direction, MVP scope",
+    );
+
+    // agent-spec.md: no TBD, includes game-specific sections
+    const agentSpec = await readFile(path.join(runDir, "agent-spec.md"), "utf8");
+    assert.ok(
+      !/\bTBD\b/.test(agentSpec),
+      "agent-spec.md must not contain TBD placeholders",
+    );
+    assert.ok(
+      /page structure|screen|state flow|data model/i.test(agentSpec),
+      "agent-spec.md must include page structure and data model",
+    );
+    assert.ok(
+      /LLM adapter|TTS adapter|image adapter|interface boundary/i.test(agentSpec),
+      "agent-spec.md must include LLM/TTS/image adapter interface boundaries",
+    );
+    assert.ok(
+      /error handling|graceful|failure|degradation/i.test(agentSpec),
+      "agent-spec.md must include error handling coverage",
+    );
+    assert.ok(
+      /test scenario|scenario|mvp vs|post-mvp/i.test(agentSpec),
+      "agent-spec.md must include test scenarios and MVP boundaries",
+    );
+
+    // tasks.md: includes game-specific concrete tasks with verify:
+    const tasks = await readFile(path.join(runDir, "tasks.md"), "utf8");
+    assert.ok(
+      !/\bTBD\b/.test(tasks),
+      "tasks.md must not contain TBD placeholders",
+    );
+    assert.ok(
+      /verify\s*:/i.test(tasks),
+      "tasks.md must include verify: commands",
+    );
+    assert.ok(
+      /visual novel|shell|scaffold|web/i.test(tasks),
+      "tasks.md must include scaffold/visual novel task",
+    );
+    assert.ok(
+      /TTS|listening|audio/i.test(tasks),
+      "tasks.md must include TTS/listening scene task",
+    );
+    assert.ok(
+      /affection|retry|failure|cost/i.test(tasks),
+      "tasks.md must include affection/retry/failure task",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent detects absolute local path in task and inspects it when it exists", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-abspath-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  // Create a synthetic "local repo" directory with package.json
+  const fakeRepo = path.join(rootDir, "fake-repo");
+  await mkdir(fakeRepo, { recursive: true });
+  await writeFile(path.join(fakeRepo, "package.json"), JSON.stringify({
+    name: "img-video-content",
+    scripts: { build: "tsc", test: "node --test" },
+    dependencies: { "minimax-api": "^1.0.0" },
+  }, null, 2), "utf8");
+  await writeFile(path.join(fakeRepo, "README.md"), "MiniMax API for text generation, TTS, and image synthesis.", "utf8");
+
+  // Task references the absolute fake-repo path
+  const taskWithAbsPath = `# Task
+Implement a feature using the following local repository:
+/Users/rony/me/repo/img_video_content
+
+This repo contains LLM, TTS, and image generation capabilities.
+`;
+
+  try {
+    await writeFile(taskFile, taskWithAbsPath, "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const research = await readFile(path.join(runDir, "research.md"), "utf8");
+    // The path in the task should appear as a detected local reference
+    assert.ok(
+      /local reference path|Local path verified|img_video_content/i.test(research),
+      "research.md must include the absolute local path from the task",
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("spec-agent preserves multi-word product name 'Love and Deepspace' instead of splitting into 'Love'", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-spec-agent-love-deepspace-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+
+  const taskWithCompetitor = `# Task
+Design an English-learning romance game inspired by Love and Deepspace.
+`;
+
+  try {
+    await writeFile(taskFile, taskWithCompetitor, "utf8");
+
+    const result = runCli(["spec-agent", "--task", taskFile, "--run-dir", runDir]);
+    assert.equal(result.status, 0);
+
+    const research = await readFile(path.join(runDir, "research.md"), "utf8");
+    // Must have "Love and Deepspace" as a phrase, not just "Love"
+    assert.ok(
+      /Love and Deepspace/i.test(research),
+      "research.md must include 'Love and Deepspace' as an intact phrase, not split",
+    );
+    // Must NOT have just "Love" as the only competitor name
+    const lines = research.split("\n");
+    const competitorLines = lines.filter((l) => /competitor|alternative/i.test(l));
+    const loveOnlyLines = competitorLines.filter((l) => /\bLove\b/.test(l) && !/\bDeepspace\b/.test(l));
+    assert.ok(
+      loveOnlyLines.length === 0,
+      "research.md must not list 'Love' alone as a competitor; 'Love and Deepspace' must be preserved",
+    );
+    assert.ok(
+      !/companionshi/i.test(research),
+      "research.md must not list lowercase descriptive words such as companionship as competitors",
     );
   } finally {
     await rm(rootDir, { recursive: true, force: true });

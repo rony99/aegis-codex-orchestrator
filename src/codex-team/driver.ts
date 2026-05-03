@@ -52,6 +52,30 @@ export const RUN_PROTOCOL_ENTRIES = [
   "run-summary.json",
 ] as const;
 
+const CC_SPEC_BASE_PROTOCOL_ENTRIES = [
+  "progress.md",
+  "blockers.md",
+  "session-log/",
+  "run-summary.json",
+] as const;
+
+const CC_SPEC_ASK_USER_PROTOCOL_ENTRIES = [
+  ...CC_SPEC_BASE_PROTOCOL_ENTRIES,
+  "interaction-request.json",
+] as const;
+
+const CC_SPEC_DONE_PROTOCOL_ENTRIES = [
+  ...CC_SPEC_BASE_PROTOCOL_ENTRIES,
+  "task.md",
+  "product-brief.md",
+  "decision-log.md",
+  "demo.html",
+  "research.md",
+  "spec.md",
+  "agent-spec.md",
+  "tasks.md",
+] as const;
+
 export const API_PROBE_README_SECTIONS = [
   "Probe Decision",
   "External Dependencies",
@@ -1633,9 +1657,10 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
       }
     }
 
-    const runProtocol = await validateRunProtocol(summary.runDir);
-    const apiProbesReadme = await validateApiProbesReadme(summary.runDir);
-    const progressDrift = await compareProgressRunSummary(summary.runDir);
+    const isCcSpec = isCcSpecWorkflowSummary(summary);
+    const runProtocol = await validateRunProtocol(summary.runDir, requiredProtocolEntriesForSummary(summary));
+    const apiProbesReadme = isCcSpec ? cleanApiProbeReadmeValidation() : await validateApiProbesReadme(summary.runDir);
+    const progressDrift = isCcSpec ? cleanProgressDriftReport() : await compareProgressRunSummary(summary.runDir);
     const runProtocolHealth = {
       missingRequiredEntries: !runProtocol.ok,
       invalidApiProbesReadmeSections: !apiProbesReadme.ok,
@@ -1883,11 +1908,12 @@ function buildRunRerunCommand(
 
 export async function buildRunStatus(options: RunStatusOptions): Promise<RunStatus> {
   const runDir = path.resolve(options.runDir);
-  const [summary, runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
-    readRunSummary(runDir),
-    validateRunProtocol(runDir),
-    validateApiProbesReadme(runDir),
-    compareProgressRunSummary(runDir),
+  const summary = await readRunSummary(runDir);
+  const isCcSpec = isCcSpecWorkflowSummary(summary);
+  const [runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
+    validateRunProtocol(runDir, requiredProtocolEntriesForSummary(summary)),
+    isCcSpec ? cleanApiProbeReadmeValidation() : validateApiProbesReadme(runDir),
+    isCcSpec ? cleanProgressDriftReport() : compareProgressRunSummary(runDir),
     readLatestInflightDiagnostic(runDir),
   ]);
 
@@ -1972,6 +1998,24 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
       diagnostic,
       recommendedAction: "inspect",
       summary: "Run has no terminal summary and no active inflight role diagnostic. Inspect progress.md and session-log/.",
+      commands: [],
+    };
+  }
+
+  if (isCcSpec) {
+    return {
+      runDir,
+      terminalStatus: summary.status,
+      failureCategory: normalizeSummaryFailureCategory(summary),
+      reason: summary.reason,
+      terminalRole: summary.terminalRole,
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "inspect",
+      summary: summary.status === "done"
+        ? "cc-spec run is done. Inspect spec.md, agent-spec.md, tasks.md, and demo.html for the generated planning package."
+        : "cc-spec run is not a workspace export run. Inspect the spec artifacts and interaction request files.",
       commands: [],
     };
   }
@@ -2761,6 +2805,34 @@ export async function validateRunProtocol(
   };
 }
 
+function requiredProtocolEntriesForSummary(summary: RunSummary | undefined): readonly string[] {
+  if (!summary || !isCcSpecWorkflowSummary(summary)) return RUN_PROTOCOL_ENTRIES;
+  if (summary.status === "done") return CC_SPEC_DONE_PROTOCOL_ENTRIES;
+  if (summary.status === "ask_user") return CC_SPEC_ASK_USER_PROTOCOL_ENTRIES;
+  return CC_SPEC_BASE_PROTOCOL_ENTRIES;
+}
+
+function isCcSpecWorkflowSummary(summary: RunSummary | undefined): boolean {
+  if (!summary || typeof summary !== "object") return false;
+  return (summary as RunSummary & { workflow?: unknown }).workflow === "cc-spec";
+}
+
+function cleanApiProbeReadmeValidation(): ApiProbeReadmeValidation {
+  return {
+    ok: true,
+    missingSections: [],
+    presentSections: [],
+  };
+}
+
+function cleanProgressDriftReport(): ProtocolDriftReport {
+  return {
+    ok: true,
+    mismatches: [],
+    details: [],
+  };
+}
+
 export async function validateApiProbesReadme(
   runDir: string,
   requiredSections: readonly string[] = API_PROBE_README_SECTIONS,
@@ -3144,6 +3216,7 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
 }
 
 function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
+  if (isCcSpecWorkflowSummary(summary) && summary.status === "done") return "none";
   const normalized = normalizeFailureCategory(summary.failureCategory);
   if (normalized !== "role_failed" && normalized !== "observer_failed") return normalized;
 

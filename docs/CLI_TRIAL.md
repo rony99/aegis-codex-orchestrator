@@ -78,10 +78,12 @@ Expected result:
 ## 4. Run a Small CC Team Task
 
 `cc-run` is the experimental Claude Code SDK workflow. It is intentionally
-smaller than the Codex team loop: one developer turn writes under `workspace/`,
-one tester turn verifies the files and returns structured JSON. Use this when
-you want to validate Claude Code SDK connectivity and inspect what CC is doing
-through `session-log/events/` and `session-log/inflight/`.
+smaller than the Codex team loop: one developer turn edits the current work
+scope, one tester turn verifies with read tools plus non-destructive Bash
+commands, and `cc-run` accepts `done` only when machine verification evidence is
+present. Without `--target`, developer output stays under the run directory
+`workspace/`. With `--target <repo-dir>`, SDK roles run in the target repository
+while `--run-dir` remains the diagnostics/protocol directory.
 
 Set Anthropic-compatible environment variables first. Use real values in your
 shell only; do not write tokens into repository files.
@@ -128,13 +130,28 @@ Expected result:
 - `run-summary.json` has `provider: "claude-code"` and terminal `status`.
 - `workspace/cc-smoke.txt` exists when the run is `done`.
 - `tester-decision.json` records the tester's `done`, `develop`, or `ask_user`
-  decision.
+  decision. A `done` decision requires successful Bash verification evidence
+  such as `npm run typecheck`, `npm run test:core`, `npm run build`, or
+  `git diff --check`.
 - `session-log/events/` contains ordered Claude Code SDK events for each role
   turn.
 - `session-log/inflight/` contains latest role diagnostics with the role, model,
   status, classification, and detail.
 - `interaction-request.json` exists only when Claude Code SDK asks for user input
   or an unapproved permission.
+
+For existing-repo changes, add `--target <repo-dir>`:
+
+```bash
+node dist/cli.js cc-run \
+  --task /tmp/codex-gtd-cc-task.md \
+  --target /path/to/repo \
+  --run-dir runs/manual-cc-target \
+  --model "$ANTHROPIC_MODEL" \
+  --turn-timeout-ms 900000 \
+  --max-loops 2 \
+  --json
+```
 
 ## 5. Run a Small CC Spec Review
 
@@ -186,7 +203,44 @@ Expected result:
   from the first missing or invalid artifact stage, or runs reviewer when all
   core spec artifacts already exist.
 
-## 6. Inspect Codex Team Status
+## 5b. Run spec-agent (Local, No SDK)
+
+`spec-agent` is a lightweight local spec artifact generator. It does not call any SDK (Codex SDK, Claude Code SDK, or any network API). It runs deterministically in TypeScript and writes structured artifacts that can be handed to later development agents.
+
+```bash
+cat > /tmp/codex-gtd-spec-agent-task.md <<'EOF'
+Build a CLI tool that exports JSON to CSV format.
+The tool must handle nested JSON, support field mapping, and include tests.
+EOF
+
+node dist/cli.js spec-agent \
+  --task /tmp/codex-gtd-spec-agent-task.md \
+  --run-dir runs/manual-spec-agent \
+  --json
+```
+
+Expected result:
+
+- All 8 artifacts are written: `task.md`, `questions.md`, `product-brief.md`, `research.md`, `spec.md`, `agent-spec.md`, `tasks.md`, `run-summary.json`.
+- `run-summary.json` has `workflow: "spec-agent"`, `schemaVersion: 1`, and complete timing fields.
+- `questions.md` contains "No clarifying questions" when the task is detailed.
+- `research.md` records competitor/API/package references as pending verification.
+
+With `--target`:
+
+```bash
+node dist/cli.js spec-agent \
+  --task /tmp/codex-gtd-spec-agent-task.md \
+  --target . \
+  --run-dir runs/manual-spec-agent-target \
+  --json
+```
+
+The target repo is scanned read-only. `product-brief.md`, `research.md`, and `agent-spec.md` include the target summary. The target is never modified.
+
+V1 limitation: `spec-agent` does not perform live web research. All external sources are recorded as pending human or future-agent verification.
+
+## 7. Inspect Codex Team Status
 
 ```bash
 node dist/cli.js status --run-dir runs/manual-cli-smoke --json
@@ -201,7 +255,7 @@ Use these fields first:
 - `recommendedAction`: the next operator action, such as `resume_sdk`,
   `export_workspace`, `rerun`, or `inspect`.
 
-## 6. Resume or Export Codex Team Output
+## 8. Resume or Export Codex Team Output
 
 If status recommends SDK resume:
 
@@ -240,7 +294,7 @@ node dist/cli.js apply-workspace \
   --write
 ```
 
-## 7. Local Verification Gates
+## 8. Local Verification Gates
 
 Run these before treating a CLI change as ready:
 

@@ -9,11 +9,27 @@ const DEFAULT_CC_MODEL = "MiniMax-M2.7";
 const DEFAULT_RUNS_DIR = "runs";
 const DEFAULT_MAX_LOOPS = 2;
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
-const DEVELOPER_MAX_TURNS = 4;
-const TESTER_MAX_TURNS = 6;
+const MANAGER_MAX_TURNS = 14;
+const DEVELOPER_MAX_TURNS = 80;
+const TESTER_MAX_TURNS = 20;
 const ASK_USER_TOOL = "AskUserQuestion";
 
-type CcTeamWorkerRole = "developer" | "tester";
+/** Up to three developer passes: foundation → feature work → integration & verification prep. */
+export type CcWorkStreamId = "foundation" | "feature" | "integration";
+
+export type CcWorkStream = {
+  id: CcWorkStreamId;
+  title: string;
+  focus: string;
+  out_of_scope: string;
+};
+
+export type CcManagerPlan = {
+  streams: CcWorkStream[];
+  notes?: string;
+};
+
+type CcTeamWorkerRole = "manager" | "developer" | "tester";
 type CcRole = CcTeamWorkerRole | CcSpecRole;
 type CcTeamStatus = "done" | "ask_user" | "max_loops_reached" | "failed";
 
@@ -47,6 +63,7 @@ export type CcRoleRunner = (request: CcRoleRunRequest) => AsyncIterable<SDKMessa
 export type CcTeamRunOptions = {
   taskFile?: string;
   specDir?: string;
+  targetDir?: string;
   runDir?: string;
   runsDir?: string;
   model?: string;
@@ -69,6 +86,7 @@ export type CcSpecRunOptions = {
 
 export type CcTeamRunResult = {
   runDir: string;
+  targetDir?: string;
   status: CcTeamStatus;
   reason?: string;
   model: string;
@@ -120,6 +138,7 @@ type CcTeamRunSummary = {
   model: string;
   taskFile?: string;
   specDir?: string;
+  targetDir?: string;
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -129,6 +148,7 @@ type CcTeamRunSummary = {
     sessionLogEntries: number;
     roleTurns: Record<CcTeamWorkerRole, number>;
   };
+  lastManagerPlan?: CcManagerPlan;
 };
 
 type CcSpecRunSummary = {
@@ -165,8 +185,36 @@ const CC_TESTER_DECISION_OUTPUT_FORMAT: OutputFormat = {
   },
 };
 
+const CC_MANAGER_PLAN_OUTPUT_FORMAT: OutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      streams: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", enum: ["foundation", "feature", "integration"] },
+            title: { type: "string" },
+            focus: { type: "string" },
+            out_of_scope: { type: "string" },
+          },
+          required: ["id", "title", "focus", "out_of_scope"],
+          additionalProperties: false,
+        },
+      },
+      notes: { type: "string" },
+    },
+    required: ["streams"],
+    additionalProperties: false,
+  },
+};
+
 // Matches task IDs in checkbox lists (- [ ] T1), table cells (| T1 |), markdown headers (## T1), or bold labels (**ID:** T1).
-const TASK_ID_PATTERN = /- \[[ x]\]\s*T\d+|\|\s*T\d+\s*\||\|\s*[^|\n]+\s*\|\s*T\d+\s*\||##\s+T\d+\b|\*\*ID:\*\*\s*T\d+/i;
+const TASK_ID_PATTERN = /- \[[ x]\]\s*T\d+(?:\.\d+)?|\|\s*T\d+(?:\.\d+)?\s*\||\|\s*[^|\n]+\s*\|\s*T\d+(?:\.\d+)?\s*\||##\s+T\d+(?:\.\d+)?\b|\*\*ID:\*\*\s*T\d+(?:\.\d+)?/i;
 
 const CC_SPEC_REVIEWER_DECISION_OUTPUT_FORMAT: OutputFormat = {
   type: "json_schema",
@@ -193,38 +241,79 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
   const maxLoops = options.maxLoops ?? DEFAULT_MAX_LOOPS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
   const runDir = path.resolve(options.runDir ?? createCcRunDirectoryName(options.runsDir ?? DEFAULT_RUNS_DIR));
+  const targetDir = options.targetDir ? path.resolve(options.targetDir) : undefined;
+  const executionDir = targetDir ?? runDir;
   const startedAt = new Date().toISOString();
   const startedAtMs = Date.now();
-  const roleTurns: Record<CcTeamWorkerRole, number> = { developer: 0, tester: 0 };
+  const roleTurns: Record<CcTeamWorkerRole, number> = { manager: 0, developer: 0, tester: 0 };
   const runner = options.runner ?? defaultCcRoleRunner;
 
-  await initializeCcRunProtocol({ runDir, task, model, startedAt, specDir: options.specDir ? path.resolve(options.specDir) : undefined });
+  await initializeCcRunProtocol({ runDir, task, model, startedAt, specDir: options.specDir ? path.resolve(options.specDir) : undefined, targetDir });
 
   let finalStatus: CcTeamStatus = "max_loops_reached";
   let finalReason = `cc team did not finish within ${maxLoops} loop(s).`;
   let sessionLogEntries = 0;
+  let lastManagerPlan: CcManagerPlan | undefined;
+  let testerRepairHint = "";
 
   try {
     for (let loop = 1; loop <= maxLoops; loop += 1) {
-      await appendCcProgress(runDir, `\n## Loop ${loop}\n\nDeveloper started.\n`);
-      roleTurns.developer += 1;
-      const developerTurn = await runCcRole({
-        role: "developer",
+      await appendCcProgress(runDir, `\n## Loop ${loop}\n\nManager started.\n`);
+      roleTurns.manager += 1;
+      const managerTurn = await runCcRole({
+        role: "manager",
         model,
         runDir,
-        prompt: buildCcDeveloperPrompt(task, loop),
+        cwd: executionDir,
+        prompt: buildCcManagerPrompt({ task, loop, targetDir, testerRepairHint }),
         runner,
         turnTimeoutMs,
       });
       sessionLogEntries += 1;
-      const developerInteraction = firstAskUserInteraction(developerTurn.interactionRequests);
-      if (developerInteraction) {
+      const managerInteraction = firstAskUserInteraction(managerTurn.interactionRequests);
+      if (managerInteraction) {
         finalStatus = "ask_user";
-        finalReason = summarizeCcInteraction(developerInteraction);
+        finalReason = summarizeCcInteraction(managerInteraction);
         await appendCcBlocker(runDir, finalReason);
-        await writeCcInteractionRequest(runDir, developerInteraction);
+        await writeCcInteractionRequest(runDir, managerInteraction);
         break;
       }
+
+      let plan: CcManagerPlan;
+      try {
+        plan = parseCcManagerPlan(managerTurn.finalResponse);
+      } catch (error) {
+        const detail = summarizeError(error);
+        await appendCcBlocker(runDir, `manager plan invalid: ${detail}`);
+        plan = fallbackCcManagerPlan();
+      }
+      lastManagerPlan = plan;
+      await writeFile(path.join(runDir, "manager-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+
+      for (const stream of plan.streams) {
+        await appendCcProgress(runDir, `\nDeveloper started (${stream.id}: ${stream.title}).\n`);
+        roleTurns.developer += 1;
+        const developerTurn = await runCcRole({
+          role: "developer",
+          model,
+          runDir,
+          cwd: executionDir,
+          prompt: buildCcDeveloperStreamPrompt({ task, loop, stream, plan, targetDir, testerRepairHint }),
+          runner,
+          turnTimeoutMs,
+        });
+        sessionLogEntries += 1;
+        const developerInteraction = firstAskUserInteraction(developerTurn.interactionRequests);
+        if (developerInteraction) {
+          finalStatus = "ask_user";
+          finalReason = summarizeCcInteraction(developerInteraction);
+          await appendCcBlocker(runDir, finalReason);
+          await writeCcInteractionRequest(runDir, developerInteraction);
+          break;
+        }
+      }
+
+      if (finalStatus === "ask_user") break;
 
       await appendCcProgress(runDir, `\nTester started.\n`);
       roleTurns.tester += 1;
@@ -232,7 +321,8 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
         role: "tester",
         model,
         runDir,
-        prompt: buildCcTesterPrompt(task, loop),
+        cwd: executionDir,
+        prompt: buildCcTesterPrompt(task, loop, targetDir, lastManagerPlan),
         runner,
         turnTimeoutMs,
       });
@@ -247,6 +337,7 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
       }
 
       const decision = parseCcTesterDecision(testerTurn.finalResponse);
+      applyCcTesterVerificationGate(decision, testerTurn.events);
       await writeFile(path.join(runDir, "tester-decision.json"), `${JSON.stringify(decision, null, 2)}\n`, "utf8");
 
       if (decision.status === "done") {
@@ -262,7 +353,8 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
         break;
       }
 
-      await appendCcProgress(runDir, `\nTester requested another developer pass: ${decision.reason}\n`);
+      testerRepairHint = decision.reason;
+      await appendCcProgress(runDir, `\nTester requested another development pass: ${decision.reason}\n`);
     }
   } catch (error) {
     finalStatus = "failed";
@@ -282,6 +374,7 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
     model,
     taskFile,
     specDir: options.specDir ? path.resolve(options.specDir) : undefined,
+    targetDir,
     startedAt,
     endedAt,
     durationMs,
@@ -291,10 +384,11 @@ export async function runCcTeam(options: CcTeamRunOptions): Promise<CcTeamRunRes
       sessionLogEntries,
       roleTurns,
     },
+    lastManagerPlan,
   };
   await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 
-  return { runDir, status: finalStatus, reason: finalReason, model, durationMs };
+  return { runDir, targetDir, status: finalStatus, reason: finalReason, model, durationMs };
 }
 
 export async function runCcSpec(options: CcSpecRunOptions): Promise<CcSpecRunResult> {
@@ -460,6 +554,151 @@ export function parseCcSpecReviewerDecision(finalResponse: string): CcSpecReview
   return parseDecisionJson<CcSpecReviewerDecision>(finalResponse, "cc-spec reviewer", ["done", "ask_user"]);
 }
 
+const CC_STREAM_ORDER: readonly CcWorkStreamId[] = ["foundation", "feature", "integration"];
+
+export function parseCcManagerPlan(finalResponse: string): CcManagerPlan {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(finalResponse);
+  } catch {
+    throw new Error(`cc manager returned non-JSON response: ${finalResponse}`);
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`cc manager returned non-JSON response: ${finalResponse}`);
+  }
+  const root = parsed as Record<string, unknown>;
+  if (!Array.isArray(root.streams) || root.streams.length === 0 || root.streams.length > 3) {
+    throw new Error(`cc manager plan must include 1-3 streams: ${finalResponse}`);
+  }
+
+  const streams: CcWorkStream[] = [];
+  const seen = new Set<CcWorkStreamId>();
+  for (const item of root.streams) {
+    if (!item || typeof item !== "object") throw new Error(`cc manager stream invalid: ${finalResponse}`);
+    const row = item as Record<string, unknown>;
+    const id = row.id;
+    if (id !== "foundation" && id !== "feature" && id !== "integration") {
+      throw new Error(`cc manager stream id must be foundation|feature|integration: ${finalResponse}`);
+    }
+    if (seen.has(id)) throw new Error(`cc manager duplicate stream id ${id}: ${finalResponse}`);
+    seen.add(id);
+    const title = typeof row.title === "string" ? row.title.trim() : "";
+    const focus = typeof row.focus === "string" ? row.focus.trim() : "";
+    const out_of_scope = typeof row.out_of_scope === "string" ? row.out_of_scope.trim() : "";
+    if (!title || !focus || !out_of_scope) {
+      throw new Error(`cc manager stream missing title, focus, or out_of_scope: ${finalResponse}`);
+    }
+    streams.push({ id, title, focus, out_of_scope });
+  }
+
+  streams.sort((a, b) => CC_STREAM_ORDER.indexOf(a.id) - CC_STREAM_ORDER.indexOf(b.id));
+
+  const notes = typeof root.notes === "string" ? root.notes.trim() : undefined;
+  return { streams, notes: notes || undefined };
+}
+
+function fallbackCcManagerPlan(): CcManagerPlan {
+  return {
+    streams: [
+      {
+        id: "feature",
+        title: "Full delivery",
+        focus: "Implement the complete task in one pass. If the task already lists phases, follow that order within this pass.",
+        out_of_scope: "None — single-stream fallback after an invalid manager plan.",
+      },
+    ],
+    notes: "fallback single stream",
+  };
+}
+
+function applyCcTesterVerificationGate(decision: CcTesterDecision, events: unknown[]): void {
+  if (decision.status !== "done") return;
+
+  const verification = collectCcTesterVerification(events);
+  if (verification.failed.length > 0) {
+    decision.status = "develop";
+    decision.reason = `tester verification failed: ${verification.failed.join("; ")}`;
+    return;
+  }
+
+  if (verification.passed.length === 0) {
+    decision.status = "develop";
+    decision.reason = "tester did not run any machine verification command, so cc-run cannot mark the task done";
+  }
+}
+
+function collectCcTesterVerification(events: unknown[]): { passed: string[]; failed: string[] } {
+  const bashToolUses = new Map<string, string>();
+  const passed: string[] = [];
+  const failed: string[] = [];
+
+  for (const event of events) {
+    for (const item of readMessageContent(event)) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      if (record.type === "tool_use" && record.name === "Bash" && typeof record.id === "string") {
+        bashToolUses.set(record.id, readBashCommand(record.input));
+        continue;
+      }
+      if (record.type !== "tool_result") continue;
+      const toolUseId = typeof record.tool_use_id === "string" ? record.tool_use_id : undefined;
+      if (!toolUseId || !bashToolUses.has(toolUseId)) continue;
+      const command = bashToolUses.get(toolUseId) ?? "Bash verification";
+      const content = stringifyToolResultContent(record.content);
+      const errored = record.is_error === true || looksLikeFailedVerification(content);
+      if (errored) {
+        failed.push(`${command}: ${firstNonEmptyLine(content) || "failed"}`);
+      } else {
+        // Reject truncated/piped core verification commands — they can mask failures.
+        const truncatedReason = detectTruncatedCommand(command);
+        if (truncatedReason) {
+          failed.push(`${command}: truncated/piped command is invalid for verification — ${truncatedReason}`);
+        } else {
+          passed.push(command);
+        }
+      }
+    }
+  }
+
+  return { passed, failed };
+}
+
+// Commands that can truncate or filter output and mask verification failures.
+const OUTPUT_TRUNCATION_PATTERNS = /\|\s*(?:head|tail|sed\s+-n|awk|grep\s+-[0-9a-zA-Z]|cut|less|more)\b/;
+const CORE_VERIFICATION_COMMAND_PATTERN = /\b(npm\s+run\s+(?:typecheck|test(?::[a-z0-9_-]+)?|build)|node\s+--test|git\s+diff\s+--check|tsc\b)/i;
+
+function detectTruncatedCommand(command: string): string | undefined {
+  const trimmed = command.trim();
+  if (CORE_VERIFICATION_COMMAND_PATTERN.test(trimmed) && OUTPUT_TRUNCATION_PATTERNS.test(trimmed)) {
+    return "pipe to head/tail/sed -n/awk/grep/cut/less/more can truncate output and mask failures";
+  }
+  return undefined;
+}
+
+function readBashCommand(input: unknown): string {
+  if (!input || typeof input !== "object") return "Bash verification";
+  const command = (input as Record<string, unknown>).command;
+  return typeof command === "string" && command.trim() ? command.trim() : "Bash verification";
+}
+
+function stringifyToolResultContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string") {
+        return (item as { text: string }).text;
+      }
+      return JSON.stringify(item);
+    }).join("\n");
+  }
+  return content === undefined ? "" : JSON.stringify(content);
+}
+
+function looksLikeFailedVerification(content: string): boolean {
+  return /\b(error TS\d+|failed tests?|tests? failed|ERR!|AssertionError|not ok|exit code\s*[:=]?\s*[1-9]|Command failed)\b/i.test(content);
+}
+
 function parseDecisionJson<T extends { status: string; reason: string }>(
   finalResponse: string,
   agentLabel: string,
@@ -500,12 +739,19 @@ async function initializeCcRunProtocol(input: {
   model: string;
   startedAt: string;
   specDir?: string;
+  targetDir?: string;
 }): Promise<void> {
   await mkdir(path.join(input.runDir, "workspace"), { recursive: true });
   await ensureSessionLogDirs(input.runDir);
-  const progressHeader = input.specDir
-    ? `# CC Team Progress\n\nModel: ${input.model}\nSpec: ${input.specDir}\nStarted: ${input.startedAt}\n`
-    : `# CC Team Progress\n\nModel: ${input.model}\nStarted: ${input.startedAt}\n`;
+  const progressLines = [
+    "# CC Team Progress",
+    "",
+    `Model: ${input.model}`,
+  ];
+  if (input.specDir) progressLines.push(`Spec: ${input.specDir}`);
+  if (input.targetDir) progressLines.push(`Target: ${input.targetDir}`);
+  progressLines.push(`Started: ${input.startedAt}`, "");
+  const progressHeader = `${progressLines.join("\n")}\n`;
   await Promise.all([
     writeFile(path.join(input.runDir, "task.md"), input.task, "utf8"),
     writeFile(path.join(input.runDir, "blockers.md"), "", "utf8"),
@@ -576,6 +822,7 @@ async function runCcRole(input: {
   role: CcRole;
   model: string;
   runDir: string;
+  cwd?: string;
   prompt: string;
   runner: CcRoleRunner;
   turnTimeoutMs: number;
@@ -612,7 +859,7 @@ async function runCcRole(input: {
     for await (const event of input.runner({
       role: input.role,
       model: input.model,
-      cwd: input.runDir,
+      cwd: input.cwd ?? input.runDir,
       prompt: input.prompt,
       systemPrompt: buildCcSystemPrompt(input.role),
       maxTurns: maxTurnsForRole(input.role),
@@ -720,13 +967,25 @@ function buildCcSystemPrompt(role: CcRole): string {
   if (isCcSpecRole(role)) {
     return buildCcSpecSystemPrompt(role);
   }
-  if (role === "developer") {
-    return "You are the cc developer. Implement only inside the current run directory, preferably under ./workspace. Keep changes minimal.";
+  if (role === "manager") {
+    return [
+      "You are the cc team manager.",
+      "Split work into 1-3 developer passes only. Each pass must be independently actionable.",
+      "Use stream id foundation for layout, types, config, migrations, shared utilities.",
+      "Use feature for primary user-visible behavior and core business logic.",
+      "Use integration for wiring, automated tests, docs updates, error paths, and polish.",
+      "For tiny tasks, emit a single feature stream. Do not invent more splits than the task needs.",
+      "Do not write or edit product code — planning and JSON output only.",
+    ].join(" ");
   }
-  return "You are the cc tester. Verify the workspace result and return JSON only.";
+  if (role === "developer") {
+    return "You are the cc developer. Implement only inside the current working directory. Keep changes minimal and scoped to the task.";
+  }
+  return "You are the cc tester. Verify the current working directory result and return JSON only.";
 }
 
 function maxTurnsForRole(role: CcRole): number {
+  if (role === "manager") return MANAGER_MAX_TURNS;
   if (role === "developer") return DEVELOPER_MAX_TURNS;
   if (role === "tester") return TESTER_MAX_TURNS;
   if (role === "demo") return 12;
@@ -736,51 +995,123 @@ function maxTurnsForRole(role: CcRole): number {
 }
 
 function toolsForRole(role: CcRole): string[] {
-  if (role === "tester" || role === "reviewer") return ["Read", ASK_USER_TOOL];
+  if (role === "manager") return ["LS", "Glob", "Grep", "Read", ASK_USER_TOOL];
+  if (role === "tester") return ["LS", "Glob", "Grep", "Read", "Bash", ASK_USER_TOOL];
+  if (role === "reviewer") return ["Read", ASK_USER_TOOL];
   if (role === "product") return [ASK_USER_TOOL];
   if (role === "demo") return ["Write", "Read", ASK_USER_TOOL];
   if (role === "research") return ["WebSearch", ASK_USER_TOOL];
   if (role === "architect") return ["Read", ASK_USER_TOOL];
-  return ["Read", "Write", "Edit", ASK_USER_TOOL];
+  if (role === "intake") return ["Read", "Write", "Edit", ASK_USER_TOOL];
+  return ["LS", "Glob", "Grep", "Read", "Write", "Edit", ASK_USER_TOOL];
 }
 
 function allowedToolsForRole(role: CcRole): string[] {
-  if (role === "tester" || role === "reviewer") return ["Read"];
+  if (role === "manager") return ["LS", "Glob", "Grep", "Read"];
+  if (role === "tester") return ["LS", "Glob", "Grep", "Read", "Bash"];
+  if (role === "reviewer") return ["Read"];
   if (role === "product") return [];
   if (role === "demo") return ["Write", "Read"];
   if (role === "research") return ["WebSearch"];
   if (role === "architect") return ["Read"];
-  return ["Read", "Write", "Edit"];
+  if (role === "intake") return ["Read", "Write", "Edit"];
+  return ["LS", "Glob", "Grep", "Read", "Write", "Edit"];
 }
 
 function outputFormatForRole(role: CcRole): OutputFormat | undefined {
+  if (role === "manager") return CC_MANAGER_PLAN_OUTPUT_FORMAT;
   if (role === "tester") return CC_TESTER_DECISION_OUTPUT_FORMAT;
   if (role === "reviewer") return CC_SPEC_REVIEWER_DECISION_OUTPUT_FORMAT;
   return undefined;
 }
 
 function permissionModeForRole(role: CcRole): "acceptEdits" | "dontAsk" {
-  if (role === "tester" || role === "reviewer") return "dontAsk";
+  if (role === "manager" || role === "tester" || role === "reviewer") return "dontAsk";
   return "acceptEdits";
 }
 
-function buildCcDeveloperPrompt(task: string, loop: number): string {
-  return `You are the developer role in a simplified cc team workflow.
+function buildCcManagerPrompt(input: { task: string; loop: number; targetDir?: string; testerRepairHint: string }): string {
+  const { task, loop, targetDir, testerRepairHint } = input;
+  const scope = targetDir
+    ? `The implementation cwd is the target repository: ${targetDir}. Plan file changes there.`
+    : "Developers write under ./workspace in the run directory unless the task says otherwise.";
+  const repair = testerRepairHint.trim()
+    ? `Tester feedback from the previous loop (address in this plan and assign to the right stream):\n${testerRepairHint.trim()}\n`
+    : "No prior tester feedback — first planning pass.\n";
+  return `You are the manager role in the cc team workflow.
 
 Loop: ${loop}
 
-Task:
+${scope}
+
+${repair}
+
+Full task (context for splitting):
 ${task}
 
+Return JSON only matching the schema. streams must have 1-3 items with distinct id values chosen from: foundation, feature, integration.
+Each stream needs a short title, a concrete focus (what this developer implements in one pass), and out_of_scope (what they must not change in that pass to avoid thrash).
+
+Optional notes field: coordination hints for developers (dependencies, sequencing).`;
+}
+
+function buildCcDeveloperStreamPrompt(input: {
+  task: string;
+  loop: number;
+  stream: CcWorkStream;
+  plan: CcManagerPlan;
+  targetDir?: string;
+  testerRepairHint: string;
+}): string {
+  const workRule = input.targetDir
+    ? `- The current directory is the target repository: ${input.targetDir}.
+- Edit the target repository directly and keep changes scoped to this stream.
+- Do not write implementation deliverables into the cc-run diagnostics directory.`
+    : `- Work in the current run directory only.
+- Put deliverables under ./workspace unless the task explicitly says otherwise.`;
+  const otherStreams = input.plan.streams.filter((s) => s.id !== input.stream.id);
+  const planNotes = input.plan.notes ? `\nManager notes:\n${input.plan.notes}\n` : "";
+  const repair = input.testerRepairHint.trim()
+    ? `\nTester feedback to respect when relevant:\n${input.testerRepairHint.trim()}\n`
+    : "";
+
+  return `You are the developer role in the cc team workflow.
+
+Current stream: ${input.stream.id} — ${input.stream.title}
+Loop: ${input.loop}
+
+Your focus for this pass:
+${input.stream.focus}
+
+Out of scope for this pass (do not do these here):
+${input.stream.out_of_scope}
+
+Other streams in this loop will cover:${otherStreams.length ? `\n${otherStreams.map((s) => `- ${s.id}: ${s.title}`).join("\n")}` : "\n- (none — single stream)"}
+${planNotes}${repair}
+Full task (shared context):
+${input.task}
+
 Rules:
-- Work in the current directory only.
-- Put deliverables under ./workspace unless the task explicitly says otherwise.
-- Keep the implementation small.
+${workRule}
+- Implement only what belongs to this stream; do not expand into other streams' work.
+- Keep the change set small and coherent for this pass.
+- Use LS, Glob, or Grep to find relevant files before reading many files.
 - Do not run verification commands; the tester role handles verification.
 - After making the requested file edits, briefly state what changed and stop.`;
 }
 
-function buildCcTesterPrompt(task: string, loop: number): string {
+function buildCcTesterPrompt(task: string, loop: number, targetDir?: string, managerPlan?: CcManagerPlan): string {
+  const scope = targetDir
+    ? `Verify the target repository at ${targetDir} against the task.`
+    : "Verify the files under ./workspace against the task.";
+  let planContext = "";
+  if (managerPlan?.streams?.length) {
+    const streamLines = managerPlan.streams.map((s) => `- ${s.id}: ${s.title}`).join("\n");
+    planContext = `Manager split this loop into developer streams:\n${streamLines}\n`;
+    if (managerPlan.notes) {
+      planContext += `Manager notes: ${managerPlan.notes}\n`;
+    }
+  }
   return `You are the tester role in a simplified cc team workflow.
 
 Loop: ${loop}
@@ -788,8 +1119,12 @@ Loop: ${loop}
 Task:
 ${task}
 
-Verify the files under ./workspace against the task.
-Use the Read tool for file verification. Do not use Bash.
+${planContext}${scope}
+Use LS, Glob, Grep, and Read for file verification.
+Use Bash only for non-destructive verification commands such as typecheck, build, tests, and git diff --check.
+**Verification commands must be run directly — do not pipe to 'head', 'tail', 'grep', 'sed -n', 'awk', 'cut', 'less', 'more', or similar output limiters.** Piped commands can truncate output and mask failures.
+Do not install dependencies, mutate files, or run destructive shell commands.
+Run the smallest relevant verification set. Once the decisive verification passes or fails, stop immediately and return the JSON decision.
 Return JSON only with this shape:
 {"status":"done"|"develop"|"ask_user","reason":"short reason"}
 
@@ -975,6 +1310,10 @@ async function rolesForCcSpecContinuation(runDir: string): Promise<CcSpecRole[]>
   if (!isCcSpecArtifactReady(spec, "Spec") || !isCcSpecArtifactReady(agentSpec, "Agent Spec") || !isCcSpecArtifactReady(tasks, "Tasks")) {
     return ["architect", "reviewer"];
   }
+  const qualityIssues = await validateCcSpecQualityGate(runDir);
+  if (qualityIssues.some((issue) => /^(spec\.md|agent-spec\.md|tasks\.md)/.test(issue))) {
+    return ["architect", "reviewer"];
+  }
   return ["reviewer"];
 }
 
@@ -1023,7 +1362,7 @@ async function validateCcSpecQualityGate(runDir: string): Promise<string[]> {
   const requiredArtifacts: Array<[keyof typeof artifacts, string, string, RegExp[]]> = [
     ["productBrief", "product-brief.md", "Product Brief", [/primary user|target user|用户/i, /job-to-be-done|JTBD|核心需求/i, /MVP|loop|闭环/i, /acceptance|验收/i, /risk|风险/i]],
     ["decisionLog", "decision-log.md", "Decision Log", [/confirmed|已确认/i, /assumptions?|假设/i, /ask[_ -]?user|询问用户|open question|user.*(?:input|reply|decision)|explicit user/i]],
-    ["spec", "spec.md", "Spec", [/功能|functionality|feature|command|operation|workflows?|核心流程|用户流程|MVP Scope/i, /技术|stack|architecture|架构/i, /验收|acceptance|verification|验证/i]],
+    ["spec", "spec.md", "Spec", [/功能|functionality|feature|command|operation|workflows?|核心流程|用户流程|MVP Scope/i, /技术|stack|architecture|架构/i, /验收|acceptance|acceptance criteria|criteria|verification|验证|milestone/i]],
     ["agentSpec", "agent-spec.md", "Agent Spec", [/functional|功能|api|contract|endpoint|target|integration/i, /constraint|约束/i, /test|测试/i, /boundar|边界/i]],
     ["tasks", "tasks.md", "Tasks", [TASK_ID_PATTERN, /verify|验证|test|测试/i]],
   ];
@@ -1096,20 +1435,31 @@ function validateAgentSpecArtifact(agentSpec: string): string[] {
 
 function validateAgentSpecCompleteness(agentSpec: string): string[] {
   const signals: Array<[RegExp, string]> = [
-    [/##\s*(api contracts?|endpoints?|routes?)/i, "agent-spec.md must include an ## API Contracts section"],
-    [/##\s*(data model|entities?|schema)/i, "agent-spec.md must include a ## Data Model section"],
+    [/##\s*(?:\d+[\).]?\s*)?(api contracts?|endpoints?|routes?)/i, "agent-spec.md must include an ## API Contracts section"],
+    [/##\s*(?:\d+[\).]?\s*)?(data model|entities?|schema)/i, "agent-spec.md must include a ## Data Model section"],
     [/error|exception|fail|4\d\d|5\d\d/i, "agent-spec.md must include error handling coverage"],
     [/given|when.*then|test (case|scenario)/i, "agent-spec.md must include structured test scenarios"],
-    [/##\s*(ui state inventory|ui states?|screen states?|state inventory)/i, "agent-spec.md must include a ## UI State Inventory section"],
+    [/##\s*(?:\d+[\).]?\s*)?(ui state inventory|ui states?|screen states?|state inventory)/i, "agent-spec.md must include a ## UI State Inventory section"],
   ];
   return signals.filter(([re]) => !re.test(agentSpec)).map(([, msg]) => msg);
 }
 
 function validateTasksVerification(tasks: string): string[] {
-  const taskCount = (tasks.match(/\bT\d+\b/gi) ?? []).length;
+  const taskCount = (tasks.match(/\bT\d+(?:\.\d+)?\b/gi) ?? []).length;
   const verifyCount = (tasks.match(/verify\s*:/gi) ?? []).length;
+  const hasVerifyTableColumn = /^\|[^\n]*\bverify\b[^\n]*\|/im.test(tasks);
+  const tableVerifyRows = hasVerifyTableColumn
+    ? tasks.split("\n").filter((line) => {
+      if (!/^\|\s*T\d+(?:\.\d+)?\s*\|/i.test(line)) return false;
+      const cells = line.split("|").map((cell) => cell.trim()).filter(Boolean);
+      const verifyCell = cells.at(-1) ?? "";
+      return verifyCell.length > 0 && !/^(n\/a|none|tbd|pending)$/i.test(verifyCell);
+    }).length
+    : 0;
   if (taskCount > 1 && verifyCount < 2) {
-    return ["tasks.md: each task should have an inline verification command (verify:)"];
+    if (tableVerifyRows < 2) {
+      return ["tasks.md: each task should have an inline verification command (verify:) or a verify table column with per-task checks"];
+    }
   }
   return [];
 }
@@ -1189,7 +1539,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-async function summarizeTargetRepository(targetDir: string): Promise<string> {
+export async function summarizeTargetRepository(targetDir: string): Promise<string> {
   const entries = await readdir(targetDir, { withFileTypes: true });
   const names = entries
     .map((entry) => entry.name)

@@ -74,9 +74,10 @@ For v0.4, you can now generate an observer pass:
 - `codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]`
 - `codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--model <model>] [--turn-timeout-ms <ms>]`
 - `codex-gtd sdk-probe [--model <model>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]`
-- `codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]`
+- `codex-gtd cc-run --task <task-file> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]`
 - `codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]`
 - `codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]`
+- `codex-gtd spec-agent --task <task-file> [--target <repo-dir>] [--run-dir <dir>] [--runs-dir <dir>] [--json]`
 
 Observer writes `lessons.md` from current run traces for operator review. Report summarizes `run-summary.json` files across runs, including terminal status, failure categories, SDK/observer failures, and recent run details.
 
@@ -94,6 +95,7 @@ The manager decides one next action at a time:
 - Real Codex SDK integration through `@openai/codex-sdk`.
 - Minimal Claude Code SDK team workflow through `codex-gtd cc-run`, using a developer/tester loop and `@anthropic-ai/claude-agent-sdk`.
 - Pre-development Claude Code SDK spec workflow through `codex-gtd cc-spec`, using intake/product/demo/research/architect/reviewer roles before implementation starts.
+- Lightweight local spec artifact generator through `codex-gtd spec-agent`, a deterministic TypeScript CLI that produces task.md, questions.md, product-brief.md, research.md, spec.md, agent-spec.md, tasks.md, and run-summary.json without calling any SDK. It detects ambiguous tasks and writes clarifying questions, inspects local reference paths read-only, scans the target repo when `--target` is provided, and records sourcing gaps for competitor/API/package references.
 - Local `cc-spec` quality gate before accepting `done`, checking required PM artifacts, sourced research, implementation-agent contract signals, and executable `tasks.md`.
 - Pre-development research artifact generation through the researcher role.
 - Per-run `api-probes/` artifacts for API/SDK dependency grounding.
@@ -262,6 +264,8 @@ runs/manual-cc-team/
 ```
 
 `cc-run` uses Claude Code SDK `tools` and `allowedTools` separately: developer can write under the run directory, tester reads and returns structured JSON, and user-interaction requests are captured as `ask_user` instead of being guessed or ignored.
+
+For existing-repo development, pass `--target <repo-dir>`. In that mode the Claude Code SDK role cwd is the target repository, while `--run-dir` remains the diagnostics directory for progress, blockers, `run-summary.json`, and SDK event traces.
 
 ### Run a CC spec review
 
@@ -465,9 +469,11 @@ Run artifacts are written to `runs/` and are intentionally ignored by git and np
   codex-gtd export-workspace --run-dir <run-dir> [--out <patch-file>]
   codex-gtd apply-workspace --run-dir <run-dir> --target <repo-dir> [--write]
   codex-gtd resume --run-dir <run-dir> [--target <repo-dir>] [--execute] [--write] [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe]
-  codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-run --task <task-file> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-run --spec-dir <cc-spec-run-dir> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
   codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]
   codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]
+  codex-gtd spec-agent --task <task-file> [--target <repo-dir>] [--run-dir <dir>] [--runs-dir <dir>] [--json]
   codex-gtd smoke [--model <model>] [--web-search <disabled|cached|live>]
   codex-gtd sdk-probe [--model <model>] [--web-search <disabled|cached|live>] [--turn-timeout-ms <ms>] [--trace-file <json-file>] [--raw-cli] [--json]
 ```
@@ -488,7 +494,7 @@ Model alias:
 
 ### Claude Code SDK cc-run
 
-`cc-run` is an experimental simplified team workflow for Claude Code SDK-compatible providers. It does not replace the Codex team loop. The first version runs one developer role and one tester role per loop, writes deliverables under `workspace/`, records role events under `session-log/events/`, writes latest role diagnostics under `session-log/inflight/`, and closes with `run-summary.json`. It also accepts `--spec-dir <cc-spec-run-dir>` to build a development task directly from `spec.md`, `agent-spec.md`, and `tasks.md`.
+`cc-run` is an experimental simplified team workflow for Claude Code SDK-compatible providers. It does not replace the Codex team loop. The first version runs one developer role and one tester role per loop, records role events under `session-log/events/`, writes latest role diagnostics under `session-log/inflight/`, and closes with `run-summary.json`. Without `--target`, deliverables stay under the run directory `workspace/`. With `--target <repo-dir>`, the SDK roles run in the target repository and edit that repository directly while diagnostics remain in `--run-dir`. It also accepts `--spec-dir <cc-spec-run-dir>` to build a development task directly from `spec.md`, `agent-spec.md`, and `tasks.md`.
 
 The command reads normal Anthropic-compatible environment variables such as `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, and `ANTHROPIC_MODEL`. For the MiniMax-compatible endpoint tested during development, use `MiniMax-M2.7` as the model and keep `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
 
@@ -497,6 +503,29 @@ The command reads normal Anthropic-compatible environment variables such as `ANT
 `cc-spec` is the pre-development companion to `cc-run`. It turns rough input into `product-brief.md`, `decision-log.md`, `demo.html`, `research.md`, `spec.md` for users, and `agent-spec.md` plus `tasks.md` for implementation agents. It supports 0-1 projects by default and switches to existing-repo change review when `--target <repo-dir>` is provided. Target scanning is read-only and records package scripts, README/docs signals, top-level directories, and dependency hints in `context.md`. A local quality gate rejects `done` when core artifacts are pending, `demo.html` is missing, research recommendations lack source evidence, `agent-spec.md` misses mandatory contract sections, `tasks.md` is missing executable checklist items or per-task verification, or `agent-spec.md` leaves unsafe identity boundaries ambiguous.
 
 See [docs/CC_SPEC.md](docs/CC_SPEC.md) for the role pipeline, artifact table, resume behavior, and smoke-test evidence.
+
+### Lightweight spec-agent
+
+`spec-agent` is a lightweight, local-only Product Manager / requirements clarification agent. Unlike `cc-spec`, it does **not** call any SDK (Codex SDK, Claude Code SDK, or any network API). It runs deterministically in TypeScript and produces structured spec artifacts that can be handed to later development agents.
+
+```bash
+node dist/cli.js spec-agent --task /tmp/feature-idea.md --target . --run-dir runs/manual-spec-agent --json
+```
+
+`spec-agent` writes these artifacts to `--run-dir`:
+
+- `task.md` — copy of the original input.
+- `questions.md` — concrete clarifying questions when the task is ambiguous; otherwise a brief confirmation.
+- `product-brief.md` — structured product brief with target repo context when `--target` is provided.
+- `research.md` — sourcing record: records competitor/API/package references as pending verification and inspects local reference paths read-only. Does **not** perform live web research.
+- `spec.md` — functional requirements skeleton.
+- `agent-spec.md` — implementation contract with Development Boundaries, Acceptance Criteria, Interfaces and Data Flow, Test Requirements, and Non-goals.
+- `tasks.md` — executable development tasks with `verify:` commands or manual acceptance checks.
+- `run-summary.json` — machine-readable run metadata (schemaVersion, workflow, runDir, targetDir, status, reason, artifacts, startedAt, endedAt, durationMs).
+
+When `--target <repo-dir>` is provided, `spec-agent` scans the target read-only (package.json scripts, README, docs, top-level directories, dependencies) and includes the summary in `product-brief.md`, `research.md`, and `agent-spec.md`. It does not modify the target repository.
+
+V1 limitations: `spec-agent` does not perform live web research or API lookups. All competitor, API, and package references are recorded as pending human verification or future-agent verification.
 
 ## Example Output
 

@@ -67,8 +67,11 @@ node dist/cli.js cc-run \
 ```
 
 `cc-run --spec-dir` reads `spec.md`, `agent-spec.md`, and `tasks.md` from the completed
-cc-spec run directory and combines them into a single development task. The developer
-agent implements in `./workspace` and the tester verifies against the acceptance criteria.
+cc-spec run directory and combines them into a single development task. Without
+`--target`, the developer implements under the run directory `./workspace`. With
+`--target <repo-dir>`, developer and tester roles run in that target repository while
+the cc-run directory remains the diagnostics/protocol location. A final `done`
+requires successful machine verification evidence from the tester.
 
 ## Role Pipeline
 
@@ -98,8 +101,8 @@ should be resolved with conservative defaults and recorded as assumptions.
 | `research.md` | Sourced technical and product research, with URL, source classification, stable version, and license. |
 | `spec.md` | Concise user-facing spec: functionality, stack, architecture, milestones, and verification criteria. |
 | `agent-spec.md` | Detailed development-agent contract with mandatory sections: API Contracts, Data Model, Error Handling, Test Scenarios, and UI State Inventory. |
-| `tasks.md` | Executable development task list with IDs, dependencies, target files/directories, per-task `verify:` commands, and parallelization notes. |
-| `progress.md` | Human-readable progress log plus machine-readable state block. |
+| `tasks.md` | Executable development task list with IDs, dependencies, target files/directories, per-task `verify:` commands or a `verify` table column, and parallelization notes. |
+| `progress.md` | Human-readable progress log for the cc-spec role pipeline. |
 | `blockers.md` | Blocking questions, quality-gate failures, SDK errors, or other issues that need attention. |
 | `interaction-request.json` | Structured Claude Code SDK user-interaction request when present. |
 | `run-summary.json` | Terminal machine-readable status, model, mode, duration, and role metrics. |
@@ -140,7 +143,7 @@ The gate rejects `done` when:
 - `agent-spec.md` is missing a required section: API Contracts, Data Model, Error Handling, Test Scenarios, or UI State Inventory;
 - `agent-spec.md` presents hardcoded `userId` as an acceptable identity boundary;
 - `tasks.md` lacks task IDs or verification/test signals;
-- `tasks.md` has multiple tasks but fewer than two inline `verify:` commands.
+- `tasks.md` has multiple tasks but fewer than two inline `verify:` commands or per-task checks in a `verify` table column.
 - `research.md` recommends packages, SDKs, or APIs without recording stable version and license coverage.
 
 The research gate allows a run to state that no external sources or integrations
@@ -187,6 +190,12 @@ Verified locally on 2026-04-30:
 |----------|--------|-------|
 | Static consultant discovery-call tracker | `done` | Produced PM brief, decision log, sourced research, user spec, agent spec, and `tasks.md`. |
 | Chinese novel writing system similar to Xingyue Writing | `done` | Asked blocking product questions, researched comparable writing tools, marked Xingyue Writing as unverified because no authoritative source was available in the SDK run, and produced complete architecture/tasks for implementation. |
+
+Verified with repo-local Claude Code config on 2026-05-03:
+
+| Scenario | Result | Notes |
+|----------|--------|-------|
+| Love-story vocabulary web game | `done` | Used `.env` Claude Code/MiniMax config, paused for intake clarification and demo approval, resumed successfully, generated `demo.html`, `spec.md`, `agent-spec.md`, and `tasks.md`; `status --json` reports protocol health `clean`. |
 
 Local verification commands:
 

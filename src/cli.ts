@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { runCcSpec, runCcTeam, type CcSpecMode, type CcSpecRunResult, type CcTeamRunResult } from "./cc-team/index.js";
+import { runSpecAgent } from "./spec-agent.js";
 import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runDoctor, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type DoctorResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./codex-team/driver.js";
 
 type ParsedArgs = {
@@ -269,10 +270,11 @@ function printHelp(): void {
 
 Usage:
   codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
-  codex-gtd cc-run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
-  codex-gtd cc-run --spec-dir <cc-spec-run-dir> [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-run --task <task-file> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-run --spec-dir <cc-spec-run-dir> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
   codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]
   codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]
+  codex-gtd spec-agent --task <task-file> [--target <repo-dir>] [--run-dir <dir>] [--runs-dir <dir>] [--json]
   codex-gtd observe --run-dir <run-dir> [--model <model>] [--web-search <disabled|cached|live>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>]
   codex-gtd promote-snippet --candidate <candidate-file> --slug <slug> [--title <title>] [--category <name>] [--tags <a,b,c>] [--snippets-dir <dir>]
   codex-gtd audit-snippets [--snippets-dir <dir>] [--json]
@@ -517,6 +519,7 @@ function printSdkProbe(result: SdkProbeResult): void {
 
 function printCcTeamRun(result: CcTeamRunResult): void {
   console.log(`CC run directory: ${result.runDir}`);
+  if (result.targetDir) console.log(`Target directory: ${result.targetDir}`);
   console.log(`Status: ${result.status}`);
   console.log(`Model: ${result.model}`);
   console.log(`Duration: ${formatDuration(result.durationMs)}`);
@@ -669,6 +672,7 @@ async function main(): Promise<void> {
     const result = await runCcTeam({
       taskFile: args.task,
       specDir: args.specDir,
+      targetDir: args.targetDir,
       model: args.model,
       runDir: args.runDir,
       runsDir: args.runsDir,
@@ -710,6 +714,34 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(result, null, 2));
     } else {
       printCcSpecRun(result);
+    }
+    if (result.status !== "done") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.command === "spec-agent") {
+    if (!args.task) {
+      throw new Error("spec-agent requires --task <task-file>");
+    }
+
+    const result = await runSpecAgent({
+      taskFile: args.task,
+      targetDir: args.targetDir,
+      runDir: args.runDir,
+      runsDir: args.runsDir,
+    });
+
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Spec agent run directory: ${result.runDir}`);
+      console.log(`Status: ${result.status}`);
+      if (result.targetDir) console.log(`Target directory: ${result.targetDir}`);
+      console.log(`Duration: ${formatDuration(result.durationMs)}`);
+      if (result.reason) console.log(`Reason: ${result.reason}`);
+      console.log(`Artifacts: ${result.artifacts.join(", ")}`);
     }
     if (result.status !== "done") {
       process.exitCode = 1;
