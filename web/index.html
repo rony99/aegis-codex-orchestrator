@@ -208,7 +208,8 @@
 
     .status-badge.ask_user,
     .status-badge.max_loops_reached,
-    .status-badge.failed {
+    .status-badge.failed,
+    .status-badge.stopped {
       background-color: #fee2e2;
       color: var(--danger);
     }
@@ -427,6 +428,7 @@
         ask_user: '需要用户',
         max_loops_reached: '超出循环',
         failed: '失败',
+        stopped: '已停止',
         unknown: '未知'
       };
       return labels[status] || status;

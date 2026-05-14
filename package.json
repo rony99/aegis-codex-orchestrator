@@ -25,13 +25,15 @@
     "docs/",
     "examples/",
     "web/",
+    "web-app/",
     "snippets/*.md",
     "test/",
     "README.md",
     ".env.example",
     "LICENSE",
     "package.json",
-    "tsconfig.json"
+    "tsconfig.json",
+    "vite.config.ts"
   ],
   "bin": {
     "codex-gtd": "./dist/cli.js"
@@ -43,6 +45,9 @@
     "test:server": "npm run build && node --test test/server.test.mjs",
     "test:local": "npm run build && node --test test/cli.test.mjs && node --test test/server.test.mjs",
     "dev": "tsx src/cli.ts",
+    "dev:web": "concurrently -n api,web -c blue,green \"npm run dev-server\" \"vite --config vite.config.ts --host 127.0.0.1\"",
+    "build:web": "vite build --config vite.config.ts",
+    "fetch:agent-skills": "node scripts/fetch-agent-skills.mjs",
     "smoke": "tsx src/cli.ts smoke --model gpt-5.4",
     "smoke:cli-local": "npm run build && node dist/cli.js doctor && node dist/cli.js sdk-probe --model gpt-5.4 --raw-cli --json",
     "server": "node dist/server/index.js",
@@ -51,7 +56,16 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.123",
     "@openai/codex-sdk": "0.123.0",
-    "express": "^5.0.0"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "better-sqlite3": "^12.10.0",
+    "concurrently": "^9.2.1",
+    "express": "^5.0.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^8.0.12"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

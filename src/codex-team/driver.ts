@@ -1,6 +1,6 @@
 import { Codex, type Thread, type ThreadEvent, type ThreadItem, type Usage, type WebSearchMode as CodexWebSearchMode } from "@openai/codex-sdk";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import path from "node:path";
@@ -81,6 +81,18 @@ const CC_RUN_PROTOCOL_ENTRIES = [
   "progress.md",
   "blockers.md",
   "session-log/",
+  "run-summary.json",
+] as const;
+
+const CC_TEAM_RUN_PROTOCOL_ENTRIES = [
+  "task.md",
+  "progress.md",
+  "blockers.md",
+  "session-log/",
+  "team-state.json",
+  "worker-registry.json",
+  "tasks/",
+  "artifacts/",
   "run-summary.json",
 ] as const;
 
@@ -1667,9 +1679,10 @@ export async function runReport(options: ReportOptions = {}): Promise<RunReport>
 
     const isCcSpec = isCcSpecWorkflowSummary(summary);
     const isCcRun = isCcRunWorkflowSummary(summary);
+    const isCcTeamRun = isCcTeamRunWorkflowSummary(summary);
     const runProtocol = await validateRunProtocol(summary.runDir, requiredProtocolEntriesForSummary(summary));
-    const apiProbesReadme = isCcSpec || isCcRun ? cleanApiProbeReadmeValidation() : await validateApiProbesReadme(summary.runDir);
-    const progressDrift = isCcSpec || isCcRun ? cleanProgressDriftReport() : await compareProgressRunSummary(summary.runDir);
+    const apiProbesReadme = isCcSpec || isCcRun || isCcTeamRun ? cleanApiProbeReadmeValidation() : await validateApiProbesReadme(summary.runDir);
+    const progressDrift = isCcSpec || isCcRun || isCcTeamRun ? cleanProgressDriftReport() : await compareProgressRunSummary(summary.runDir);
     const runProtocolHealth = {
       missingRequiredEntries: !runProtocol.ok,
       invalidApiProbesReadmeSections: !apiProbesReadme.ok,
@@ -1920,10 +1933,11 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
   const summary = await readRunSummary(runDir);
   const isCcSpec = isCcSpecWorkflowSummary(summary);
   const isCcRun = isCcRunWorkflowSummary(summary);
+  const isCcTeamRun = isCcTeamRunWorkflowSummary(summary);
   const [runProtocol, apiProbesReadme, progressDrift, diagnostic] = await Promise.all([
     validateRunProtocol(runDir, requiredProtocolEntriesForSummary(summary)),
-    isCcSpec || isCcRun ? cleanApiProbeReadmeValidation() : validateApiProbesReadme(runDir),
-    isCcSpec || isCcRun ? cleanProgressDriftReport() : compareProgressRunSummary(runDir),
+    isCcSpec || isCcRun || isCcTeamRun ? cleanApiProbeReadmeValidation() : validateApiProbesReadme(runDir),
+    isCcSpec || isCcRun || isCcTeamRun ? cleanProgressDriftReport() : compareProgressRunSummary(runDir),
     readLatestInflightDiagnostic(runDir),
   ]);
 
@@ -2044,6 +2058,26 @@ export async function buildRunStatus(options: RunStatusOptions): Promise<RunStat
       summary: summary.status === "done"
         ? "cc-run completed. Inspect target changes, tester-decision.json, and session-log events."
         : "cc-run is not complete. Inspect tester-decision.json, manager-plan.json, and session-log events before rerunning cc-run.",
+      commands: [],
+    };
+  }
+
+  if (isCcTeamRun) {
+    const stage = (summary as RunSummary & { currentStage?: unknown }).currentStage;
+    const recommendedAction = (summary as RunSummary & { recommendedAction?: unknown }).recommendedAction;
+    return {
+      runDir,
+      terminalStatus: summary.status,
+      failureCategory: normalizeSummaryFailureCategory(summary),
+      reason: summary.reason,
+      terminalRole: summary.terminalRole,
+      protocolHealth,
+      protocolIssues,
+      diagnostic,
+      recommendedAction: "inspect",
+      summary: summary.status === "done"
+        ? `cc-team-run completed at stage ${typeof stage === "string" ? stage : "unknown"}. Inspect artifacts/ship-report.md, team-state.json, worker-registry.json, and session-log events.`
+        : `cc-team-run is not complete at stage ${typeof stage === "string" ? stage : "unknown"}. Recommended action: ${typeof recommendedAction === "string" ? recommendedAction : "inspect"}. Inspect team-state.json and blockers.md.`,
       commands: [],
     };
   }
@@ -2835,6 +2869,7 @@ export async function validateRunProtocol(
 
 function requiredProtocolEntriesForSummary(summary: RunSummary | undefined): readonly string[] {
   if (!summary) return RUN_PROTOCOL_ENTRIES;
+  if (isCcTeamRunWorkflowSummary(summary)) return CC_TEAM_RUN_PROTOCOL_ENTRIES;
   if (isCcRunWorkflowSummary(summary)) return CC_RUN_PROTOCOL_ENTRIES;
   if (!isCcSpecWorkflowSummary(summary)) return RUN_PROTOCOL_ENTRIES;
   if (summary.status === "done") return CC_SPEC_DONE_PROTOCOL_ENTRIES;
@@ -2851,9 +2886,14 @@ function isCcRunWorkflowSummary(summary: RunSummary | undefined): boolean {
   if (!summary || typeof summary !== "object") return false;
   const workflow = (summary as RunSummary & { workflow?: unknown }).workflow;
   if (workflow === "cc-run") return true;
-  if (workflow === "cc-spec") return false;
+  if (workflow === "cc-spec" || workflow === "cc-team-run") return false;
   const provider = (summary as RunSummary & { provider?: unknown }).provider;
   return provider === "claude-code";
+}
+
+function isCcTeamRunWorkflowSummary(summary: RunSummary | undefined): boolean {
+  if (!summary || typeof summary !== "object") return false;
+  return (summary as RunSummary & { workflow?: unknown }).workflow === "cc-team-run";
 }
 
 function cleanApiProbeReadmeValidation(): ApiProbeReadmeValidation {
@@ -3256,6 +3296,7 @@ function normalizeFailureCategory(value: unknown): FailureCategory {
 
 function normalizeSummaryFailureCategory(summary: RunSummary): FailureCategory {
   if (isCcSpecWorkflowSummary(summary) && summary.status === "done") return "none";
+  if (isCcTeamRunWorkflowSummary(summary) && summary.status === "done") return "none";
   const normalized = normalizeFailureCategory(summary.failureCategory);
   if (normalized !== "role_failed" && normalized !== "observer_failed") return normalized;
 
@@ -3658,6 +3699,35 @@ async function runThreadWithDiagnostics(
 
   const diagnosticPath = roleInflightDiagnosticPath(context.runDir, options.startedAt, options.role);
   const eventTracePath = roleEventTracePath(context.runDir, options.startedAt, options.role);
+  const streamEnabled = STREAM_ROLES.has(options.role);
+  const streamPath = streamEnabled
+    ? roleEventStreamPath(context.runDir, options.startedAt, options.role)
+    : undefined;
+  const writeStreamEntry = async (entry: RoleStreamEntry | undefined) => {
+    if (!streamEnabled || !streamPath || !entry) return;
+    try {
+      await appendRoleStreamEntry(streamPath, entry);
+    } catch {
+      // Best-effort streaming; never break a turn because the stream file failed.
+    }
+  };
+  const buildStreamEntry = (event: ThreadEvent, ts: string): RoleStreamEntry | undefined =>
+    mapEventToStreamEntry(event, {
+      role: options.role,
+      model: options.model,
+      threadId: options.thread.id,
+      turnStartedAt: options.startedAt,
+      ts,
+    });
+  const buildSyntheticEntry = (kind: RoleStreamEntryKind, payload: Record<string, unknown> = {}): RoleStreamEntry => ({
+    ts: new Date().toISOString(),
+    role: options.role,
+    model: options.model,
+    threadId: options.thread.id,
+    turnStartedAt: options.startedAt,
+    kind,
+    payload,
+  });
   const currentDiagnostic = (status: RoleRunDiagnostic["status"]): RoleRunDiagnostic => {
     const now = Date.now();
     return {
@@ -3693,6 +3763,8 @@ async function runThreadWithDiagnostics(
   };
 
   await writeDiagnostic("running");
+  await writeStreamEntry(buildSyntheticEntry("turn_started"));
+  let streamedTerminal = false;
   const heartbeat = setInterval(() => {
     const diagnostic = currentDiagnostic("running");
     console.error(`[codex-gtd] ${options.role} still running: ${diagnostic.classification}; idle=${Math.round(diagnostic.idleMs / 1000)}s; ${diagnostic.detail}`);
@@ -3710,6 +3782,8 @@ async function runThreadWithDiagnostics(
       const diagnostic = currentDiagnostic("completed");
       await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
       await writeEventTrace("completed", diagnostic);
+      await writeStreamEntry(buildSyntheticEntry("turn_completed", { usage: turn.usage }));
+      streamedTerminal = true;
       return turn;
     }
 
@@ -3741,6 +3815,11 @@ async function runThreadWithDiagnostics(
         detail,
       });
       await writeDiagnostic("running");
+      const streamEntry = buildStreamEntry(event, new Date(eventAt).toISOString());
+      if (streamEntry?.kind === "turn_completed" || streamEntry?.kind === "turn_failed" || streamEntry?.kind === "error") {
+        streamedTerminal = true;
+      }
+      await writeStreamEntry(streamEntry);
 
       if (event.type === "item.completed") {
         if (event.item.type === "agent_message") {
@@ -3767,6 +3846,9 @@ async function runThreadWithDiagnostics(
     const diagnostic = currentDiagnostic("completed");
     await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
     await writeEventTrace("completed", diagnostic);
+    if (!streamedTerminal) {
+      await writeStreamEntry(buildSyntheticEntry("turn_completed", { usage }));
+    }
     return { items, finalResponse, usage };
   } catch (error) {
     if (options.signal.aborted && classification !== "command_running" && classification !== "mcp_tool_running") {
@@ -3781,6 +3863,12 @@ async function runThreadWithDiagnostics(
     const diagnostic = currentDiagnostic("failed");
     await writeRoleInflightDiagnostic(diagnosticPath, diagnostic);
     await writeEventTrace("failed", diagnostic);
+    if (!streamedTerminal) {
+      await writeStreamEntry(buildSyntheticEntry("turn_failed", {
+        error: { message: summarizeError(error) },
+        classification,
+      }));
+    }
     throw new ThreadRunDiagnosticError(error, diagnostic, eventTracePath);
   } finally {
     clearInterval(heartbeat);
@@ -3921,6 +4009,137 @@ function roleInflightDiagnosticPath(runDir: string, startedAt: string, role: str
 function roleEventTracePath(runDir: string, startedAt: string, role: string): string {
   const safeStartedAt = startedAt.replaceAll(":", "-");
   return path.join(runDir, "session-log", "events", `${safeStartedAt}-${role}.json`);
+}
+
+const STREAM_ROLES: ReadonlySet<string> = new Set(["manager", "developer", "tester"]);
+const STREAM_TEXT_LIMIT = 4096;
+
+export type RoleStreamEntryKind =
+  | "turn_started"
+  | "turn_completed"
+  | "turn_failed"
+  | "agent_message"
+  | "tool_call"
+  | "error";
+
+export type RoleStreamEntry = {
+  ts: string;
+  role: string;
+  model: string;
+  threadId: string | null;
+  turnStartedAt: string;
+  kind: RoleStreamEntryKind;
+  payload: Record<string, unknown>;
+};
+
+function roleEventStreamPath(runDir: string, startedAt: string, role: string): string {
+  const safeStartedAt = startedAt.replaceAll(":", "-");
+  return path.join(runDir, "session-log", "stream", `${safeStartedAt}-${role}.ndjson`);
+}
+
+function truncateForStream(value: string): { text: string; truncated: boolean } {
+  if (value.length <= STREAM_TEXT_LIMIT) {
+    return { text: value, truncated: false };
+  }
+  return { text: value.slice(0, STREAM_TEXT_LIMIT), truncated: true };
+}
+
+function summarizeToolItem(item: ThreadItem): { name: string; payload: Record<string, unknown> } | undefined {
+  if (item.type === "command_execution") {
+    const { text, truncated } = truncateForStream(item.command);
+    return {
+      name: "shell",
+      payload: {
+        name: "shell",
+        command: text,
+        truncated: truncated || undefined,
+        status: item.status,
+        exitCode: item.exit_code,
+        ok: item.status === "completed",
+      },
+    };
+  }
+  if (item.type === "file_change") {
+    return {
+      name: "file_change",
+      payload: {
+        name: "file_change",
+        changes: item.changes.slice(0, 32).map((change) => ({ path: change.path, kind: change.kind })),
+        changeCount: item.changes.length,
+        status: item.status,
+        ok: item.status === "completed",
+      },
+    };
+  }
+  if (item.type === "mcp_tool_call") {
+    const name = `${item.server}/${item.tool}`;
+    const errorMessage = item.error?.message;
+    return {
+      name,
+      payload: {
+        name,
+        status: item.status,
+        ok: item.status === "completed",
+        error: errorMessage ? truncateForStream(errorMessage).text : undefined,
+      },
+    };
+  }
+  if (item.type === "web_search") {
+    return {
+      name: "web_search",
+      payload: {
+        name: "web_search",
+        query: truncateForStream(item.query).text,
+        ok: true,
+      },
+    };
+  }
+  return undefined;
+}
+
+export function mapEventToStreamEntry(
+  event: ThreadEvent,
+  context: { role: string; model: string; threadId: string | null; turnStartedAt: string; ts: string },
+): RoleStreamEntry | undefined {
+  const base = {
+    ts: context.ts,
+    role: context.role,
+    model: context.model,
+    threadId: context.threadId,
+    turnStartedAt: context.turnStartedAt,
+  };
+  if (event.type === "turn.started") {
+    return { ...base, kind: "turn_started", payload: {} };
+  }
+  if (event.type === "turn.completed") {
+    return { ...base, kind: "turn_completed", payload: { usage: event.usage } };
+  }
+  if (event.type === "turn.failed") {
+    return { ...base, kind: "turn_failed", payload: { error: { message: event.error.message } } };
+  }
+  if (event.type === "error") {
+    return { ...base, kind: "error", payload: { message: event.message } };
+  }
+  if (event.type === "item.completed") {
+    const item = event.item;
+    if (item.type === "agent_message") {
+      const { text, truncated } = truncateForStream(item.text);
+      return { ...base, kind: "agent_message", payload: { text, truncated: truncated || undefined } };
+    }
+    if (item.type === "error") {
+      return { ...base, kind: "error", payload: { message: item.message } };
+    }
+    const tool = summarizeToolItem(item);
+    if (tool) {
+      return { ...base, kind: "tool_call", payload: tool.payload };
+    }
+  }
+  return undefined;
+}
+
+async function appendRoleStreamEntry(file: string, entry: RoleStreamEntry): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, `${JSON.stringify(entry)}\n`, "utf8");
 }
 
 async function writeRoleInflightDiagnostic(file: string, diagnostic: RoleRunDiagnostic): Promise<void> {

@@ -36,10 +36,13 @@ import {
   createRunDirectory,
 } from "../dist/driver.js";
 import {
+  parseTeamTaskDocument,
   parseCcManagerPlan,
   parseCcTesterDecision,
   runCcSpec,
   runCcTeam,
+  runCcTeamLifecycle,
+  selectReusableWorker,
 } from "../dist/cc-team.js";
 import { runSpecAgent } from "../dist/spec-agent.js";
 import {
@@ -795,6 +798,13 @@ test("cc-run requires a task path before any SDK call", () => {
   assert.match(result.stderr, /cc-run requires --task <task-file> or --spec-dir/);
 });
 
+test("cc-team-run requires a task path unless resuming with a run directory", () => {
+  const result = runCli(["cc-team-run"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cc-team-run requires --task <task-file> or --run-dir/);
+});
+
 test("cc-run --spec-dir builds task from cc-spec artifacts and runs developer/tester", async () => {
   const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-run-spec-dir-"));
   const specRunDir = path.join(rootDir, "spec-run");
@@ -1330,6 +1340,560 @@ test("cc spec quality gate rejects horizontal layer task breakdowns", async () =
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test("team task documents expose the required execution contract", () => {
+  const task = parseTeamTaskDocument(`# Team Task: task_build_001
+
+stage: build
+role: developer
+status: pending
+
+## Objective
+Implement the smallest complete CRUD demo slice.
+
+## Context
+Use the generated spec and plan artifacts.
+
+## Input Files
+- artifacts/spec.md
+- artifacts/plan.md
+
+## Allowed Paths
+- src/**
+- test/**
+
+## Acceptance Criteria
+- User can create and list records.
+- Existing tests keep passing.
+
+## Verification Command
+npm run test:local
+
+## Failure Categories
+- task_doc_defect
+- execution_defect
+- skill_context_defect
+- credentials
+`);
+
+  assert.equal(task.stage, "build");
+  assert.equal(task.role, "developer");
+  assert.equal(task.verificationCommand, "npm run test:local");
+  assert.deepEqual(task.failureCategories.slice(0, 2), ["task_doc_defect", "execution_defect"]);
+  assert.match(task.objective, /CRUD demo/);
+
+  assert.throws(
+    () => parseTeamTaskDocument("# Team Task\n\n## Objective\nMissing contract.\n"),
+    /missing required sections/i,
+  );
+});
+
+test("selectReusableWorker prefers healthy workers for the same role and cwd", () => {
+  const registry = {
+    workers: [
+      { id: "old-failed", role: "developer", cwd: "/repo", sessionId: "s1", status: "failed", skills: [], lastTaskId: "task_build_000", updatedAt: "2026-05-13T00:00:00.000Z" },
+      { id: "old-healthy", role: "developer", cwd: "/repo", sessionId: "s2", status: "healthy", skills: ["build"], lastTaskId: "task_build_001", updatedAt: "2026-05-13T00:01:00.000Z" },
+      { id: "other-cwd", role: "developer", cwd: "/other", sessionId: "s3", status: "healthy", skills: ["build"], lastTaskId: "task_build_002", updatedAt: "2026-05-13T00:02:00.000Z" },
+    ],
+  };
+
+  assert.equal(selectReusableWorker(registry, { role: "developer", cwd: "/repo" })?.sessionId, "s2");
+  assert.equal(selectReusableWorker(registry, { role: "tester", cwd: "/repo" }), undefined);
+});
+
+test("cc-team-run defaults to supervised leader and supervisor with cockpit output", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-supervised-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nBuild a boss-readable team dashboard.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+    const stage = ["spec", "plan", "build", "test", "review", "ship"].find((candidate) => request.prompt.includes(`Stage: ${candidate}`)) ?? "spec";
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-${stage}-session`,
+      result: request.role === "supervisor"
+        ? `# Supervisor Report\n\nStage: ${stage}\n\nRecommendation: continue\n\nNo high-impact blocker.`
+        : `# Leader Stage Report\n\nStage: ${stage}\n\nCompleted:\n- ${stage} owner summary\n\nNext:\n- Continue lifecycle.`,
+    };
+  };
+
+  const result = await runCcTeamLifecycle({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "done");
+  assert.equal(result.workflow, "cc-team-run");
+  assert.equal(result.stage, "ship");
+  assert.equal(result.teamMode, "supervised");
+  assert.deepEqual([...new Set(requests.map((request) => request.role))], ["leader", "supervisor"]);
+
+  const leader = requests.find((request) => request.role === "leader");
+  const supervisor = requests.find((request) => request.role === "supervisor");
+  assert.match(leader.systemPrompt, /spec-driven-development/);
+  assert.match(leader.systemPrompt, /shipping-and-launch/);
+  assert.match(supervisor.systemPrompt, /independent supervisor/i);
+
+  const cockpit = await readFile(path.join(runDir, "artifacts", "team-cockpit.md"), "utf8");
+  assert.match(cockpit, /# Team Cockpit/);
+  assert.match(cockpit, /Build a boss-readable team dashboard/);
+  assert.match(cockpit, /## Stage Progress/);
+  assert.match(cockpit, /Supervisor Report/);
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.teamMode, "supervised");
+  assert.equal(summary.metrics.roleTurns.leader, 6);
+  assert.equal(summary.metrics.roleTurns.supervisor, 6);
+  assert.equal(summary.metrics.roleTurns.developer, 0);
+});
+
+test("cc-team-run supervised mode stops when supervisor reports a no-go", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-supervisor-nogo-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nBuild without verification.\n", "utf8");
+
+  const runner = async function* (request) {
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "supervisor"
+        ? "# Supervisor Report\n\nNO-GO: verification is missing.\n\nRecommendation: rerun"
+        : "# Leader Stage Report\n\nStage: spec\n\nCompleted:\n- Drafted an unverified plan.",
+    };
+  };
+
+  const result = await runCcTeamLifecycle({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.recommendedAction, "rerun");
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.teamMode, "supervised");
+  assert.match(summary.reason, /supervisor/i);
+});
+
+test("cc-team-run supervised leader prefers configured local skill files", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-local-skills-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  const skillsDir = path.join(rootDir, "agent-skills", "lifecycle-project-leader");
+  await mkdir(skillsDir, { recursive: true });
+  await writeFile(taskFile, "# Task\n\nBuild from configured local skills.\n", "utf8");
+  await writeFile(
+    path.join(skillsDir, "SKILL.md"),
+    "# Full Local Agent Skill\n\nFULL LOCAL LIFECYCLE SKILL CONTENT: maintain the boss cockpit after each stage.\n",
+    "utf8",
+  );
+
+  const requests = [];
+  const priorSkillsDir = process.env.CODEX_GTD_AGENT_SKILLS_DIR;
+  process.env.CODEX_GTD_AGENT_SKILLS_DIR = path.join(rootDir, "agent-skills");
+  try {
+    const runner = async function* (request) {
+      requests.push(request);
+      yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+      const stage = ["spec", "plan", "build", "test", "review", "ship"].find((candidate) => request.prompt.includes(`Stage: ${candidate}`)) ?? "spec";
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `${request.role}-${stage}-session`,
+        result: request.role === "supervisor"
+          ? `# Supervisor Report\n\nStage: ${stage}\n\nRecommendation: continue`
+          : `# Leader Stage Report\n\nStage: ${stage}\n\nCompleted:\n- ${stage} follows local skill.`,
+      };
+    };
+
+    await runCcTeamLifecycle({
+      taskFile,
+      runDir,
+      model: "MiniMax-M2.7",
+      turnTimeoutMs: 1000,
+      runner,
+    });
+  } finally {
+    if (priorSkillsDir === undefined) {
+      delete process.env.CODEX_GTD_AGENT_SKILLS_DIR;
+    } else {
+      process.env.CODEX_GTD_AGENT_SKILLS_DIR = priorSkillsDir;
+    }
+  }
+
+  const leader = requests.find((request) => request.role === "leader");
+  assert.match(leader.systemPrompt, /FULL LOCAL LIFECYCLE SKILL CONTENT/);
+  assert.match(leader.systemPrompt, /Condensed fallback rules for gaps/);
+});
+
+test("cc-team-run supervised leader loads default downloaded agent-skills directory", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-default-skills-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  const skillsDir = path.join(rootDir, ".codex-gtd", "agent-skills", "agent-skills", "skills", "project-lifecycle");
+  await mkdir(skillsDir, { recursive: true });
+  await writeFile(taskFile, "# Task\n\nBuild from default downloaded skills.\n", "utf8");
+  await writeFile(
+    path.join(skillsDir, "SKILL.md"),
+    "# Downloaded Agent Skill\n\nDOWNLOADED AGENT SKILLS CONTENT: follow spec plan build test review ship.\n",
+    "utf8",
+  );
+
+  const requests = [];
+  const priorCwd = process.cwd();
+  const priorSkillsDir = process.env.CODEX_GTD_AGENT_SKILLS_DIR;
+  delete process.env.CODEX_GTD_AGENT_SKILLS_DIR;
+  process.chdir(rootDir);
+  try {
+    const runner = async function* (request) {
+      requests.push(request);
+      yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+      const stage = ["spec", "plan", "build", "test", "review", "ship"].find((candidate) => request.prompt.includes(`Stage: ${candidate}`)) ?? "spec";
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `${request.role}-${stage}-session`,
+        result: request.role === "supervisor"
+          ? `# Supervisor Report\n\nStage: ${stage}\n\nRecommendation: continue`
+          : `# Leader Stage Report\n\nStage: ${stage}\n\nCompleted:\n- ${stage} follows downloaded skills.`,
+      };
+    };
+
+    await runCcTeamLifecycle({
+      taskFile,
+      runDir,
+      model: "MiniMax-M2.7",
+      turnTimeoutMs: 1000,
+      runner,
+    });
+  } finally {
+    process.chdir(priorCwd);
+    if (priorSkillsDir === undefined) {
+      delete process.env.CODEX_GTD_AGENT_SKILLS_DIR;
+    } else {
+      process.env.CODEX_GTD_AGENT_SKILLS_DIR = priorSkillsDir;
+    }
+  }
+
+  const leader = requests.find((request) => request.role === "leader");
+  assert.match(leader.systemPrompt, /DOWNLOADED AGENT SKILLS CONTENT/);
+});
+
+test("package exposes an agent-skills fetch command with dry-run output", () => {
+  const repoRoot = path.join(new URL("..", import.meta.url).pathname);
+  const packageJson = JSON.parse(execFileSync("node", ["-e", "console.log(JSON.stringify(require('./package.json')))"], { cwd: repoRoot, encoding: "utf8" }));
+  assert.match(packageJson.scripts["fetch:agent-skills"], /fetch-agent-skills/);
+
+  const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "fetch-agent-skills.mjs"), "--dry-run"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /github\.com\/addyosmani\/agent-skills/);
+  assert.match(result.stdout, /\.codex-gtd\/agent-skills/);
+});
+
+test("cc-team-run executes lifecycle stages, writes team protocol, and reuses worker sessions", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nBuild a tiny CRUD web demo with local storage.\n", "utf8");
+
+  const leaderDecisions = new Map([
+    ["spec", "Clarify MVP and write product spec."],
+    ["plan", "Break the MVP into one vertical slice."],
+    ["build", "Implement the vertical slice."],
+    ["test", "Verify the public behavior."],
+    ["review", "Review correctness, security, and coverage."],
+    ["ship", "Prepare local delivery report."],
+  ]);
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+
+    if (request.role === "leader") {
+      const stage = [...leaderDecisions.keys()].find((candidate) => request.prompt.includes(`Stage: ${candidate}`));
+      const objective = leaderDecisions.get(stage) ?? "Continue lifecycle.";
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `leader-${stage}-session`,
+        result: JSON.stringify({
+          status: "continue",
+          stage,
+          reason: `${stage} can proceed with AI gate approval`,
+          recommendedAction: "continue",
+          assumptions: ["Use popular low-cost defaults for low-impact details."],
+          task: {
+            id: `task_${stage}_001`,
+            title: `${stage} task`,
+            objective,
+            context: "Use prior lifecycle artifacts and the original task.",
+            inputFiles: ["task.md"],
+            allowedPaths: ["artifacts/**", "tasks/**", "workspace/**"],
+            acceptanceCriteria: [`${stage} artifact is complete enough for the next stage.`],
+            verificationCommand: stage === "test" ? "node --test test/cli.test.mjs" : "npm run typecheck",
+            failureCategories: ["task_doc_defect", "execution_defect", "skill_context_defect", "credentials"],
+          },
+        }),
+      };
+      return;
+    }
+
+    if (request.role === "tester") {
+      for (const event of passingCcBashVerificationEvents("node --test test/cli.test.mjs")) yield event;
+    }
+
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "tester"
+        ? '{"status":"done","reason":"machine verification passed"}'
+        : `# ${request.role} result\n\nCompleted assigned task.`,
+    };
+  };
+
+  const first = await runCcTeamLifecycle({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    teamMode: "multi-role",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  assert.equal(first.status, "done");
+  assert.equal(first.workflow, "cc-team-run");
+  assert.equal(first.stage, "ship");
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.workflow, "cc-team-run");
+  assert.equal(summary.currentStage, "ship");
+  assert.equal(summary.metrics.roleTurns.leader, 6);
+  assert.equal(summary.metrics.roleTurns.developer, 1);
+
+  const state = JSON.parse(await readFile(path.join(runDir, "team-state.json"), "utf8"));
+  assert.equal(state.status, "done");
+  assert.equal(state.currentStage, "ship");
+  assert.equal(state.tasks.length, 6);
+  assert.equal(state.assumptions.length, 6);
+
+  const buildTask = await readFile(path.join(runDir, "tasks", "task_build_001.md"), "utf8");
+  assert.match(buildTask, /## Verification Command\nnpm run typecheck/);
+
+  const registry = JSON.parse(await readFile(path.join(runDir, "worker-registry.json"), "utf8"));
+  assert.ok(registry.workers.some((worker) => worker.role === "developer" && worker.sessionId === "developer-session"));
+});
+
+test("cc-team-run turns high-impact leader blockers into ask_user", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-blocker-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nDeploy this app to a paid production service.\n", "utf8");
+
+  const runner = async function* (request) {
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: "leader-session",
+      result: JSON.stringify({
+        status: "ask_user",
+        stage: "spec",
+        reason: "Deployment credentials and paid service choice are high-impact decisions.",
+        recommendedAction: "answer_user",
+        blocker: {
+          kind: "credentials",
+          question: "Which deployment provider and credentials should the team use?",
+        },
+      }),
+    };
+  };
+
+  const result = await runCcTeamLifecycle({ taskFile, runDir, model: "MiniMax-M2.7", teamMode: "multi-role", turnTimeoutMs: 1000, runner });
+  assert.equal(result.status, "ask_user");
+  assert.match(result.reason, /Deployment credentials/);
+
+  const blocker = JSON.parse(await readFile(path.join(runDir, "interaction-request.json"), "utf8"));
+  assert.equal(blocker.type, "ask_user");
+  assert.equal(blocker.input.kind, "credentials");
+});
+
+test("cc-team-run resumes from the recorded lifecycle stage", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-resume-"));
+  const runDir = path.join(rootDir, "run");
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "task.md"), "# Task\n\nContinue the team lifecycle.\n", "utf8");
+  await writeFile(path.join(runDir, "team-state.json"), JSON.stringify({
+    schemaVersion: 1,
+    workflow: "cc-team-run",
+    status: "ask_user",
+    currentStage: "build",
+    recommendedAction: "answer_user",
+    tasks: [],
+    blockers: [],
+    assumptions: [],
+  }, null, 2), "utf8");
+  await writeFile(path.join(runDir, "worker-registry.json"), JSON.stringify({ workers: [] }, null, 2), "utf8");
+
+  const seenStages = [];
+  const runner = async function* (request) {
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+    if (request.role === "leader") {
+      const stage = ["spec", "plan", "build", "test", "review", "ship"].find((candidate) => request.prompt.includes(`Stage: ${candidate}`));
+      seenStages.push(stage);
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `leader-${stage}-session`,
+        result: JSON.stringify({
+          status: "continue",
+          stage,
+          reason: `${stage} resumed`,
+          recommendedAction: "continue",
+          assumptions: [],
+          task: {
+            id: `task_${stage}_001`,
+            title: `${stage} task`,
+            objective: `${stage} work`,
+            context: "Resume from current stage.",
+            inputFiles: ["task.md"],
+            allowedPaths: ["artifacts/**", "tasks/**"],
+            acceptanceCriteria: [`${stage} is complete.`],
+            verificationCommand: stage === "test" ? "node --test test/cli.test.mjs" : "npm run typecheck",
+            failureCategories: ["task_doc_defect", "execution_defect", "skill_context_defect", "credentials"],
+          },
+        }),
+      };
+      return;
+    }
+    if (request.role === "tester") {
+      for (const event of passingCcBashVerificationEvents("node --test test/cli.test.mjs")) yield event;
+    }
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "tester"
+        ? '{"status":"done","reason":"machine verification passed"}'
+        : `# ${request.role} result\n\nCompleted assigned task.`,
+    };
+  };
+
+  const result = await runCcTeamLifecycle({ runDir, model: "MiniMax-M2.7", teamMode: "multi-role", turnTimeoutMs: 1000, runner });
+  assert.equal(result.status, "done");
+  assert.deepEqual(seenStages, ["build", "test", "review", "ship"]);
+});
+
+test("cc-team-run injects lifecycle skill guidance into SDK prompts and summary", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-cc-team-run-skills-"));
+  const taskFile = path.join(rootDir, "task.md");
+  const runDir = path.join(rootDir, "run");
+  await writeFile(taskFile, "# Task\n\nBuild with team skills.\n", "utf8");
+
+  const requests = [];
+  const runner = async function* (request) {
+    requests.push(request);
+    yield { type: "system", subtype: "init", session_id: `${request.role}-session` };
+
+    if (request.role === "leader") {
+      const stage = ["spec", "plan", "build", "test", "review", "ship"].find((candidate) => request.prompt.includes(`Stage: ${candidate}`));
+      yield {
+        type: "result",
+        subtype: "success",
+        session_id: `leader-${stage}-session`,
+        result: JSON.stringify({
+          status: "continue",
+          stage,
+          reason: `${stage} follows skill guidance`,
+          recommendedAction: "continue",
+          assumptions: [],
+          task: {
+            id: `task_${stage}_001`,
+            title: `${stage} task`,
+            objective: `${stage} objective`,
+            context: "Use injected lifecycle skills.",
+            inputFiles: ["task.md"],
+            allowedPaths: ["artifacts/**", "tasks/**"],
+            acceptanceCriteria: [`${stage} artifact follows the role skill.`],
+            verificationCommand: stage === "test" ? "node --test test/cli.test.mjs" : "npm run typecheck",
+            failureCategories: ["task_doc_defect", "execution_defect", "skill_context_defect", "credentials"],
+          },
+        }),
+      };
+      return;
+    }
+
+    if (request.role === "tester") {
+      for (const event of passingCcBashVerificationEvents("node --test test/cli.test.mjs")) yield event;
+    }
+
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: `${request.role}-session`,
+      result: request.role === "tester"
+        ? '{"status":"done","reason":"machine verification passed"}'
+        : `# ${request.role} result\n\nCompleted with skill guidance.`,
+    };
+  };
+
+  await runCcTeamLifecycle({
+    taskFile,
+    runDir,
+    model: "MiniMax-M2.7",
+    teamMode: "multi-role",
+    turnTimeoutMs: 1000,
+    runner,
+  });
+
+  const leader = requests.find((request) => request.role === "leader");
+  const planner = requests.find((request) => request.role === "planner");
+  const developer = requests.find((request) => request.role === "developer");
+  const tester = requests.find((request) => request.role === "tester");
+  const reviewer = requests.find((request) => request.role === "reviewer");
+  const shipper = requests.find((request) => request.role === "shipper");
+
+  assert.match(leader.systemPrompt, /team-skill-guidance-v1/);
+  assert.match(leader.systemPrompt, /team-leader-lifecycle/);
+  assert.match(planner.systemPrompt, /spec-driven-development/);
+  assert.match(planner.systemPrompt, /planning-and-task-breakdown/);
+  assert.match(developer.systemPrompt, /incremental-implementation/);
+  assert.match(developer.systemPrompt, /test-driven-development/);
+  assert.match(tester.systemPrompt, /machine-verification/);
+  assert.match(reviewer.systemPrompt, /code-review-and-quality/);
+  assert.match(shipper.systemPrompt, /shipping-and-launch/);
+  assert.doesNotMatch(planner.prompt, /<team-skill id=/);
+  assert.doesNotMatch(developer.prompt, /<team-skill id=/);
+
+  const summary = JSON.parse(await readFile(path.join(runDir, "run-summary.json"), "utf8"));
+  assert.equal(summary.skillGuidanceVersion, "team-skill-guidance-v1");
+  assert.deepEqual(summary.appliedSkills.sort(), [
+    "code-review-and-quality",
+    "incremental-implementation",
+    "machine-verification",
+    "planning-and-task-breakdown",
+    "shipping-and-launch",
+    "spec-driven-development",
+    "team-leader-lifecycle",
+    "test-driven-development",
+  ].sort());
 });
 
 test("cc spec quality gate accepts numbered agent headings and verify tables", async () => {
@@ -2537,6 +3101,74 @@ test("status and report treat cc-run runs as claude-code workflow artifacts", as
     assert.equal(report.protocolHealth.missingRequiredProtocolEntriesCount, 0);
     assert.equal(report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount, 0);
     assert.equal(report.protocolHealth.progressRunSummaryDriftCount, 0);
+  } finally {
+    await rm(runsDir, { recursive: true, force: true });
+  }
+});
+
+test("status and report treat cc-team-run runs as claude-code workflow artifacts", async () => {
+  const runsDir = await mkdtemp(path.join(tmpdir(), "codex-gtd-status-cc-team-run-"));
+
+  try {
+    const runDir = path.join(runsDir, "cc-team-run");
+    await mkdir(path.join(runDir, "session-log"), { recursive: true });
+    await mkdir(path.join(runDir, "tasks"), { recursive: true });
+    await mkdir(path.join(runDir, "artifacts"), { recursive: true });
+    await writeFile(path.join(runDir, "task.md"), "# Task\n\nBuild a tiny CRUD app.\n", "utf8");
+    await writeFile(path.join(runDir, "progress.md"), "# CC Team Lifecycle Progress\n\nStatus: done\n", "utf8");
+    await writeFile(path.join(runDir, "blockers.md"), "", "utf8");
+    await writeFile(path.join(runDir, "team-state.json"), JSON.stringify({
+      schemaVersion: 1,
+      workflow: "cc-team-run",
+      status: "done",
+      currentStage: "ship",
+      recommendedAction: "inspect",
+      tasks: [],
+      blockers: [],
+      assumptions: [],
+    }, null, 2), "utf8");
+    await writeFile(path.join(runDir, "worker-registry.json"), JSON.stringify({
+      workers: [
+        { id: "worker-developer-1", role: "developer", cwd: runDir, sessionId: "developer-session", status: "healthy", skills: ["build"], updatedAt: "2026-05-13T00:00:00.000Z" },
+      ],
+    }, null, 2), "utf8");
+    await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      provider: "claude-code",
+      workflow: "cc-team-run",
+      runDir,
+      status: "done",
+      reason: "local delivery report is ready",
+      model: "MiniMax-M2.7",
+      currentStage: "ship",
+      recommendedAction: "inspect",
+      startedAt: "2026-05-13T00:00:00.000Z",
+      endedAt: "2026-05-13T00:00:10.000Z",
+      durationMs: 10000,
+      turnTimeoutMs: 300000,
+      metrics: {
+        sessionLogEntries: 6,
+        roleTurns: { leader: 6, planner: 2, developer: 1, tester: 1, reviewer: 1, shipper: 1 },
+      },
+      latestVerification: {
+        command: "npm run test:local",
+        status: "passed",
+        detail: "mock pass",
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const statusResult = runCli(["status", "--run-dir", runDir, "--json"]);
+    assert.equal(statusResult.status, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.protocolHealth, "clean");
+    assert.equal(status.recommendedAction, "inspect");
+    assert.match(status.summary, /cc-team-run completed/);
+
+    const report = await runReport({ runsDir });
+    assert.equal(report.protocolHealth.missingRequiredProtocolEntriesCount, 0);
+    assert.equal(report.protocolHealth.invalidOrMissingApiProbesReadmeSectionsCount, 0);
+    assert.equal(report.protocolHealth.progressRunSummaryDriftCount, 0);
+    assert.equal(report.recentRuns[0].failureCategory, "none");
   } finally {
     await rm(runsDir, { recursive: true, force: true });
   }
@@ -5545,4 +6177,130 @@ Design an English-learning romance game inspired by Love and Deepspace.
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test("mapEventToStreamEntry produces stream entries for relevant SDK events", async () => {
+  const { mapEventToStreamEntry } = await import("../dist/codex-team/driver.js");
+  const ctx = {
+    role: "developer",
+    model: "gpt-5.4",
+    threadId: "thread-1",
+    turnStartedAt: "2026-05-10T01:00:00.000Z",
+    ts: "2026-05-10T01:00:01.000Z",
+  };
+
+  const turnStarted = mapEventToStreamEntry({ type: "turn.started" }, ctx);
+  assert.equal(turnStarted?.kind, "turn_started");
+  assert.equal(turnStarted?.role, "developer");
+
+  const turnCompleted = mapEventToStreamEntry(
+    { type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 3, output_tokens: 7 } },
+    ctx,
+  );
+  assert.equal(turnCompleted?.kind, "turn_completed");
+  assert.equal(turnCompleted?.payload.usage.input_tokens, 12);
+
+  const turnFailed = mapEventToStreamEntry(
+    { type: "turn.failed", error: { message: "boom" } },
+    ctx,
+  );
+  assert.equal(turnFailed?.kind, "turn_failed");
+  assert.equal(turnFailed?.payload.error.message, "boom");
+
+  const errorEvent = mapEventToStreamEntry({ type: "error", message: "bad" }, ctx);
+  assert.equal(errorEvent?.kind, "error");
+  assert.equal(errorEvent?.payload.message, "bad");
+
+  const agentMessage = mapEventToStreamEntry(
+    { type: "item.completed", item: { id: "i1", type: "agent_message", text: "hello world" } },
+    ctx,
+  );
+  assert.equal(agentMessage?.kind, "agent_message");
+  assert.equal(agentMessage?.payload.text, "hello world");
+  assert.equal(agentMessage?.payload.truncated, undefined);
+
+  const longText = "x".repeat(5000);
+  const longMessage = mapEventToStreamEntry(
+    { type: "item.completed", item: { id: "i2", type: "agent_message", text: longText } },
+    ctx,
+  );
+  assert.equal(longMessage?.payload.text.length, 4096);
+  assert.equal(longMessage?.payload.truncated, true);
+
+  const command = mapEventToStreamEntry(
+    {
+      type: "item.completed",
+      item: {
+        id: "i3",
+        type: "command_execution",
+        command: "ls -la",
+        aggregated_output: "",
+        status: "completed",
+        exit_code: 0,
+      },
+    },
+    ctx,
+  );
+  assert.equal(command?.kind, "tool_call");
+  assert.equal(command?.payload.name, "shell");
+  assert.equal(command?.payload.command, "ls -la");
+  assert.equal(command?.payload.ok, true);
+
+  const fileChange = mapEventToStreamEntry(
+    {
+      type: "item.completed",
+      item: {
+        id: "i4",
+        type: "file_change",
+        changes: [{ path: "src/foo.ts", kind: "update" }],
+        status: "completed",
+      },
+    },
+    ctx,
+  );
+  assert.equal(fileChange?.kind, "tool_call");
+  assert.equal(fileChange?.payload.name, "file_change");
+  assert.equal(fileChange?.payload.changeCount, 1);
+
+  const mcp = mapEventToStreamEntry(
+    {
+      type: "item.completed",
+      item: {
+        id: "i5",
+        type: "mcp_tool_call",
+        server: "playwright",
+        tool: "browser_navigate",
+        arguments: {},
+        status: "completed",
+      },
+    },
+    ctx,
+  );
+  assert.equal(mcp?.kind, "tool_call");
+  assert.equal(mcp?.payload.name, "playwright/browser_navigate");
+
+  const itemError = mapEventToStreamEntry(
+    {
+      type: "item.completed",
+      item: { id: "i6", type: "error", message: "tool failed" },
+    },
+    ctx,
+  );
+  assert.equal(itemError?.kind, "error");
+  assert.equal(itemError?.payload.message, "tool failed");
+
+  const reasoning = mapEventToStreamEntry(
+    {
+      type: "item.completed",
+      item: { id: "i7", type: "reasoning", text: "thinking..." },
+    },
+    ctx,
+  );
+  assert.equal(reasoning, undefined);
+
+  const threadStarted = mapEventToStreamEntry(
+    { type: "thread.started", thread_id: "tid-1" },
+    ctx,
+  );
+  assert.equal(threadStarted, undefined);
 });

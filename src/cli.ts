@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runCcSpec, runCcTeam, type CcSpecMode, type CcSpecRunResult, type CcTeamRunResult } from "./cc-team/index.js";
+import { runCcSpec, runCcTeam, runCcTeamLifecycle, type CcSpecMode, type CcSpecRunResult, type CcTeamLifecycleRunResult, type CcTeamRunResult, type TeamMode } from "./cc-team/index.js";
 import { runSpecAgent } from "./spec-agent.js";
 import { applyWorkspacePatch, auditSnippets, buildResumePlan, buildRunRepairPlan, buildRunStatus, executeResumePlan, exportWorkspacePatch, promoteSnippetCandidate, runDoctor, runObserver, runOrchestration, runReport, runSdkProbe, runSmokeTest, type ApplyWorkspaceResult, type DoctorResult, type ExecuteResumeResult, type ExportWorkspaceResult, type ResumePlan, type RunRepairPlan, type RunReport, type RunStatus, type SdkProbeResult, type SnippetAuditResult, type WebSearchMode } from "./codex-team/driver.js";
 
@@ -32,6 +32,7 @@ type ParsedArgs = {
   webSearchMode?: WebSearchMode;
   turnTimeoutMs?: number;
   maxLoops?: number;
+  teamMode?: TeamMode;
   limit?: number;
   json?: boolean;
 };
@@ -75,6 +76,16 @@ function parseArgs(argv: string[]): ParsedArgs {
         throw new Error("--mode must be one of: new, change");
       }
       parsed.mode = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--team-mode") {
+      if (!next) throw new Error("--team-mode requires supervised or multi-role");
+      if (!isTeamMode(next)) {
+        throw new Error("--team-mode must be one of: supervised, multi-role");
+      }
+      parsed.teamMode = next;
       i += 1;
       continue;
     }
@@ -265,6 +276,10 @@ function isCcSpecMode(value: string): value is CcSpecMode {
   return value === "new" || value === "change";
 }
 
+function isTeamMode(value: string): value is TeamMode {
+  return value === "supervised" || value === "multi-role";
+}
+
 function printHelp(): void {
   console.log(`codex-gtd v0.5
 
@@ -272,6 +287,8 @@ Usage:
   codex-gtd run --task <task-file> [--run-dir <run-dir>] [--model <model>] [--web-search <disabled|cached|live>] [--runs-dir <dir>] [--snippets-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--observe] [--monitor-sdk|--skip-sdk-monitor] [--skip-discovery]
   codex-gtd cc-run --task <task-file> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
   codex-gtd cc-run --spec-dir <cc-spec-run-dir> [--target <repo-dir>] [--run-dir <run-dir>] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-team-run --task <task-file> [--target <repo-dir>] [--run-dir <run-dir>] [--team-mode supervised|multi-role] [--model <model>] [--runs-dir <dir>] [--turn-timeout-ms <ms>] [--max-loops <n>] [--json]
+  codex-gtd cc-team-run --run-dir <dir> [--reply <reply-file>] [--json]
   codex-gtd cc-spec --task <task-file> [--mode new|change] [--target <repo-dir>] [--run-dir <dir>] [--model <model>] [--turn-timeout-ms <ms>] [--json]
   codex-gtd cc-spec --run-dir <dir> [--reply <reply-file>] [--json]
   codex-gtd spec-agent --task <task-file> [--target <repo-dir>] [--run-dir <dir>] [--runs-dir <dir>] [--json]
@@ -535,6 +552,18 @@ function printCcSpecRun(result: CcSpecRunResult): void {
   if (result.reason) console.log(`Reason: ${result.reason}`);
 }
 
+function printCcTeamLifecycleRun(result: CcTeamLifecycleRunResult): void {
+  console.log(`CC team lifecycle directory: ${result.runDir}`);
+  if (result.targetDir) console.log(`Target directory: ${result.targetDir}`);
+  console.log(`Status: ${result.status}`);
+  console.log(`Stage: ${result.stage}`);
+  console.log(`Team mode: ${result.teamMode}`);
+  console.log(`Recommended action: ${result.recommendedAction}`);
+  console.log(`Model: ${result.model}`);
+  console.log(`Duration: ${formatDuration(result.durationMs)}`);
+  if (result.reason) console.log(`Reason: ${result.reason}`);
+}
+
 function printDoctor(result: DoctorResult): void {
   console.log("CLI doctor:");
   console.log(`Status: ${result.status}`);
@@ -684,6 +713,36 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(result, null, 2));
     } else {
       printCcTeamRun(result);
+    }
+    if (result.status !== "done") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (args.command === "cc-team-run") {
+    if (!args.task && !args.runDir) {
+      throw new Error("cc-team-run requires --task <task-file> or --run-dir <run-dir>");
+    }
+    if (args.replyFile && !args.runDir) {
+      throw new Error("cc-team-run --reply requires --run-dir");
+    }
+
+    const result = await runCcTeamLifecycle({
+      taskFile: args.task,
+      replyFile: args.replyFile,
+      targetDir: args.targetDir,
+      model: args.model,
+      runDir: args.runDir,
+      runsDir: args.runsDir,
+      turnTimeoutMs: args.turnTimeoutMs,
+      maxLoops: args.maxLoops,
+    });
+
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      printCcTeamLifecycleRun(result);
     }
     if (result.status !== "done") {
       process.exitCode = 1;

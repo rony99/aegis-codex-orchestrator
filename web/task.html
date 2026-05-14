@@ -455,6 +455,160 @@
       display: block;
     }
 
+    .event-stream-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .event-stream-status {
+      font-size: 12px;
+      color: var(--gray-500);
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+    }
+
+    .event-stream-status.connected { color: var(--success); }
+    .event-stream-status.connecting { color: var(--warning); }
+    .event-stream-status.error { color: var(--danger); }
+    .event-stream-status.ended { color: var(--gray-500); }
+
+    .event-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 600px;
+      overflow-y: auto;
+      padding: 4px;
+      background-color: var(--gray-50);
+      border-radius: 8px;
+    }
+
+    .event-turn {
+      border: 1px solid var(--gray-200);
+      border-radius: 8px;
+      background-color: white;
+      overflow: hidden;
+    }
+
+    .event-turn-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background-color: var(--gray-100);
+      font-size: 12px;
+      color: var(--gray-700);
+    }
+
+    .event-turn-body {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 12px;
+    }
+
+    .event-card {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 10px;
+      border-left: 3px solid var(--gray-300);
+      background-color: var(--gray-50);
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+    }
+
+    .event-card.kind-agent_message {
+      border-left-color: var(--primary);
+    }
+
+    .event-card.kind-tool_call {
+      border-left-color: #7c3aed;
+    }
+
+    .event-card.kind-error,
+    .event-card.kind-turn_failed {
+      border-left-color: var(--danger);
+      background-color: #fef2f2;
+    }
+
+    .event-card.kind-turn_started,
+    .event-card.kind-turn_completed {
+      border-left-color: var(--gray-400);
+      color: var(--gray-600);
+      font-size: 12px;
+    }
+
+    .event-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--gray-500);
+    }
+
+    .event-card-body {
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+    }
+
+    .role-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .role-badge.role-manager {
+      background-color: #ede9fe;
+      color: #6d28d9;
+    }
+
+    .role-badge.role-developer {
+      background-color: #dbeafe;
+      color: var(--primary);
+    }
+
+    .role-badge.role-tester {
+      background-color: #d1fae5;
+      color: var(--success);
+    }
+
+    .kind-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      background-color: var(--gray-200);
+      color: var(--gray-700);
+      text-transform: lowercase;
+    }
+
+    .event-card.kind-error .kind-badge,
+    .event-card.kind-turn_failed .kind-badge {
+      background-color: #fee2e2;
+      color: var(--danger);
+    }
+
+    .event-card.kind-tool_call .kind-badge {
+      background-color: #ede9fe;
+      color: #6d28d9;
+    }
+
+    .event-card.kind-agent_message .kind-badge {
+      background-color: #dbeafe;
+      color: var(--primary);
+    }
+
     .loading {
       text-align: center;
       padding: 48px;
@@ -520,6 +674,15 @@
     const API_BASE = '/api';
     let currentTaskId = null;
     let refreshInterval = null;
+    let activeTabId = 'log';
+    let hasRenderedOnce = false;
+    const TERMINAL_TASK_STATUSES = new Set([
+      'done',
+      'ask_user',
+      'max_loops_reached',
+      'failed',
+      'stopped',
+    ]);
 
     function getTaskIdFromUrl() {
       const path = window.location.pathname;
@@ -589,20 +752,23 @@
 
         const data = await response.json();
         renderTaskDetails(data);
+        hasRenderedOnce = true;
 
-        if (data.task.status === 'running' || data.task.status === 'queued') {
+        const isTerminal = TERMINAL_TASK_STATUSES.has(data.task.status);
+        if (!isTerminal) {
           if (!refreshInterval) {
             refreshInterval = setInterval(fetchTaskDetails, 3000);
           }
-        } else {
-          if (refreshInterval) {
-            clearInterval(refreshInterval);
-            refreshInterval = null;
-          }
+        } else if (refreshInterval) {
+          clearInterval(refreshInterval);
+          refreshInterval = null;
         }
       } catch (error) {
         console.error('Failed to fetch task details:', error);
-        renderError(`无法连接任务 API：${error.message}`);
+        if (!hasRenderedOnce) {
+          renderError(`无法连接任务 API：${error.message}`);
+        }
+        // Otherwise keep the last good render and let the next interval tick retry.
       }
     }
 
@@ -772,12 +938,13 @@
 
         <div class="card">
           <div class="tabs">
-            <button class="tab-btn active" data-tab="log">运行日志</button>
-            <button class="tab-btn" data-tab="spec">规格文档</button>
-            ${summary ? `<button class="tab-btn" data-tab="summary">运行摘要</button>` : ''}
+            <button class="tab-btn ${activeTabId === 'log' ? 'active' : ''}" data-tab="log">运行日志</button>
+            <button class="tab-btn ${activeTabId === 'events' ? 'active' : ''}" data-tab="events">实时事件</button>
+            <button class="tab-btn ${activeTabId === 'spec' ? 'active' : ''}" data-tab="spec">规格文档</button>
+            ${summary ? `<button class="tab-btn ${activeTabId === 'summary' ? 'active' : ''}" data-tab="summary">运行摘要</button>` : ''}
           </div>
 
-          <div class="tab-content active" id="tab-log">
+          <div class="tab-content ${activeTabId === 'log' ? 'active' : ''}" id="tab-log">
             ${log ? `
               <div class="log-container">${escapeHtml(log)}</div>
             ` : `
@@ -787,7 +954,17 @@
             `}
           </div>
 
-          <div class="tab-content" id="tab-spec">
+          <div class="tab-content ${activeTabId === 'events' ? 'active' : ''}" id="tab-events">
+            <div class="event-stream-toolbar">
+              <span class="event-stream-status" id="eventStreamStatus">未连接</span>
+              <button type="button" class="btn btn-secondary refresh-btn" id="eventStreamReconnectBtn" style="display:none;" onclick="reconnectEventStream()">重新连接</button>
+            </div>
+            <div class="event-stream" id="eventStream">
+              <div class="loading"><p>等待事件...</p></div>
+            </div>
+          </div>
+
+          <div class="tab-content ${activeTabId === 'spec' ? 'active' : ''}" id="tab-spec">
             ${spec ? `
               <div class="spec-box">${renderMarkdown(spec)}</div>
             ` : `
@@ -808,6 +985,7 @@
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           const tabId = btn.dataset.tab;
+          activeTabId = tabId;
 
           document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
           document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -816,6 +994,11 @@
           document.getElementById(`tab-${tabId}`).classList.add('active');
         });
       });
+
+      // After re-render, repaint events tab from in-memory state so polling refreshes
+      // don't blank out the live stream.
+      setEventStreamStatus(eventState.statusLabel, eventState.statusKind);
+      renderEventStream();
     }
 
     async function submitReply(event) {
@@ -931,9 +1114,207 @@
       return html;
     }
 
+    // Live event stream state
+    const eventState = {
+      source: null,
+      connected: false,
+      ended: false,
+      retryAttempts: 0,
+      retryTimer: null,
+      turns: new Map(), // key: role::turnStartedAt -> {role, turnStartedAt, model, events:[]}
+      order: [], // ordered keys
+      statusLabel: '未连接',
+      statusKind: '',
+    };
+
+    function setEventStreamStatus(label, kind) {
+      eventState.statusLabel = label;
+      eventState.statusKind = kind || '';
+      const el = document.getElementById('eventStreamStatus');
+      if (!el) return;
+      el.textContent = label;
+      el.className = 'event-stream-status' + (kind ? ' ' + kind : '');
+      const reconnectBtn = document.getElementById('eventStreamReconnectBtn');
+      if (reconnectBtn) {
+        reconnectBtn.style.display = kind === 'error' ? 'inline-flex' : 'none';
+      }
+    }
+
+    function turnKey(entry) {
+      return `${entry.role}::${entry.turnStartedAt}`;
+    }
+
+    function addEventEntry(entry) {
+      const key = turnKey(entry);
+      let turn = eventState.turns.get(key);
+      if (!turn) {
+        turn = { role: entry.role, turnStartedAt: entry.turnStartedAt, model: entry.model, events: [] };
+        eventState.turns.set(key, turn);
+        eventState.order.push(key);
+      }
+      turn.events.push(entry);
+    }
+
+    function formatTime(ts) {
+      if (!ts) return '';
+      try {
+        const d = new Date(ts);
+        return d.toLocaleTimeString('zh-CN', { hour12: false });
+      } catch {
+        return ts;
+      }
+    }
+
+    function renderEventBody(entry) {
+      const p = entry.payload || {};
+      if (entry.kind === 'agent_message') {
+        const text = p.text || '';
+        return `<div class="event-card-body">${escapeHtml(text)}${p.truncated ? '\n[…truncated]' : ''}</div>`;
+      }
+      if (entry.kind === 'tool_call') {
+        const name = p.name || 'tool';
+        const ok = p.ok === true ? 'ok' : (p.ok === false ? 'err' : '');
+        let detail = '';
+        if (p.command) detail = p.command;
+        else if (p.query) detail = p.query;
+        else if (Array.isArray(p.changes)) {
+          detail = p.changes.map(c => `${c.kind} ${c.path}`).join('\n');
+          if (p.changeCount > p.changes.length) detail += `\n[+${p.changeCount - p.changes.length} more]`;
+        } else if (p.error) detail = p.error;
+        return `<div class="event-card-body">→ ${escapeHtml(name)}${ok ? ` (${ok})` : ''}${detail ? `\n${escapeHtml(detail)}` : ''}</div>`;
+      }
+      if (entry.kind === 'error' || entry.kind === 'turn_failed') {
+        const message = p.message || (p.error && p.error.message) || '';
+        return `<div class="event-card-body">${escapeHtml(message)}</div>`;
+      }
+      if (entry.kind === 'turn_completed' && p.usage) {
+        const u = p.usage;
+        return `<div class="event-card-body">tokens: in=${u.input_tokens || 0} cached=${u.cached_input_tokens || 0} out=${u.output_tokens || 0}</div>`;
+      }
+      return '';
+    }
+
+    function renderEventStream() {
+      const container = document.getElementById('eventStream');
+      if (!container) return;
+      if (eventState.order.length === 0) {
+        container.innerHTML = `<div class="loading"><p>等待事件...</p></div>`;
+        return;
+      }
+      const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+      const html = eventState.order.map(key => {
+        const turn = eventState.turns.get(key);
+        if (!turn) return '';
+        const eventsHtml = turn.events.map(entry => `
+          <div class="event-card kind-${entry.kind}">
+            <div class="event-card-meta">
+              <span class="kind-badge">${entry.kind}</span>
+              <span>${formatTime(entry.ts)}</span>
+            </div>
+            ${renderEventBody(entry)}
+          </div>
+        `).join('');
+        return `
+          <div class="event-turn">
+            <div class="event-turn-header">
+              <span class="role-badge role-${turn.role}">${getRoleLabel(turn.role)}</span>
+              <span>${escapeHtml(turn.model || '')}</span>
+              <span style="margin-left:auto;">${formatTime(turn.turnStartedAt)}</span>
+            </div>
+            <div class="event-turn-body">${eventsHtml}</div>
+          </div>
+        `;
+      }).join('');
+      container.innerHTML = html;
+      if (wasNearBottom) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+
+    function handleEventStreamData(rawData) {
+      let entry;
+      try {
+        entry = JSON.parse(rawData);
+      } catch {
+        return;
+      }
+      if (!entry || typeof entry !== 'object' || !entry.kind || !entry.role || !entry.turnStartedAt) return;
+      addEventEntry(entry);
+      renderEventStream();
+    }
+
+    function closeEventStream() {
+      if (eventState.source) {
+        try { eventState.source.close(); } catch {}
+        eventState.source = null;
+      }
+      if (eventState.retryTimer) {
+        clearTimeout(eventState.retryTimer);
+        eventState.retryTimer = null;
+      }
+      eventState.connected = false;
+    }
+
+    function openEventStream() {
+      if (!currentTaskId || eventState.ended) return;
+      closeEventStream();
+      setEventStreamStatus('连接中...', 'connecting');
+      const url = `${API_BASE}/tasks/${encodeURIComponent(currentTaskId)}/stream`;
+      const source = new EventSource(url);
+      eventState.source = source;
+      source.onopen = () => {
+        eventState.connected = true;
+        eventState.retryAttempts = 0;
+        setEventStreamStatus('已连接 · 实时', 'connected');
+      };
+      source.onmessage = (ev) => {
+        handleEventStreamData(ev.data);
+      };
+      source.addEventListener('end', (ev) => {
+        eventState.ended = true;
+        let label = '流已结束';
+        try {
+          const data = JSON.parse(ev.data);
+          if (data && data.status) label += ` (${data.status})`;
+        } catch {}
+        setEventStreamStatus(label, 'ended');
+        closeEventStream();
+        // SSE end means the run reached a terminal status. Refresh task details
+        // immediately so the status badge / actions flip without waiting for the
+        // next 3s polling tick.
+        fetchTaskDetails();
+      });
+      source.onerror = () => {
+        if (eventState.ended) return;
+        eventState.connected = false;
+        if (eventState.retryAttempts >= 4) {
+          setEventStreamStatus('连接失败,请手动重试', 'error');
+          closeEventStream();
+          return;
+        }
+        const delay = Math.min(10000, 1000 * Math.pow(2, eventState.retryAttempts));
+        eventState.retryAttempts += 1;
+        setEventStreamStatus(`连接断开,${Math.round(delay/1000)}s 后重试 (${eventState.retryAttempts}/4)`, 'error');
+        try { source.close(); } catch {}
+        eventState.source = null;
+        eventState.retryTimer = setTimeout(() => {
+          openEventStream();
+        }, delay);
+      };
+    }
+
+    function reconnectEventStream() {
+      eventState.ended = false;
+      eventState.retryAttempts = 0;
+      openEventStream();
+    }
+
+    window.addEventListener('beforeunload', closeEventStream);
+
     currentTaskId = getTaskIdFromUrl();
     if (currentTaskId) {
       fetchTaskDetails();
+      openEventStream();
     }
   </script>
 </body>

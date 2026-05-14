@@ -1,5 +1,6 @@
 import express, { type Express, type Request, type Response } from "express";
 import type { Server } from "node:http";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiRouter } from "./routes.js";
@@ -12,6 +13,9 @@ const PORT_FALLBACK_LIMIT = 20;
 
 export function createServer(): Express {
   const app = express();
+  const reactDistDir = path.resolve(__dirname, "..", "web-app");
+  const reactIndexPath = path.join(reactDistDir, "index.html");
+  const hasReactBuild = existsSync(reactIndexPath);
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -20,15 +24,18 @@ export function createServer(): Express {
     "/static",
     express.static(path.resolve(__dirname, "..", "..", "web"))
   );
+  if (hasReactBuild) {
+    app.use(express.static(reactDistDir));
+  }
 
   app.use("/api", apiRouter);
 
   app.get("/", (_req: Request, res: Response) => {
-    res.sendFile(path.resolve(__dirname, "..", "..", "web", "index.html"));
+    res.sendFile(hasReactBuild ? reactIndexPath : path.resolve(__dirname, "..", "..", "web", "index.html"));
   });
 
   app.get("/task/:id", (_req: Request, res: Response) => {
-    res.sendFile(path.resolve(__dirname, "..", "..", "web", "task.html"));
+    res.sendFile(hasReactBuild ? reactIndexPath : path.resolve(__dirname, "..", "..", "web", "task.html"));
   });
 
   app.use((_req: Request, res: Response) => {
@@ -108,6 +115,7 @@ ${portNote}║                                                                  
 ║  - POST   /api/tasks          - Create and start a new task     ║
 ║  - GET    /api/tasks          - List all tasks                   ║
 ║  - GET    /api/tasks/:id      - Get task details and progress   ║
+║  - GET    /api/tasks/:id/stream - SSE live role event stream    ║
 ║  - POST   /api/tasks/:id/reply - Reply and continue ask_user    ║
 ║  - POST   /api/tasks/:id/stop - Stop a running task             ║
 ║                                                                  ║

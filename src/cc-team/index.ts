@@ -2,8 +2,10 @@ import { query, type Options as ClaudeCodeOptions, type OutputFormat, type Permi
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildCcSpecRolePrompt, buildCcSpecSystemPrompt, CC_SPEC_ROLES, type CcSpecMode, type CcSpecRole } from "./spec-prompts.js";
+import { formatTeamSkillGuidance, TEAM_SKILL_GUIDANCE_VERSION, TEAM_SKILL_IDS, teamSkillsForRole } from "./team-skills.js";
 
 export type { CcSpecMode, CcSpecRole } from "./spec-prompts.js";
+export { TEAM_SKILL_GUIDANCE_VERSION, TEAM_SKILL_IDS } from "./team-skills.js";
 
 const DEFAULT_CC_MODEL = "MiniMax-M2.7";
 const DEFAULT_RUNS_DIR = "runs";
@@ -34,8 +36,14 @@ export type CcManagerPlan = {
   notes?: string;
 };
 
-type CcTeamWorkerRole = "manager" | "developer" | "tester";
-type CcRole = CcTeamWorkerRole | CcSpecRole;
+export type CcTeamWorkerRole = "manager" | "developer" | "tester";
+export type TeamStage = "spec" | "plan" | "build" | "test" | "review" | "ship";
+export type TeamMode = "supervised" | "multi-role";
+export type WorkerRole = "leader" | "supervisor" | "planner" | "developer" | "tester" | "reviewer" | "shipper";
+export type TeamTaskStatus = "pending" | "running" | "done" | "blocked" | "failed";
+export type BlockerKind = "user_decision" | "credentials" | "task_doc_defect" | "execution_defect" | "skill_context_defect" | "verification_failed";
+export type CcRole = CcTeamWorkerRole | CcSpecRole | WorkerRole;
+type CcWorkflow = "cc-run" | "cc-spec" | "cc-team-run";
 type CcTeamStatus = "done" | "ask_user" | "max_loops_reached" | "failed";
 
 export type CcTesterDecision = {
@@ -50,6 +58,8 @@ export type CcSpecReviewerDecision = {
 
 export type CcRoleRunRequest = {
   role: CcRole;
+  workflow?: CcWorkflow;
+  teamMode?: TeamMode;
   model: string;
   cwd: string;
   prompt: string;
@@ -61,6 +71,7 @@ export type CcRoleRunRequest = {
   permissionMode: "acceptEdits" | "dontAsk";
   abortController: AbortController;
   interactionRequests: CcInteractionRequest[];
+  resumeSessionId?: string;
 };
 
 export type CcRoleRunner = (request: CcRoleRunRequest) => AsyncIterable<SDKMessage | unknown>;
@@ -74,6 +85,19 @@ export type CcTeamRunOptions = {
   model?: string;
   maxLoops?: number;
   turnTimeoutMs?: number;
+  runner?: CcRoleRunner;
+};
+
+export type CcTeamLifecycleRunOptions = {
+  taskFile?: string;
+  replyFile?: string;
+  targetDir?: string;
+  runDir?: string;
+  runsDir?: string;
+  model?: string;
+  turnTimeoutMs?: number;
+  maxLoops?: number;
+  teamMode?: TeamMode;
   runner?: CcRoleRunner;
 };
 
@@ -100,6 +124,69 @@ export type CcTeamRunResult = {
 
 export type CcSpecRunResult = CcTeamRunResult & {
   mode: CcSpecMode;
+};
+
+export type CcTeamLifecycleRunResult = CcTeamRunResult & {
+  workflow: "cc-team-run";
+  stage: TeamStage;
+  recommendedAction: string;
+  teamMode: TeamMode;
+};
+
+export type TeamTask = {
+  id: string;
+  stage: TeamStage;
+  role: WorkerRole;
+  title: string;
+  status: TeamTaskStatus;
+  objective: string;
+  context: string;
+  inputFiles: string[];
+  allowedPaths: string[];
+  acceptanceCriteria: string[];
+  verificationCommand: string;
+  failureCategories: BlockerKind[];
+};
+
+export type WorkerRegistryEntry = {
+  id: string;
+  role: WorkerRole;
+  cwd: string;
+  sessionId: string;
+  status: "healthy" | "failed" | "retired";
+  skills: string[];
+  lastTaskId?: string;
+  updatedAt: string;
+};
+
+export type WorkerRegistry = {
+  workers: WorkerRegistryEntry[];
+};
+
+export type TeamBlocker = {
+  kind: BlockerKind;
+  question: string;
+  stage?: TeamStage;
+  taskId?: string;
+};
+
+export type TeamState = {
+  schemaVersion: 1;
+  workflow: "cc-team-run";
+  status: CcTeamStatus | "running";
+  currentStage: TeamStage;
+  recommendedAction: string;
+  teamMode: TeamMode;
+  skillGuidanceVersion: typeof TEAM_SKILL_GUIDANCE_VERSION;
+  appliedSkills: readonly string[];
+  tasks: TeamTask[];
+  blockers: TeamBlocker[];
+  assumptions: string[];
+  latestVerification?: {
+    command: string;
+    status: "passed" | "failed" | "missing";
+    detail: string;
+  };
 };
 
 type CcRoleTurnResult = {
@@ -179,6 +266,32 @@ type CcSpecRunSummary = {
   };
 };
 
+type CcTeamLifecycleRunSummary = {
+  schemaVersion: 1;
+  provider: "claude-code";
+  workflow: "cc-team-run";
+  runDir: string;
+  status: CcTeamStatus;
+  reason?: string;
+  model: string;
+  taskFile?: string;
+  targetDir?: string;
+  currentStage: TeamStage;
+  recommendedAction: string;
+  teamMode: TeamMode;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  turnTimeoutMs: number;
+  skillGuidanceVersion: typeof TEAM_SKILL_GUIDANCE_VERSION;
+  appliedSkills: readonly string[];
+  metrics: {
+    sessionLogEntries: number;
+    roleTurns: Record<WorkerRole, number>;
+  };
+  latestVerification?: TeamState["latestVerification"];
+};
+
 const CC_TESTER_DECISION_OUTPUT_FORMAT: OutputFormat = {
   type: "json_schema",
   schema: {
@@ -220,6 +333,47 @@ const CC_MANAGER_PLAN_OUTPUT_FORMAT: OutputFormat = {
       notes: { type: "string" },
     },
     required: ["streams"],
+    additionalProperties: false,
+  },
+};
+
+const TEAM_LEADER_DECISION_OUTPUT_FORMAT: OutputFormat = {
+  type: "json_schema",
+  schema: {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["continue", "ask_user", "done"] },
+      stage: { type: "string", enum: ["spec", "plan", "build", "test", "review", "ship"] },
+      reason: { type: "string" },
+      recommendedAction: { type: "string" },
+      assumptions: { type: "array", items: { type: "string" } },
+      blocker: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["user_decision", "credentials", "task_doc_defect", "execution_defect", "skill_context_defect", "verification_failed"] },
+          question: { type: "string" },
+        },
+        required: ["kind", "question"],
+        additionalProperties: false,
+      },
+      task: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          objective: { type: "string" },
+          context: { type: "string" },
+          inputFiles: { type: "array", items: { type: "string" } },
+          allowedPaths: { type: "array", items: { type: "string" } },
+          acceptanceCriteria: { type: "array", items: { type: "string" } },
+          verificationCommand: { type: "string" },
+          failureCategories: { type: "array", items: { type: "string", enum: ["user_decision", "credentials", "task_doc_defect", "execution_defect", "skill_context_defect", "verification_failed"] } },
+        },
+        required: ["id", "title", "objective", "context", "inputFiles", "allowedPaths", "acceptanceCriteria", "verificationCommand", "failureCategories"],
+        additionalProperties: false,
+      },
+    },
+    required: ["status", "stage", "reason", "recommendedAction"],
     additionalProperties: false,
   },
 };
@@ -559,6 +713,461 @@ export async function runCcSpec(options: CcSpecRunOptions): Promise<CcSpecRunRes
   return { runDir, status: finalStatus, reason: finalReason, model, durationMs, mode };
 }
 
+const TEAM_STAGES: readonly TeamStage[] = ["spec", "plan", "build", "test", "review", "ship"];
+
+export async function runCcTeamLifecycle(options: CcTeamLifecycleRunOptions): Promise<CcTeamLifecycleRunResult> {
+  if (!options.taskFile && !options.runDir) {
+    throw new Error("cc-team-run requires taskFile or runDir");
+  }
+  if (options.replyFile && !options.runDir) {
+    throw new Error("cc-team-run reply mode requires runDir");
+  }
+
+  const model = options.model ?? process.env.ANTHROPIC_MODEL ?? DEFAULT_CC_MODEL;
+  const teamMode = options.teamMode ?? "supervised";
+  const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const taskFile = options.taskFile ? path.resolve(options.taskFile) : undefined;
+  const runDir = path.resolve(options.runDir ?? createCcRunDirectoryName(options.runsDir ?? DEFAULT_RUNS_DIR, "cc-team"));
+  const targetDir = options.targetDir ? path.resolve(options.targetDir) : undefined;
+  const executionDir = targetDir ?? runDir;
+  const task = taskFile ? await readFile(taskFile, "utf8") : await readFile(path.join(runDir, "task.md"), "utf8");
+  const runner = options.runner ?? defaultCcRoleRunner;
+  const startedAt = new Date().toISOString();
+  const startedAtMs = Date.now();
+  const roleTurns = createEmptyLifecycleRoleTurns();
+  let sessionLogEntries = 0;
+  let finalStatus: CcTeamStatus = "failed";
+  let finalReason = "cc-team-run did not complete.";
+  let currentStage: TeamStage = "spec";
+  let recommendedAction = "inspect";
+
+  await initializeCcTeamLifecycleProtocol({ runDir, task, model, startedAt, targetDir, teamMode });
+  if (options.replyFile) {
+    const reply = await readFile(path.resolve(options.replyFile), "utf8");
+    await appendUserReply(runDir, reply);
+    await appendCcProgress(runDir, "\nReply appended. Resuming team lifecycle.\n");
+  }
+
+  let state = await readTeamState(runDir);
+  let registry = await readWorkerRegistry(runDir);
+  const startStageIndex = state.status === "done" ? TEAM_STAGES.length : Math.max(0, TEAM_STAGES.indexOf(state.currentStage));
+
+  if (teamMode === "supervised") {
+    return runCcTeamLifecycleSupervised({
+      task,
+      taskFile,
+      runDir,
+      targetDir,
+      executionDir,
+      model,
+      startedAt,
+      startedAtMs,
+      turnTimeoutMs,
+      runner,
+      state,
+      startStageIndex,
+    });
+  }
+
+  try {
+    if (state.status === "done") {
+      finalStatus = "done";
+      finalReason = "cc-team-run already completed.";
+      currentStage = state.currentStage;
+      recommendedAction = state.recommendedAction || "inspect";
+    }
+
+    for (const stage of TEAM_STAGES.slice(startStageIndex)) {
+      currentStage = stage;
+      state.currentStage = stage;
+      state.status = "running";
+      state.recommendedAction = "continue";
+      await writeTeamState(runDir, state);
+
+      await appendCcProgress(runDir, `\n## Stage: ${stage}\n\nLeader started.\n`);
+      roleTurns.leader += 1;
+      const leaderTurn = await runCcRole({
+        role: "leader",
+        workflow: "cc-team-run",
+        teamMode,
+        model,
+        runDir,
+        cwd: executionDir,
+        prompt: buildTeamLeaderPrompt({ stage, task, runDir, targetDir, state }),
+        runner,
+        turnTimeoutMs,
+      });
+      sessionLogEntries += 1;
+      const leaderInteraction = firstAskUserInteraction(leaderTurn.interactionRequests);
+      if (leaderInteraction) {
+        finalStatus = "ask_user";
+        finalReason = summarizeCcInteraction(leaderInteraction);
+        recommendedAction = "answer_user";
+        await appendCcBlocker(runDir, finalReason);
+        await writeCcInteractionRequest(runDir, leaderInteraction);
+        break;
+      }
+
+      const decision = parseTeamLeaderDecision(leaderTurn.finalResponse, stage);
+      recommendedAction = decision.recommendedAction;
+      state.assumptions.push(...decision.assumptions);
+
+      if (decision.status === "ask_user") {
+        const blocker = decision.blocker ?? { kind: "user_decision" as BlockerKind, question: decision.reason };
+        finalStatus = "ask_user";
+        finalReason = decision.reason;
+        recommendedAction = decision.recommendedAction || "answer_user";
+        state.blockers.push({ ...blocker, stage });
+        await appendCcBlocker(runDir, `${blocker.kind}: ${blocker.question}`);
+        await writeTeamInteractionRequest(runDir, stage, blocker);
+        break;
+      }
+
+      if (decision.status === "done") {
+        finalStatus = "done";
+        finalReason = decision.reason;
+        break;
+      }
+
+      const taskDocument = decision.task;
+      if (!taskDocument) {
+        finalStatus = "failed";
+        finalReason = `leader did not provide a task document for ${stage}`;
+        state.blockers.push({ kind: "task_doc_defect", question: finalReason, stage });
+        await appendCcBlocker(runDir, finalReason);
+        break;
+      }
+
+      const teamTask = normalizeTeamTask(stage, taskDocument);
+      state.tasks.push(teamTask);
+      await writeTeamTaskDocument(runDir, teamTask);
+      await writeTeamState(runDir, state);
+
+      const worker = workerRoleForStage(stage);
+      const reusable = selectReusableWorker(registry, { role: worker, cwd: executionDir });
+      await appendCcProgress(runDir, `\n${worker} started for ${teamTask.id}${reusable ? ` (resuming ${reusable.sessionId})` : ""}.\n`);
+      roleTurns[worker] += 1;
+      teamTask.status = "running";
+      await writeTeamState(runDir, state);
+      const workerTurn = await runCcRole({
+        role: worker,
+        workflow: "cc-team-run",
+        teamMode,
+        model,
+        runDir,
+        cwd: executionDir,
+        prompt: buildTeamWorkerPrompt({ stage, role: worker, task: teamTask, runDir, targetDir }),
+        runner,
+        turnTimeoutMs,
+        resumeSessionId: reusable?.sessionId,
+      });
+      sessionLogEntries += 1;
+
+      const workerInteraction = firstAskUserInteraction(workerTurn.interactionRequests);
+      if (workerInteraction) {
+        finalStatus = "ask_user";
+        finalReason = summarizeCcInteraction(workerInteraction);
+        recommendedAction = "answer_user";
+        teamTask.status = "blocked";
+        state.blockers.push({ kind: "user_decision", question: finalReason, stage, taskId: teamTask.id });
+        await appendCcBlocker(runDir, finalReason);
+        await writeCcInteractionRequest(runDir, workerInteraction);
+        break;
+      }
+
+      await persistTeamStageArtifact(runDir, stage, workerTurn.finalResponse);
+      await upsertWorkerRegistryEntry(runDir, registry, {
+        role: worker,
+        cwd: executionDir,
+        sessionId: workerTurn.sessionId,
+        taskId: teamTask.id,
+        status: "healthy",
+      });
+      registry = await readWorkerRegistry(runDir);
+
+      if (stage === "test") {
+        const decision = parseCcTesterDecision(workerTurn.finalResponse);
+        applyCcTesterVerificationGate(decision, workerTurn.events);
+        await writeFile(path.join(runDir, "tester-decision.json"), `${JSON.stringify(decision, null, 2)}\n`, "utf8");
+        state.latestVerification = latestVerificationFromTesterDecision(teamTask, decision);
+        if (decision.status !== "done") {
+          finalStatus = decision.status === "ask_user" ? "ask_user" : "failed";
+          finalReason = decision.reason;
+          recommendedAction = decision.status === "ask_user" ? "answer_user" : "rerun";
+          teamTask.status = decision.status === "ask_user" ? "blocked" : "failed";
+          state.blockers.push({ kind: "verification_failed", question: decision.reason, stage, taskId: teamTask.id });
+          await appendCcBlocker(runDir, decision.reason);
+          break;
+        }
+      }
+
+      if (stage === "review" && /(^|\n)\s*(Critical|REQUEST CHANGES|NO-GO)\b/i.test(workerTurn.finalResponse)) {
+        finalStatus = "failed";
+        finalReason = "review found blocking issues; rerun build/test after addressing review.md";
+        recommendedAction = "rerun";
+        teamTask.status = "failed";
+        state.blockers.push({ kind: "verification_failed", question: finalReason, stage, taskId: teamTask.id });
+        await appendCcBlocker(runDir, finalReason);
+        break;
+      }
+
+      teamTask.status = "done";
+      state.recommendedAction = "continue";
+      await writeTeamState(runDir, state);
+      finalStatus = "done";
+      finalReason = `${stage} completed.`;
+    }
+  } catch (error) {
+    finalStatus = "failed";
+    finalReason = summarizeError(error);
+    recommendedAction = "inspect";
+    await appendCcBlocker(runDir, finalReason);
+  }
+
+  if (finalStatus === "done" && currentStage === "ship") {
+    finalReason = "cc-team-run completed local delivery lifecycle.";
+    recommendedAction = "inspect";
+  }
+
+  state = await readTeamState(runDir);
+  state.status = finalStatus;
+  state.currentStage = currentStage;
+  state.recommendedAction = recommendedAction;
+  await writeTeamState(runDir, state);
+  await appendCcProgress(runDir, `\n## Finished\n\nStatus: ${finalStatus}\nReason: ${finalReason}\n`);
+
+  const endedAt = new Date().toISOString();
+  const durationMs = Date.now() - startedAtMs;
+  const summary: CcTeamLifecycleRunSummary = {
+    schemaVersion: 1,
+    provider: "claude-code",
+    workflow: "cc-team-run",
+    runDir,
+    status: finalStatus,
+    reason: finalReason,
+    model,
+    taskFile,
+    targetDir,
+    currentStage,
+    recommendedAction,
+    teamMode,
+    startedAt,
+    endedAt,
+    durationMs,
+    turnTimeoutMs,
+    skillGuidanceVersion: TEAM_SKILL_GUIDANCE_VERSION,
+    appliedSkills: TEAM_SKILL_IDS,
+    metrics: {
+      sessionLogEntries,
+      roleTurns,
+    },
+    latestVerification: state.latestVerification,
+  };
+  await writeFile(path.join(runDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+
+  return { runDir, targetDir, status: finalStatus, reason: finalReason, model, durationMs, workflow: "cc-team-run", stage: currentStage, recommendedAction, teamMode };
+}
+
+async function runCcTeamLifecycleSupervised(input: {
+  task: string;
+  taskFile?: string;
+  runDir: string;
+  targetDir?: string;
+  executionDir: string;
+  model: string;
+  startedAt: string;
+  startedAtMs: number;
+  turnTimeoutMs: number;
+  runner: CcRoleRunner;
+  state: TeamState;
+  startStageIndex: number;
+}): Promise<CcTeamLifecycleRunResult> {
+  const teamMode: TeamMode = "supervised";
+  const roleTurns = createEmptyLifecycleRoleTurns();
+  let sessionLogEntries = 0;
+  let state = input.state;
+  let finalStatus: CcTeamStatus = "failed";
+  let finalReason = "cc-team-run supervised mode did not complete.";
+  let currentStage: TeamStage = state.currentStage;
+  let recommendedAction = "inspect";
+
+  await writeTeamCockpit(input.runDir, {
+    task: input.task,
+    state,
+    stage: currentStage,
+    leaderReport: "Supervised lifecycle initialized.",
+    supervisorReport: "Supervisor pending first inspection.",
+    targetDir: input.targetDir,
+  });
+
+  try {
+    if (state.status === "done") {
+      finalStatus = "done";
+      finalReason = "cc-team-run already completed.";
+      recommendedAction = state.recommendedAction || "inspect";
+    }
+
+    for (const stage of TEAM_STAGES.slice(input.startStageIndex)) {
+      currentStage = stage;
+      state.currentStage = stage;
+      state.status = "running";
+      state.teamMode = teamMode;
+      state.recommendedAction = "continue";
+      await writeTeamState(input.runDir, state);
+      await appendCcProgress(input.runDir, `\n## Stage: ${stage}\n\nLeader started in supervised mode.\n`);
+
+      const guidance = await readTextIfExists(path.join(input.runDir, "leader-guidance.md"));
+      roleTurns.leader += 1;
+      const leaderTurn = await runCcRole({
+        role: "leader",
+        workflow: "cc-team-run",
+        teamMode,
+        model: input.model,
+        runDir: input.runDir,
+        cwd: input.executionDir,
+        prompt: buildSupervisedLeaderPrompt({ stage, task: input.task, runDir: input.runDir, targetDir: input.targetDir, state, guidance }),
+        runner: input.runner,
+        turnTimeoutMs: input.turnTimeoutMs,
+      });
+      sessionLogEntries += 1;
+
+      const leaderInteraction = firstAskUserInteraction(leaderTurn.interactionRequests);
+      if (leaderInteraction) {
+        finalStatus = "ask_user";
+        finalReason = summarizeCcInteraction(leaderInteraction);
+        recommendedAction = "answer_user";
+        await appendCcBlocker(input.runDir, finalReason);
+        await writeCcInteractionRequest(input.runDir, leaderInteraction);
+        break;
+      }
+
+      await persistTeamStageArtifact(input.runDir, stage, leaderTurn.finalResponse);
+      upsertSupervisedStageTask(state, stage, "done", leaderTurn.finalResponse);
+      await writeTeamState(input.runDir, state);
+      await writeTeamCockpit(input.runDir, {
+        task: input.task,
+        state,
+        stage,
+        leaderReport: leaderTurn.finalResponse,
+        supervisorReport: "Supervisor inspection pending.",
+        targetDir: input.targetDir,
+        guidance,
+      });
+
+      roleTurns.supervisor += 1;
+      const cockpit = await readTextIfExists(path.join(input.runDir, "artifacts", "team-cockpit.md"));
+      const supervisorTurn = await runCcRole({
+        role: "supervisor",
+        workflow: "cc-team-run",
+        teamMode,
+        model: input.model,
+        runDir: input.runDir,
+        cwd: input.executionDir,
+        prompt: buildSupervisorPrompt({ stage, task: input.task, runDir: input.runDir, targetDir: input.targetDir, state, cockpit, leaderReport: leaderTurn.finalResponse }),
+        runner: input.runner,
+        turnTimeoutMs: input.turnTimeoutMs,
+      });
+      sessionLogEntries += 1;
+
+      const supervisorInteraction = firstAskUserInteraction(supervisorTurn.interactionRequests);
+      if (supervisorInteraction) {
+        finalStatus = "ask_user";
+        finalReason = summarizeCcInteraction(supervisorInteraction);
+        recommendedAction = "answer_user";
+        state.blockers.push({ kind: "user_decision", question: finalReason, stage });
+        await appendCcBlocker(input.runDir, finalReason);
+        await writeCcInteractionRequest(input.runDir, supervisorInteraction);
+        break;
+      }
+
+      await appendSupervisorReport(input.runDir, stage, supervisorTurn.finalResponse);
+      await writeTeamCockpit(input.runDir, {
+        task: input.task,
+        state,
+        stage,
+        leaderReport: leaderTurn.finalResponse,
+        supervisorReport: supervisorTurn.finalResponse,
+        targetDir: input.targetDir,
+        guidance,
+      });
+
+      if (isSupervisorNoGo(supervisorTurn.finalResponse)) {
+        finalStatus = "failed";
+        finalReason = `supervisor blocked ${stage}: ${firstMeaningfulLine(supervisorTurn.finalResponse)}`;
+        recommendedAction = "rerun";
+        state.recommendedAction = recommendedAction;
+        state.blockers.push({ kind: "verification_failed", question: finalReason, stage });
+        await appendCcBlocker(input.runDir, finalReason);
+        await writeTeamState(input.runDir, state);
+        break;
+      }
+
+      state.recommendedAction = "continue";
+      await writeTeamState(input.runDir, state);
+      finalStatus = "done";
+      finalReason = `${stage} completed under leader/supervisor mode.`;
+    }
+  } catch (error) {
+    finalStatus = "failed";
+    finalReason = summarizeError(error);
+    recommendedAction = "inspect";
+    await appendCcBlocker(input.runDir, finalReason);
+  }
+
+  if (finalStatus === "done" && currentStage === "ship") {
+    finalReason = "cc-team-run completed local delivery lifecycle.";
+    recommendedAction = "inspect";
+  }
+
+  state = await readTeamState(input.runDir);
+  state.status = finalStatus;
+  state.currentStage = currentStage;
+  state.teamMode = teamMode;
+  state.recommendedAction = recommendedAction;
+  await writeTeamState(input.runDir, state);
+  await writeTeamCockpit(input.runDir, {
+    task: input.task,
+    state,
+    stage: currentStage,
+    leaderReport: `Final status: ${finalStatus}. ${finalReason}`,
+    supervisorReport: `Supervisor Report: Recommended action: ${recommendedAction}.`,
+    targetDir: input.targetDir,
+    guidance: await readTextIfExists(path.join(input.runDir, "leader-guidance.md")),
+  });
+  await appendCcProgress(input.runDir, `\n## Finished\n\nStatus: ${finalStatus}\nReason: ${finalReason}\n`);
+
+  const endedAt = new Date().toISOString();
+  const durationMs = Date.now() - input.startedAtMs;
+  const summary: CcTeamLifecycleRunSummary = {
+    schemaVersion: 1,
+    provider: "claude-code",
+    workflow: "cc-team-run",
+    runDir: input.runDir,
+    status: finalStatus,
+    reason: finalReason,
+    model: input.model,
+    taskFile: input.taskFile,
+    targetDir: input.targetDir,
+    currentStage,
+    recommendedAction,
+    teamMode,
+    startedAt: input.startedAt,
+    endedAt,
+    durationMs,
+    turnTimeoutMs: input.turnTimeoutMs,
+    skillGuidanceVersion: TEAM_SKILL_GUIDANCE_VERSION,
+    appliedSkills: TEAM_SKILL_IDS,
+    metrics: {
+      sessionLogEntries,
+      roleTurns,
+    },
+    latestVerification: state.latestVerification,
+  };
+  await writeFile(path.join(input.runDir, "run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+
+  return { runDir: input.runDir, targetDir: input.targetDir, status: finalStatus, reason: finalReason, model: input.model, durationMs, workflow: "cc-team-run", stage: currentStage, recommendedAction, teamMode };
+}
+
 export function parseCcTesterDecision(finalResponse: string): CcTesterDecision {
   return parseDecisionJson<CcTesterDecision>(finalResponse, "cc tester", ["done", "develop", "ask_user"]);
 }
@@ -747,7 +1356,7 @@ function parseDecisionJson<T extends { status: string; reason: string }>(
   return { status: candidate.status, reason: candidate.reason } as T;
 }
 
-function createCcRunDirectoryName(runsDir: string, prefix: "cc" | "cc-spec" = "cc"): string {
+function createCcRunDirectoryName(runsDir: string, prefix: "cc" | "cc-spec" | "cc-team" = "cc"): string {
   const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
   return path.join(runsDir, `${prefix}-${stamp}`);
 }
@@ -842,14 +1451,486 @@ async function ensureCcSpecRunProtocol(input: {
   await Promise.all(writes);
 }
 
+async function initializeCcTeamLifecycleProtocol(input: {
+  runDir: string;
+  task: string;
+  model: string;
+  startedAt: string;
+  teamMode: TeamMode;
+  targetDir?: string;
+}): Promise<void> {
+  await mkdir(path.join(input.runDir, "tasks"), { recursive: true });
+  await mkdir(path.join(input.runDir, "artifacts"), { recursive: true });
+  await mkdir(path.join(input.runDir, "workspace"), { recursive: true });
+  await ensureSessionLogDirs(input.runDir);
+  const progressLines = [
+    "# CC Team Lifecycle Progress",
+    "",
+    `Model: ${input.model}`,
+  ];
+  if (input.targetDir) progressLines.push(`Target: ${input.targetDir}`);
+  progressLines.push(`Started: ${input.startedAt}`, "");
+
+  const existingState = await readTextIfExists(path.join(input.runDir, "team-state.json"));
+  await Promise.all([
+    writeFile(path.join(input.runDir, "task.md"), input.task, "utf8"),
+    writeFile(path.join(input.runDir, "blockers.md"), await readTextIfExists(path.join(input.runDir, "blockers.md")), "utf8"),
+    writeFile(path.join(input.runDir, "progress.md"), existingState ? await readTextIfExists(path.join(input.runDir, "progress.md")) || `${progressLines.join("\n")}\n` : `${progressLines.join("\n")}\n`, "utf8"),
+  ]);
+  if (!existingState) {
+    await writeTeamState(input.runDir, {
+      schemaVersion: 1,
+      workflow: "cc-team-run",
+      status: "running",
+      currentStage: "spec",
+      recommendedAction: "continue",
+      teamMode: input.teamMode,
+      skillGuidanceVersion: TEAM_SKILL_GUIDANCE_VERSION,
+      appliedSkills: TEAM_SKILL_IDS,
+      tasks: [],
+      blockers: [],
+      assumptions: [],
+    });
+  }
+  if (!await readTextIfExists(path.join(input.runDir, "worker-registry.json"))) {
+    await writeWorkerRegistry(input.runDir, { workers: [] });
+  }
+}
+
+type TeamLeaderDecision = {
+  status: "continue" | "ask_user" | "done";
+  stage: TeamStage;
+  reason: string;
+  recommendedAction: string;
+  assumptions: string[];
+  blocker?: { kind: BlockerKind; question: string };
+  task?: Omit<TeamTask, "stage" | "role" | "status">;
+};
+
+function parseTeamLeaderDecision(finalResponse: string, expectedStage: TeamStage): TeamLeaderDecision {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(finalResponse);
+  } catch {
+    throw new Error(`team leader returned non-JSON response: ${finalResponse}`);
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`team leader returned non-JSON response: ${finalResponse}`);
+  }
+  const row = parsed as Record<string, unknown>;
+  const status = row.status;
+  if (status !== "continue" && status !== "ask_user" && status !== "done") {
+    throw new Error(`team leader returned invalid status: ${finalResponse}`);
+  }
+  const stage = row.stage;
+  if (!isTeamStage(stage)) {
+    throw new Error(`team leader returned invalid stage: ${finalResponse}`);
+  }
+  if (stage !== expectedStage) {
+    throw new Error(`team leader returned stage ${stage} while ${expectedStage} was expected`);
+  }
+  const reason = typeof row.reason === "string" && row.reason.trim() ? row.reason.trim() : "No reason provided.";
+  const recommendedAction = typeof row.recommendedAction === "string" && row.recommendedAction.trim() ? row.recommendedAction.trim() : "continue";
+  const assumptions = Array.isArray(row.assumptions) ? row.assumptions.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  const blocker = parseTeamBlocker(row.blocker);
+  const task = row.task && typeof row.task === "object" ? parseTeamTaskPayload(row.task as Record<string, unknown>) : undefined;
+  return { status, stage, reason, recommendedAction, assumptions, blocker, task };
+}
+
+function parseTeamBlocker(value: unknown): { kind: BlockerKind; question: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  const kind = row.kind;
+  const question = typeof row.question === "string" ? row.question.trim() : "";
+  if (!isBlockerKind(kind) || !question) return undefined;
+  return { kind, question };
+}
+
+function parseTeamTaskPayload(row: Record<string, unknown>): Omit<TeamTask, "stage" | "role" | "status"> {
+  const id = readRequiredString(row, "id");
+  const title = readRequiredString(row, "title");
+  const objective = readRequiredString(row, "objective");
+  const context = readRequiredString(row, "context");
+  const inputFiles = readStringArray(row.inputFiles);
+  const allowedPaths = readStringArray(row.allowedPaths);
+  const acceptanceCriteria = readStringArray(row.acceptanceCriteria);
+  const verificationCommand = readRequiredString(row, "verificationCommand");
+  const failureCategories = readStringArray(row.failureCategories).filter(isBlockerKind);
+  if (failureCategories.length === 0) {
+    throw new Error(`team task ${id} must include at least one valid failure category`);
+  }
+  return { id, title, objective, context, inputFiles, allowedPaths, acceptanceCriteria, verificationCommand, failureCategories };
+}
+
+function readRequiredString(row: Record<string, unknown>, key: string): string {
+  const value = row[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`team task missing ${key}`);
+  }
+  return value.trim();
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+}
+
+function normalizeTeamTask(stage: TeamStage, task: Omit<TeamTask, "stage" | "role" | "status">): TeamTask {
+  return {
+    ...task,
+    stage,
+    role: workerRoleForStage(stage),
+    status: "pending",
+  };
+}
+
+function workerRoleForStage(stage: TeamStage): WorkerRole {
+  if (stage === "spec" || stage === "plan") return "planner";
+  if (stage === "build") return "developer";
+  if (stage === "test") return "tester";
+  if (stage === "review") return "reviewer";
+  return "shipper";
+}
+
+function isTeamStage(value: unknown): value is TeamStage {
+  return value === "spec" || value === "plan" || value === "build" || value === "test" || value === "review" || value === "ship";
+}
+
+function isBlockerKind(value: unknown): value is BlockerKind {
+  return value === "user_decision"
+    || value === "credentials"
+    || value === "task_doc_defect"
+    || value === "execution_defect"
+    || value === "skill_context_defect"
+    || value === "verification_failed";
+}
+
+function createEmptyLifecycleRoleTurns(): Record<WorkerRole, number> {
+  return { leader: 0, supervisor: 0, planner: 0, developer: 0, tester: 0, reviewer: 0, shipper: 0 };
+}
+
+async function readTeamState(runDir: string): Promise<TeamState> {
+  const raw = await readTextIfExists(path.join(runDir, "team-state.json"));
+  if (!raw) {
+    return {
+      schemaVersion: 1,
+      workflow: "cc-team-run",
+      status: "running",
+      currentStage: "spec",
+      recommendedAction: "continue",
+      teamMode: "supervised",
+      skillGuidanceVersion: TEAM_SKILL_GUIDANCE_VERSION,
+      appliedSkills: TEAM_SKILL_IDS,
+      tasks: [],
+      blockers: [],
+      assumptions: [],
+    };
+  }
+  const parsed = JSON.parse(raw) as TeamState;
+  return {
+    ...parsed,
+    teamMode: parsed.teamMode ?? "supervised",
+    skillGuidanceVersion: parsed.skillGuidanceVersion ?? TEAM_SKILL_GUIDANCE_VERSION,
+    appliedSkills: parsed.appliedSkills ?? TEAM_SKILL_IDS,
+  };
+}
+
+async function writeTeamState(runDir: string, state: TeamState): Promise<void> {
+  await writeFile(path.join(runDir, "team-state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+async function readWorkerRegistry(runDir: string): Promise<WorkerRegistry> {
+  const raw = await readTextIfExists(path.join(runDir, "worker-registry.json"));
+  return raw ? JSON.parse(raw) as WorkerRegistry : { workers: [] };
+}
+
+async function writeWorkerRegistry(runDir: string, registry: WorkerRegistry): Promise<void> {
+  await writeFile(path.join(runDir, "worker-registry.json"), `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+}
+
+export function selectReusableWorker(registry: WorkerRegistry, input: { role: WorkerRole; cwd: string }): WorkerRegistryEntry | undefined {
+  return registry.workers
+    .filter((worker) => worker.role === input.role && worker.cwd === input.cwd && worker.status === "healthy")
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
+async function upsertWorkerRegistryEntry(
+  runDir: string,
+  registry: WorkerRegistry,
+  input: { role: WorkerRole; cwd: string; sessionId: string | null; taskId: string; status: WorkerRegistryEntry["status"] },
+): Promise<void> {
+  if (!input.sessionId) return;
+  const now = new Date().toISOString();
+  const existing = registry.workers.find((worker) => worker.role === input.role && worker.cwd === input.cwd && worker.sessionId === input.sessionId);
+  if (existing) {
+    existing.status = input.status;
+    existing.lastTaskId = input.taskId;
+    existing.updatedAt = now;
+  } else {
+    registry.workers.push({
+      id: `worker-${input.role}-${registry.workers.length + 1}`,
+      role: input.role,
+      cwd: input.cwd,
+      sessionId: input.sessionId,
+      status: input.status,
+      skills: skillsForWorker(input.role),
+      lastTaskId: input.taskId,
+      updatedAt: now,
+    });
+  }
+  await writeWorkerRegistry(runDir, registry);
+}
+
+function skillsForWorker(role: WorkerRole): string[] {
+  return teamSkillsForRole(role);
+}
+
+async function writeTeamTaskDocument(runDir: string, task: TeamTask): Promise<void> {
+  const text = [
+    `# Team Task: ${task.id}`,
+    "",
+    `stage: ${task.stage}`,
+    `role: ${task.role}`,
+    `status: ${task.status}`,
+    "",
+    "## Objective",
+    task.objective,
+    "",
+    "## Context",
+    task.context,
+    "",
+    "## Input Files",
+    ...task.inputFiles.map((item) => `- ${item}`),
+    "",
+    "## Allowed Paths",
+    ...task.allowedPaths.map((item) => `- ${item}`),
+    "",
+    "## Acceptance Criteria",
+    ...task.acceptanceCriteria.map((item) => `- ${item}`),
+    "",
+    "## Verification Command",
+    task.verificationCommand,
+    "",
+    "## Failure Categories",
+    ...task.failureCategories.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
+  await writeFile(path.join(runDir, "tasks", `${task.id}.md`), text, "utf8");
+}
+
+export function parseTeamTaskDocument(text: string): TeamTask {
+  const required = ["Objective", "Context", "Input Files", "Allowed Paths", "Acceptance Criteria", "Verification Command", "Failure Categories"];
+  const missing = required.filter((section) => !new RegExp(`^##\\s+${section}\\s*$`, "im").test(text));
+  if (missing.length > 0) {
+    throw new Error(`team task document missing required sections: ${missing.join(", ")}`);
+  }
+  const stage = readFrontMatterValue(text, "stage");
+  const role = readFrontMatterValue(text, "role");
+  const status = readFrontMatterValue(text, "status") || "pending";
+  if (!isTeamStage(stage)) throw new Error("team task document has invalid stage");
+  if (!isWorkerRole(role)) throw new Error("team task document has invalid role");
+  if (!isTeamTaskStatus(status)) throw new Error("team task document has invalid status");
+  const id = text.match(/^#\s+Team Task:\s*(\S+)/im)?.[1] ?? "task_unknown";
+  const failureCategories = readListSection(text, "Failure Categories").filter(isBlockerKind);
+  return {
+    id,
+    stage,
+    role,
+    status,
+    title: id,
+    objective: readSection(text, "Objective"),
+    context: readSection(text, "Context"),
+    inputFiles: readListSection(text, "Input Files"),
+    allowedPaths: readListSection(text, "Allowed Paths"),
+    acceptanceCriteria: readListSection(text, "Acceptance Criteria"),
+    verificationCommand: readSection(text, "Verification Command"),
+    failureCategories,
+  };
+}
+
+function isWorkerRole(value: unknown): value is WorkerRole {
+  return value === "leader" || value === "supervisor" || value === "planner" || value === "developer" || value === "tester" || value === "reviewer" || value === "shipper";
+}
+
+function isTeamTaskStatus(value: unknown): value is TeamTaskStatus {
+  return value === "pending" || value === "running" || value === "done" || value === "blocked" || value === "failed";
+}
+
+function readFrontMatterValue(text: string, key: string): string {
+  return text.match(new RegExp(`^${key}:\\s*(.+)$`, "im"))?.[1]?.trim() ?? "";
+}
+
+function readSection(text: string, section: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const start = lines.findIndex((line) => new RegExp(`^##\\s+${section}\\s*$`, "i").test(line.trim()));
+  if (start < 0) return "";
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^##\s+/.test(lines[index].trim())) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join("\n").trim();
+}
+
+function readListSection(text: string, section: string): string[] {
+  return readSection(text, section)
+    .split("\n")
+    .map((line) => line.replace(/^\s*-\s*/, "").trim())
+    .filter(Boolean);
+}
+
+async function persistTeamStageArtifact(runDir: string, stage: TeamStage, finalResponse: string): Promise<void> {
+  const fileByStage: Record<TeamStage, string> = {
+    spec: "spec.md",
+    plan: "plan.md",
+    build: "build-result.md",
+    test: "test-result.md",
+    review: "review.md",
+    ship: "ship-report.md",
+  };
+  await writeFile(path.join(runDir, "artifacts", fileByStage[stage]), `${finalResponse.trim()}\n`, "utf8");
+}
+
+function upsertSupervisedStageTask(state: TeamState, stage: TeamStage, status: TeamTaskStatus, report: string): void {
+  const id = `task_${stage}_leader`;
+  const existing = state.tasks.find((task) => task.id === id);
+  const summary = firstMeaningfulLine(report);
+  const task: TeamTask = {
+    id,
+    stage,
+    role: "leader",
+    title: `${stage} leader execution`,
+    status,
+    objective: `Leader executes the ${stage} stage in supervised mode.`,
+    context: summary,
+    inputFiles: ["task.md", "leader-guidance.md", "artifacts/team-cockpit.md"],
+    allowedPaths: ["**/*"],
+    acceptanceCriteria: [`${stage} produces a boss-readable stage report and updates cockpit context.`],
+    verificationCommand: stage === "test" ? "leader-provided verification evidence" : "supervisor inspection",
+    failureCategories: ["execution_defect", "skill_context_defect", "verification_failed", "credentials", "user_decision"],
+  };
+  if (existing) {
+    Object.assign(existing, task);
+  } else {
+    state.tasks.push(task);
+  }
+}
+
+async function appendSupervisorReport(runDir: string, stage: TeamStage, report: string): Promise<void> {
+  const reportPath = path.join(runDir, "artifacts", "supervisor-report.md");
+  const existing = await readTextIfExists(reportPath);
+  const next = `${existing.trimEnd() || "# Supervisor Report"}\n\n## Stage: ${stage}\n\n${report.trim()}\n`;
+  await writeFile(reportPath, next, "utf8");
+}
+
+async function writeTeamCockpit(runDir: string, input: {
+  task: string;
+  state: TeamState;
+  stage: TeamStage;
+  leaderReport: string;
+  supervisorReport: string;
+  targetDir?: string;
+  guidance?: string;
+}): Promise<void> {
+  const stageRows = TEAM_STAGES.map((stage) => {
+    const marker = stage === input.state.currentStage
+      ? "active"
+      : TEAM_STAGES.indexOf(stage) < TEAM_STAGES.indexOf(input.state.currentStage) || input.state.status === "done"
+        ? "done"
+        : "pending";
+    return `- ${stage}: ${marker}`;
+  }).join("\n");
+  const doneTasks = input.state.tasks.filter((task) => task.status === "done");
+  const runningTasks = input.state.tasks.filter((task) => task.status === "running");
+  const blockers = input.state.blockers.map((blocker) => `- ${blocker.kind}: ${blocker.question}`).join("\n") || "- none";
+  const assumptions = input.state.assumptions.map((item) => `- ${item}`).join("\n") || "- none";
+  const guidance = input.guidance?.trim() || "No owner guidance yet.";
+  const text = [
+    "# Team Cockpit",
+    "",
+    "## Current Goal",
+    input.task.replace(/^#\s*Task\s*/i, "").trim() || "No task text.",
+    "",
+    "## Current Status",
+    `- Status: ${input.state.status}`,
+    `- Current stage: ${input.state.currentStage}`,
+    `- Recommended action: ${input.state.recommendedAction}`,
+    `- Target: ${input.targetDir ?? "run workspace"}`,
+    "",
+    "## Stage Progress",
+    stageRows,
+    "",
+    "## Current Work",
+    runningTasks.length ? runningTasks.map((task) => `- ${task.id}: ${task.title}`).join("\n") : `- Leader just worked on ${input.stage}.`,
+    "",
+    "## Completed Work",
+    doneTasks.length ? doneTasks.map((task) => `- ${task.stage}: ${task.context}`).join("\n") : "- none yet",
+    "",
+    "## Latest Leader Summary",
+    input.leaderReport.trim() || "No leader report yet.",
+    "",
+    "## Latest Supervisor Summary",
+    input.supervisorReport.trim() || "No supervisor report yet.",
+    "",
+    "## Blockers",
+    blockers,
+    "",
+    "## Assumptions",
+    assumptions,
+    "",
+    "## Owner Guidance",
+    guidance,
+    "",
+    "## Next Step",
+    input.state.recommendedAction,
+    "",
+  ].join("\n");
+  await writeFile(path.join(runDir, "artifacts", "team-cockpit.md"), text, "utf8");
+}
+
+function isSupervisorNoGo(report: string): boolean {
+  return /(^|\n)\s*(NO-GO|REQUEST CHANGES|Critical)\b/i.test(report);
+}
+
+function firstMeaningfulLine(text: string): string {
+  return text.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) ?? "No details provided.";
+}
+
+function latestVerificationFromTesterDecision(task: TeamTask, decision: CcTesterDecision): TeamState["latestVerification"] {
+  return {
+    command: task.verificationCommand,
+    status: decision.status === "done" ? "passed" : "failed",
+    detail: decision.reason,
+  };
+}
+
+async function writeTeamInteractionRequest(runDir: string, stage: TeamStage, blocker: { kind: BlockerKind; question: string }): Promise<void> {
+  await writeFile(path.join(runDir, "interaction-request.json"), `${JSON.stringify({
+    role: "leader",
+    type: "ask_user",
+    toolName: ASK_USER_TOOL,
+    input: {
+      stage,
+      kind: blocker.kind,
+      questions: [{ question: blocker.question }],
+    },
+    title: blocker.question,
+    recordedAt: new Date().toISOString(),
+  }, null, 2)}\n`, "utf8");
+}
+
 async function runCcRole(input: {
   role: CcRole;
+  workflow?: CcWorkflow;
+  teamMode?: TeamMode;
   model: string;
   runDir: string;
   cwd?: string;
   prompt: string;
   runner: CcRoleRunner;
   turnTimeoutMs: number;
+  resumeSessionId?: string;
 }): Promise<CcRoleTurnResult> {
   const startedAt = new Date().toISOString();
   const abortController = new AbortController();
@@ -882,17 +1963,20 @@ async function runCcRole(input: {
   try {
     for await (const event of input.runner({
       role: input.role,
+      workflow: input.workflow,
+      teamMode: input.teamMode,
       model: input.model,
       cwd: input.cwd ?? input.runDir,
       prompt: input.prompt,
-      systemPrompt: buildCcSystemPrompt(input.role),
-      maxTurns: maxTurnsForRole(input.role),
-      tools: toolsForRole(input.role),
-      allowedTools: allowedToolsForRole(input.role),
-      outputFormat: outputFormatForRole(input.role),
-      permissionMode: permissionModeForRole(input.role),
+      systemPrompt: buildCcSystemPrompt(input.role, input.workflow, input.teamMode),
+      maxTurns: maxTurnsForRole(input.role, input.workflow, input.teamMode),
+      tools: toolsForRole(input.role, input.workflow, input.teamMode),
+      allowedTools: allowedToolsForRole(input.role, input.workflow, input.teamMode),
+      outputFormat: outputFormatForRole(input.role, input.workflow, input.teamMode),
+      permissionMode: permissionModeForRole(input.role, input.workflow, input.teamMode),
       abortController,
       interactionRequests,
+      resumeSessionId: input.resumeSessionId,
     })) {
       events.push(event);
       const diagnosis = diagnoseCcEvent(event);
@@ -944,6 +2028,7 @@ function defaultCcRoleRunner(request: CcRoleRunRequest): AsyncIterable<SDKMessag
   const sdkOptions: ClaudeCodeOptions = {
     model: request.model,
     cwd: request.cwd,
+    resume: request.resumeSessionId,
     maxTurns: request.maxTurns,
     tools: request.tools,
     allowedTools: request.allowedTools,
@@ -987,9 +2072,73 @@ function defaultCcRoleRunner(request: CcRoleRunRequest): AsyncIterable<SDKMessag
   return query({ prompt: request.prompt, options: sdkOptions });
 }
 
-function buildCcSystemPrompt(role: CcRole): string {
-  if (isCcSpecRole(role)) {
+function buildCcSystemPrompt(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): string {
+  if (workflow !== "cc-team-run" && isCcSpecRole(role)) {
     return buildCcSpecSystemPrompt(role);
+  }
+  if (workflow === "cc-team-run") {
+    const skillIds = role === "leader" && teamMode === "supervised" ? TEAM_SKILL_IDS : teamSkillsForRole(role);
+    const skillGuidance = formatTeamSkillGuidance(skillIds);
+    if (role === "leader") {
+      if (teamMode === "supervised") {
+        return [
+          "You are the Claude Code team leader and primary execution SDK for cc-team-run supervised mode.",
+          "Execute the full lifecycle yourself: spec, plan, build, test, review, and ship.",
+          "Maintain boss-readable progress in artifacts/team-cockpit.md when you can edit files; the runtime will also refresh the cockpit from your reports.",
+          "Read leader-guidance.md before each stage and treat owner guidance as directional input, unless it conflicts with safety or local constraints.",
+          "Ask the user only for high-impact product decisions, credentials, paid/external deployment authority, data/integration boundaries, or blockers the local team cannot self-resolve.",
+          "Do not commit, push, deploy, purchase services, or perform externally visible actions.",
+          skillGuidance,
+        ].join("\n\n");
+      }
+      return [
+        "You are the Claude Code team leader for the cc-team-run lifecycle.",
+        "Run the lifecycle as spec, plan, build, test, review, and ship.",
+        "Ask the user only for high-impact product decisions, credentials, paid/external deployment authority, data/integration boundaries, or blockers the team cannot self-resolve.",
+        "For low-impact defaults, choose popular low-cost conventional choices, record assumptions, and keep moving.",
+        "Return JSON only. Do not edit product code.",
+        skillGuidance,
+      ].join(" ");
+    }
+    if (role === "planner") {
+      return [
+        "You are a planner/spec worker. Produce concise lifecycle artifacts from the assigned team task. Use spec-before-code and vertical task breakdown discipline.",
+        skillGuidance,
+      ].join("\n\n");
+    }
+    if (role === "developer") {
+      return [
+        "You are a developer worker. Execute the assigned task document fully, keep edits scoped, and report task_doc_defect/execution_defect/skill_context_defect/credentials when blocked.",
+        skillGuidance,
+      ].join("\n\n");
+    }
+    if (role === "tester") {
+      return [
+        "You are a tester worker. Run non-destructive machine verification and return JSON only.",
+        skillGuidance,
+      ].join("\n\n");
+    }
+    if (role === "reviewer") {
+      return [
+        "You are a reviewer worker. Review correctness, security, maintainability, and test coverage. Mark Critical or REQUEST CHANGES for blockers.",
+        skillGuidance,
+      ].join("\n\n");
+    }
+    if (role === "shipper") {
+      return [
+        "You are a shipper worker. Produce local delivery, deployment, and rollback reports. Do not commit, push, or deploy.",
+        skillGuidance,
+      ].join("\n\n");
+    }
+    if (role === "supervisor") {
+      return [
+        "You are the independent supervisor SDK for cc-team-run supervised mode.",
+        "Do not edit product code. Inspect the leader report, cockpit, team state, artifacts, blockers, and verification evidence.",
+        "Return a concise supervisor report with: current status, risks, missing verification, whether to continue, rerun, ask the user, or ship-ready.",
+        "Use NO-GO, REQUEST CHANGES, or Critical when the run must not continue.",
+        skillGuidance,
+      ].join("\n\n");
+    }
   }
   if (role === "manager") {
     return [
@@ -1008,7 +2157,11 @@ function buildCcSystemPrompt(role: CcRole): string {
   return "You are the cc tester. Verify the current working directory result and return JSON only.";
 }
 
-function maxTurnsForRole(role: CcRole): number {
+function maxTurnsForRole(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): number {
+  if (workflow === "cc-team-run" && role === "leader") return teamMode === "supervised" ? DEVELOPER_MAX_TURNS : 12;
+  if (workflow === "cc-team-run" && role === "supervisor") return 16;
+  if (workflow === "cc-team-run" && role === "planner") return 20;
+  if (workflow === "cc-team-run" && (role === "shipper" || role === "reviewer")) return 16;
   if (role === "manager") return MANAGER_MAX_TURNS;
   if (role === "developer") return DEVELOPER_MAX_TURNS;
   if (role === "tester") return TESTER_MAX_TURNS;
@@ -1018,7 +2171,12 @@ function maxTurnsForRole(role: CcRole): number {
   return 8;
 }
 
-function toolsForRole(role: CcRole): string[] {
+function toolsForRole(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): string[] {
+  if (workflow === "cc-team-run" && role === "leader" && teamMode === "supervised") return ["LS", "Glob", "Grep", "Read", "Write", "Edit", "Bash", ASK_USER_TOOL];
+  if (workflow === "cc-team-run" && role === "leader") return ["LS", "Glob", "Grep", "Read", ASK_USER_TOOL];
+  if (workflow === "cc-team-run" && role === "supervisor") return ["LS", "Glob", "Grep", "Read", ASK_USER_TOOL];
+  if (workflow === "cc-team-run" && role === "planner") return ["LS", "Glob", "Grep", "Read", "Write", "Edit", ASK_USER_TOOL];
+  if (workflow === "cc-team-run" && (role === "shipper" || role === "reviewer")) return ["LS", "Glob", "Grep", "Read", ASK_USER_TOOL];
   if (role === "manager") return ["LS", "Glob", "Grep", "Read", ASK_USER_TOOL];
   if (role === "tester") return ["LS", "Glob", "Grep", "Read", "Bash", ASK_USER_TOOL];
   if (role === "reviewer") return ["Read", ASK_USER_TOOL];
@@ -1030,7 +2188,12 @@ function toolsForRole(role: CcRole): string[] {
   return ["LS", "Glob", "Grep", "Read", "Write", "Edit", ASK_USER_TOOL];
 }
 
-function allowedToolsForRole(role: CcRole): string[] {
+function allowedToolsForRole(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): string[] {
+  if (workflow === "cc-team-run" && role === "leader" && teamMode === "supervised") return ["LS", "Glob", "Grep", "Read", "Write", "Edit", "Bash"];
+  if (workflow === "cc-team-run" && role === "leader") return ["LS", "Glob", "Grep", "Read"];
+  if (workflow === "cc-team-run" && role === "supervisor") return ["LS", "Glob", "Grep", "Read"];
+  if (workflow === "cc-team-run" && role === "planner") return ["LS", "Glob", "Grep", "Read", "Write", "Edit"];
+  if (workflow === "cc-team-run" && (role === "shipper" || role === "reviewer")) return ["LS", "Glob", "Grep", "Read"];
   if (role === "manager") return ["LS", "Glob", "Grep", "Read"];
   if (role === "tester") return ["LS", "Glob", "Grep", "Read", "Bash"];
   if (role === "reviewer") return ["Read"];
@@ -1042,14 +2205,20 @@ function allowedToolsForRole(role: CcRole): string[] {
   return ["LS", "Glob", "Grep", "Read", "Write", "Edit"];
 }
 
-function outputFormatForRole(role: CcRole): OutputFormat | undefined {
+function outputFormatForRole(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): OutputFormat | undefined {
+  if (workflow === "cc-team-run" && role === "leader" && teamMode !== "supervised") return TEAM_LEADER_DECISION_OUTPUT_FORMAT;
+  if (workflow === "cc-team-run" && role === "supervisor") return undefined;
+  if (workflow === "cc-team-run" && role === "reviewer") return undefined;
   if (role === "manager") return CC_MANAGER_PLAN_OUTPUT_FORMAT;
   if (role === "tester") return CC_TESTER_DECISION_OUTPUT_FORMAT;
   if (role === "reviewer") return CC_SPEC_REVIEWER_DECISION_OUTPUT_FORMAT;
   return undefined;
 }
 
-function permissionModeForRole(role: CcRole): "acceptEdits" | "dontAsk" {
+function permissionModeForRole(role: CcRole, workflow?: CcWorkflow, teamMode?: TeamMode): "acceptEdits" | "dontAsk" {
+  if (workflow === "cc-team-run" && role === "leader" && teamMode === "supervised") return "acceptEdits";
+  if (workflow === "cc-team-run" && (role === "leader" || role === "supervisor" || role === "tester" || role === "reviewer" || role === "shipper")) return "dontAsk";
+  if (workflow === "cc-team-run" && role === "planner") return "acceptEdits";
   if (role === "manager" || role === "tester" || role === "reviewer") return "dontAsk";
   return "acceptEdits";
 }
@@ -1175,6 +2344,158 @@ Return JSON only with this shape:
 
 Use "develop" when the developer can fix the issue in another pass.
 Use "ask_user" only for missing product decisions, credentials, or hard blockers.`;
+}
+
+function buildTeamLeaderPrompt(input: {
+  stage: TeamStage;
+  task: string;
+  runDir: string;
+  targetDir?: string;
+  state: TeamState;
+}): string {
+  const target = input.targetDir
+    ? `Target repository: ${input.targetDir}. Local edits are allowed, but do not commit, push, or deploy.`
+    : "No target repository was provided. Implementation deliverables should stay under the run directory workspace/.";
+  return `You are the team leader for cc-team-run.
+
+Stage: ${input.stage}
+Run directory: ${input.runDir}
+${target}
+
+Original user task:
+${input.task}
+
+Current team state:
+${JSON.stringify(input.state, null, 2)}
+
+Lifecycle policy:
+- Keep the /spec -> /plan -> /build -> /test -> /review -> /ship rhythm.
+- Ask the user only for high-impact product decisions, credentials, paid/external deployment authority, data/integration boundaries, or blockers the team cannot self-resolve.
+- For ordinary low-impact details, choose popular low-cost defaults, record them in assumptions, and continue.
+- Every continue decision must include one task document payload for the worker.
+- The task must be complete enough that one worker can execute it without guessing.
+- The task must include objective, context, inputFiles, allowedPaths, acceptanceCriteria, verificationCommand, and failureCategories.
+
+Return JSON only matching the schema.`;
+}
+
+function buildSupervisedLeaderPrompt(input: {
+  stage: TeamStage;
+  task: string;
+  runDir: string;
+  targetDir?: string;
+  state: TeamState;
+  guidance: string;
+}): string {
+  const target = input.targetDir
+    ? `Target repository: ${input.targetDir}. Edit locally only; do not commit, push, or deploy.`
+    : `No target repository was provided. Put implementation deliverables under ${input.runDir}/workspace when writing product code.`;
+  return `You are the leader SDK in cc-team-run supervised mode.
+
+Stage: ${input.stage}
+Run directory: ${input.runDir}
+${target}
+
+Original user task:
+${input.task}
+
+Owner guidance queued for you:
+${input.guidance.trim() || "None."}
+
+Current team state:
+${JSON.stringify(input.state, null, 2)}
+
+Instructions:
+- Execute the current lifecycle stage yourself.
+- Follow the full lifecycle skill guidance in your system prompt.
+- Maintain a boss-readable cockpit if you edit files: ${input.runDir}/artifacts/team-cockpit.md.
+- For low-impact details, choose conventional low-cost defaults and state the assumption.
+- Ask the user only for high-impact decisions, credentials, data/integration boundaries, paid/external authority, or blockers you cannot resolve locally.
+- Do not commit, push, deploy, purchase services, or perform externally visible actions.
+
+Return a concise Markdown stage report with: completed work, current work, verification evidence if any, blockers, assumptions, and next step.`;
+}
+
+function buildSupervisorPrompt(input: {
+  stage: TeamStage;
+  task: string;
+  runDir: string;
+  targetDir?: string;
+  state: TeamState;
+  cockpit: string;
+  leaderReport: string;
+}): string {
+  return `You are the independent supervisor SDK for cc-team-run supervised mode.
+
+Stage: ${input.stage}
+Run directory: ${input.runDir}
+Target: ${input.targetDir ?? "run workspace"}
+
+Original user task:
+${input.task}
+
+Team state:
+${JSON.stringify(input.state, null, 2)}
+
+Current cockpit document:
+${input.cockpit.trim() || "No cockpit document yet."}
+
+Latest leader report:
+${input.leaderReport.trim() || "No leader report."}
+
+Instructions:
+- Inspect whether the leader can continue to the next lifecycle stage.
+- Do not edit product code.
+- Use NO-GO, REQUEST CHANGES, or Critical if the lifecycle must stop or rerun.
+- Otherwise recommend continue, ask_user, rerun, or ship_ready.
+- Call out missing machine verification, high-impact blockers, and owner decisions clearly.
+
+Return a concise Markdown supervisor report.`;
+}
+
+function buildTeamWorkerPrompt(input: {
+  stage: TeamStage;
+  role: WorkerRole;
+  task: TeamTask;
+  runDir: string;
+  targetDir?: string;
+}): string {
+  const scope = input.targetDir
+    ? `Current directory is the target repository: ${input.targetDir}. Edit locally only; do not commit, push, or deploy.`
+    : `Current directory is the run directory: ${input.runDir}. Put implementation deliverables under workspace/ when writing product code.`;
+  return `You are the ${input.role} worker in cc-team-run.
+
+Stage: ${input.stage}
+Task id: ${input.task.id}
+${scope}
+
+Objective:
+${input.task.objective}
+
+Context:
+${input.task.context}
+
+Input files:
+${input.task.inputFiles.map((item) => `- ${item}`).join("\n") || "- none"}
+
+Allowed paths:
+${input.task.allowedPaths.map((item) => `- ${item}`).join("\n") || "- current working directory"}
+
+Acceptance criteria:
+${input.task.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}
+
+Verification command:
+${input.task.verificationCommand}
+
+Failure categories you must use if blocked:
+${input.task.failureCategories.map((item) => `- ${item}`).join("\n")}
+
+Rules:
+- Complete the task document as written.
+- If the task cannot be completed, say whether the defect is task_doc_defect, execution_defect, skill_context_defect, credentials, user_decision, or verification_failed.
+- Do not ask the user for low-impact details; choose conventional defaults and state the assumption.
+- ${input.role === "tester" ? "Run machine verification with Bash and return JSON only: {\"status\":\"done\"|\"develop\"|\"ask_user\",\"reason\":\"short reason\"}." : "Return a concise artifact/report for this stage."}
+- Do not commit, push, deploy, or perform externally visible actions.`;
 }
 
 function ccDiagnosticPath(runDir: string, startedAt: string, role: CcRole): string {
